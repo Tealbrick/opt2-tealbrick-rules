@@ -49,7 +49,7 @@ export function DraftsPage({ onChange }: { onChange: () => void }) {
               <div className="tb-row">
                 <Tag status={DRAFT_STATUS[d.status]}>{d.status}</Tag>
                 <span className="tb-hint">
-                  {d.source.kind === "app" ? `proposed by an app named ${d.source.name ?? d.submittedBy.name} (unverified)` : `from ${d.submittedBy.name}`} · {day(d.submittedAt)}
+                  {d.source.kind === "app" ? (d.source.product ? `proposed by the app ${d.source.product} (called itself “${d.source.name ?? d.submittedBy.name}”)` : `proposed by an app named ${d.source.name ?? d.submittedBy.name} (unverified)`) : `from ${d.submittedBy.name}`} · {day(d.submittedAt)}
                 </span>
               </div>
               <blockquote className="blockq">“{d.text}”</blockquote>
