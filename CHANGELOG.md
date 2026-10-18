@@ -2,9 +2,9 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-10-18
 
-Governance feed contract, G-3 (decisions C230, C166, C236). Not tagged: the release order is Governance 0.2.0 on qa1, then Rules 0.3.0, then Governance 0.2.1. Rules 0.3.0 reads `directory_feed`, which Governance 0.2.0 adds; against Governance 0.1.x it finds no such op, so its Fleet facts are unavailable (see "Fail closed").
+Governance feed contract, G-3 (decisions C230, C166, C236). Release order: Governance 0.2.0 on qa1, then Rules 0.3.0, then Governance 0.2.1. Rules 0.3.0 reads `directory_feed`, which Governance 0.2.0 adds; against Governance 0.1.x it finds no such op, so its Fleet facts are unavailable (see "Fail closed").
 
 ### Added
 - Match criterion `callerTeams` (list of Governance team ids): the CALLING agent is a member of one of them.
