@@ -2,7 +2,7 @@
 
 Rules & Approvals (product id `rules`): the per-workspace policy. It gates other apps' calls with allow, refuse or hold, always with a recorded reason. English rule requests are drafted by the owner's own agent and approved by the owner; Rules never calls a model. Built on the Miniapp SDK.
 
-**Status:** stable 0.2.12; `main` is 0.3.0 (dev channel until promoted; it needs Governance 0.2.0 or newer for team rules, else they fail closed). Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-rules` (on 2026-10-17 its version tags are the plain build `0.2.12`, its earlier dev pre-release, and a `sha-` tag; there is no `0.2.11` tag in that registry). The manifest declares `requires.bridge: 0.1.17` (needed to carry the hold verdict).
+**Status:** stable 0.2.12; `main` is 0.3.1 (dev channel until promoted; 0.3.0 is never promoted, C266; it needs Governance 0.2.0 or newer for team rules, else they fail closed). Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-rules` (on 2026-10-17 its version tags are the plain build `0.2.12`, its earlier dev pre-release, and a `sha-` tag; there is no `0.2.11` tag in that registry). The manifest declares `requires.bridge: 0.1.17` (needed to carry the hold verdict).
 
 - Repository: `Tealbrick/opt2-tealbrick-rules` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`); upstream licences are in `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app art are Tealbrick artwork and are not covered by the Apache-2.0 licence.
