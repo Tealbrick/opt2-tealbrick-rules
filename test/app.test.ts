@@ -135,7 +135,7 @@ test("preview: dry run with an unsaved candidate and per-rule steps", async () =
 
 test("rules_explain: an agent sees only its own calls' decisions", async () => {
   const { db } = migratedDb();
-  const f = (caller: string) => ({ caller: { type: "agent", id: caller, mode: "free" }, target: { product: "connect", op: "buzz_dm", effect: "outward" }, claim: null, claimVerified: false, claimTeams: [], claimTeamsAny: [], callerTeams: [], callerTeamsAny: [], claimTrusts: [], claimTrustActive: true, fleetAvailable: true });
+  const f = (caller: string) => ({ caller: { type: "agent", id: caller, mode: "free" }, target: { product: "connect", op: "buzz_dm", effect: "outward" }, claim: null, claimVerified: false, claimTeams: [], claimTeamsAny: [], callerTeams: [], callerTeamsAny: [], claimTrusts: [], claimTrustActive: true, fleetAvailable: true, callerProduct: null });
   recordDecision(db, { callId: "cal_a", phase: "before", facts: f(AGENT_A), decision: "deny", answered: "deny", reason: "no", rule: { id: "rul_1", rev: 1, title: "t" }, durationUs: 10 });
   recordDecision(db, { callId: "cal_b", phase: "before", facts: f(AGENT_B), decision: "allow", answered: "allow", reason: "ok", rule: null, durationUs: 10 });
   const mine = await run(OP.rulesExplain)({}, opCtx(db, { type: "agent", id: AGENT_A }));

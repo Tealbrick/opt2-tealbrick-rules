@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
-import { type CallFacts, evaluate, explain, order, type Rule, TRUSTS, type Trust, tagsPass } from "../src/engine.ts";
+import { type CallFacts, dependsOnProduct, evaluate, explain, order, type Rule, TRUSTS, type Trust, tagsPass } from "../src/engine.ts";
 import { parseFeed, parseFeedChunked, syncFleet } from "../src/fleet.ts";
 import { makeHooks } from "../src/hooks.ts";
 import { fleetFacts, fleetState, saveRule } from "../src/store.ts";
-import { AGENT_A, AGENT_B, feed, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts } from "./helpers.ts";
+import { AGENT_A, AGENT_B, feed, hookCtx, hookReq, migratedDb, OWNER, prng, spec, trustFacts } from "./helpers.ts";
 
 type Db = ReturnType<typeof migratedDb>["db"];
 const hooks = makeHooks("rules");
@@ -31,6 +31,7 @@ const facts = (o: Partial<CallFacts> & { claimTrust?: Trust | null } = {}): Call
   fleetAvailable: true,
   ...o,
   ...trustFacts(o),
+  callerProduct: o.callerProduct ?? null,
 });
 
 // ── 1. severity under unavailability ──────────────────────────────────────────────────────────────────────────
@@ -55,17 +56,6 @@ test("unavailable facts: the HIGHEST severity among the closed deny/hold rules b
   assert.equal(evaluate(order([allowAll, late]), facts({ fleetAvailable: false })).decision, "allow");
 });
 
-function prng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 test("PROPERTY (fuzz): the decision without the facts is never less strict than with them (deny > hold > allow, narrowing included)", () => {
   const rnd = prng(0xc236);
   const pickOne = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
@@ -82,6 +72,8 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
   let strictlyStricter = 0;
   let namesFleet = 0;
   let equalWhenNoFleet = 0;
+  let productOnly = 0;
+  let productStricter = 0;
   for (let i = 0; i < CASES; i++) {
     const rules: Rule[] = [];
     for (let r = 0; r < 1 + Math.floor(rnd() * 6); r++) {
@@ -89,6 +81,7 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
       const match: Record<string, unknown> = {};
       if (rnd() < 0.4) match.effects = [pickOne(["outward", "read"])];
       if (rnd() < 0.45) match.callerTeams = subset(["a", "b"], 1);
+      if (rnd() < 0.3) match.callerProducts = subset(["a", "b"], 1);
       const obo: Record<string, unknown> = {};
       if (rnd() < 0.3) obo.teams = subset(["a", "b"], 1);
       if (rnd() < 0.3) obo.trust = subset(TRUSTS, 1);
@@ -103,7 +96,12 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
     const claimTeams = subset(["a", "b"]);
     const claimTrusts = subset(TRUSTS, 1);
     const base = { claim, claimVerified: rnd() < 0.5, effect: pickOne(["outward", "read"]) };
+    // C237: the caller is an agent or an app; an app has a verified product (listed, or not) with the facts and none without them
+    const isApp = rnd() < 0.5;
+    const who = isApp ? { type: "app", id: "ins_01J0000000000000000000APP1", mode: null } : { type: "agent", id: AGENT_A, mode: "free" };
     const withFacts = facts({
+      caller: who,
+      callerProduct: isApp ? pickOne(["a", "b", "z"]) : null,
       claim: base.claim,
       claimVerified: base.claimVerified,
       target: { product: "connect", op: "buzz_dm", effect: base.effect },
@@ -114,7 +112,7 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
       claimTrusts: claim ? claimTrusts : [],
       claimTrustActive: rnd() < 0.7,
     });
-    const without = facts({ claim: base.claim, claimVerified: base.claimVerified, target: withFacts.target, fleetAvailable: false });
+    const without = facts({ caller: who, claim: base.claim, claimVerified: base.claimVerified, target: withFacts.target, fleetAvailable: false, callerProduct: null });
     const a = evaluate(ordered, withFacts);
     const b = evaluate(ordered, without);
     const where = JSON.stringify({ rules: ordered.map((r) => [r.id, r.spec.priority, r.spec.outcome.decision, r.spec.match, r.spec.narrowing]), withFacts, a: [a.decision, a.rule?.id, a.narrowing], b: [b.decision, b.rule?.id, b.narrowing] });
@@ -125,13 +123,20 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
       const pb = passes(b);
       assert.ok(pb.every((ok, k) => !ok || pa[k]), `narrowing without facts must pass a subset of what passes with them: ${where}`);
     }
-    // quiet-on-good: no rule names a Fleet fact → the facts change nothing
-    if (!ordered.some((r) => (r.spec.match.callerTeams?.length ?? 0) > 0 || (r.spec.match.onBehalfOf?.teams?.length ?? 0) > 0 || (r.spec.match.onBehalfOf?.trust?.length ?? 0) > 0)) {
+    // quiet-on-good: no rule names a Fleet fact or a product → the facts change nothing
+    const fleetNamed = ordered.some((r) => (r.spec.match.callerTeams?.length ?? 0) > 0 || (r.spec.match.onBehalfOf?.teams?.length ?? 0) > 0 || (r.spec.match.onBehalfOf?.trust?.length ?? 0) > 0);
+    if (!fleetNamed && !ordered.some((r) => dependsOnProduct(r.spec))) {
       equalWhenNoFleet++;
-      assert.deepEqual([b.decision, b.rule?.id, b.narrowing], [a.decision, a.rule?.id, a.narrowing], `no Fleet criterion: identical: ${where}`);
+      assert.deepEqual([b.decision, b.rule?.id, b.narrowing], [a.decision, a.rule?.id, a.narrowing], `no Fleet or product criterion: identical: ${where}`);
+    } else if (!fleetNamed) {
+      // only the product is missing: an app is never less strictly decided without it, an agent is not affected at all
+      productOnly++;
+      if (SEV[b.decision] > SEV[a.decision]) productStricter++;
+      if (!isApp) assert.deepEqual([b.decision, b.rule?.id, b.narrowing], [a.decision, a.rule?.id, a.narrowing], `an agent has no product to lose: ${where}`);
     } else namesFleet++;
   }
   assert.ok(strictlyStricter > 500 && equalWhenNoFleet > 500 && namesFleet > 500, `the fuzz exercised both sides (stricter ${strictlyStricter}, identical ${equalWhenNoFleet}, fleet ${namesFleet})`);
+  assert.ok(productOnly > 500 && productStricter > 100, `the fuzz exercised the product (product-only cases ${productOnly}, stricter without the product ${productStricter})`);
   console.log(`fuzz cases: ${CASES} (strictly stricter without facts: ${strictlyStricter}, identical when no rule names a Fleet fact: ${equalWhenNoFleet})`);
 });
 

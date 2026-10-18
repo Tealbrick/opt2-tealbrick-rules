@@ -32,6 +32,7 @@ const facts = (o: Partial<CallFacts> & { claimTrust?: Trust | null } = {}): Call
   fleetAvailable: true,
   ...o,
   ...trustFacts(o),
+  callerProduct: o.callerProduct ?? null,
 });
 const shape = (v: ReturnType<typeof evaluate>) => ({ decision: v.decision, rule: v.rule?.id ?? null, narrowing: v.narrowing, closedOnFleet: v.closedOnFleet });
 const WORK: Narrowing = { memoryTags: { anyOf: ["work"] } };

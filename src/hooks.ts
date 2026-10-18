@@ -4,7 +4,7 @@
 import { performance } from "node:perf_hooks";
 import { hookResponseProblem } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
 /** Rules' own answer budget, far below the bridge's 2 s hook limit: slower → refuse. */
@@ -56,7 +56,21 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
   };
 }
 
-/** Facts for one hook call: caller (and its teams), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
+/**
+ * The VERIFIED product of the caller (spec 0.1.45 `HookCallInfo.caller.product`: the calling instance's product from the bridge's
+ * signed config), for an APP caller only. Never read from input, context or a name. Absent (an agent, a bridge older than 0.2.2, a
+ * caller the bridge cannot map) or not a product id: null, which callerProducts rules treat as unverified (fail closed).
+ */
+export function callerProductOf(caller: HookRequest["call"]["caller"]): string | null {
+  return caller.type === "app" && validProduct(caller.product) ? caller.product : null;
+}
+
+/** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows). */
+export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct">): Record<string, boolean> {
+  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}) };
+}
+
+/** Facts for one hook call: caller (and its teams and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
   const { claim, verified } = claimOf(ctx);
@@ -73,6 +87,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
     fleetAvailable: fx.available,
+    callerProduct: callerProductOf(req.call.caller),
   };
 }
 
@@ -141,8 +156,10 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       if (ctx.signal.aborted || clock() - t0 > budget) throw new Error("gate budget exceeded");
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
-      if (recorded(facts, v))
-        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet ? { detail: { fleetUnavailable: true } } : {}), durationUs: elapsedUs(t0) });
+      if (recorded(facts, v)) {
+        const unavailable = unavailableDetail(v);
+        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
+      }
       return answer;
     } catch (e) {
       ctx.log.warn("rules_gate refused (fail closed)", { error: e instanceof Error ? e.message : "unknown", call: req.call.id });
@@ -160,9 +177,10 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const narrowingRuleId = v.narrowingRuleId;
     if (v.decision === "allow" && v.narrowing?.memoryTags && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
-      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : "Governance data unavailable: the narrowing of an allow rule applies";
+      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified"].filter(Boolean).join("; ");
+      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : `${gaps.charAt(0).toUpperCase()}${gaps.slice(1)}: the narrowing of an allow rule applies`;
       add[`${product}.narrowing`] = { v: 1, ruleId: narrowingRuleId, reason: clamp(reason), memoryTags: v.narrowing.memoryTags as Json };
-      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown> }, durationUs: elapsedUs(t0) });
+      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown>, ...unavailableDetail(v) }, durationUs: elapsedUs(t0) });
     }
     if (clock() - t0 > budget) throw new Error("context budget exceeded");
     return { add };

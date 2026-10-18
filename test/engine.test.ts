@@ -8,8 +8,8 @@ import { gateAnswer } from "../src/hooks.ts";
 import { AGENT_A, AGENT_B, NPUB, spec, trustFacts } from "./helpers.ts";
 
 const rule = (id: string, s: Rule["spec"], updatedAt = 1): Rule => ({ id, rev: 1, spec: s, updatedAt });
-const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { claimTrust?: Trust | null; effect?: string; product?: string; op?: string; mode?: string | null; caller?: string } = {}): CallFacts => ({
-  caller: { type: "agent", id: o.caller ?? AGENT_A, mode: o.mode === undefined ? "free" : o.mode },
+const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { claimTrust?: Trust | null; effect?: string; product?: string; op?: string; mode?: string | null; caller?: string; callerType?: string } = {}): CallFacts => ({
+  caller: { type: o.callerType ?? "agent", id: o.caller ?? AGENT_A, mode: o.mode === undefined ? "free" : o.mode },
   target: { product: o.product ?? "connect", op: o.op ?? "buzz_dm", effect: o.effect ?? "outward" },
   claim: o.claim ?? null,
   claimVerified: o.claimVerified ?? false,
@@ -19,6 +19,7 @@ const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { claimTrust?:
   callerTeamsAny: o.callerTeamsAny ?? o.callerTeams ?? [],
   ...trustFacts(o),
   fleetAvailable: o.fleetAvailable ?? true,
+  callerProduct: o.callerProduct ?? null,
 });
 
 test("no rule matches → allow with the default reason (C84)", () => {
