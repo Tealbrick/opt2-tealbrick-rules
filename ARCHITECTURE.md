@@ -20,14 +20,15 @@ State: verified against the repo on 2026-10-17. Claims cite paths in this repo. 
 
 Rules declares hooks on all products. **If Rules is down, every agent call in the workspace is refused (`hook_failed`), reads included.** A hook leaves the gate only by explicit owner action, never by a transient state (C117, L33).
 
-Rule shape: `title`, `active`, `priority` 0 to 1000 (lower first), `match` {agents, modes, products, operations, effects, `onBehalfOf` {teams, ids, kinds}}, `outcome` {decision allow, deny or hold; reason up to 280 characters}, optional `narrowing.memoryTags {anyOf, noneOf}`. The first matching active rule decides. No match means allow. Outward, destructive and money calls are always recorded. An unverified `onBehalfOf` claim may only make a decision stricter (C82).
+Rule shape: `title`, `active`, `priority` 0 to 1000 (lower first), `match` {agents, modes, products, operations, effects, `callerTeams`, `callerProducts`, `onBehalfOf` {teams, ids, kinds, trust}}, `outcome` {decision allow, deny or hold; reason up to 280 characters}, optional `narrowing.memoryTags {anyOf, noneOf}`. The first matching active rule decides. No match means allow. Outward, destructive and money calls are always recorded. An unverified `onBehalfOf` claim may only make a decision stricter (C82).
 
 ## Operations (from `tealbrick.manifest.json`)
 
 12 operations. No hold families on its own ops (Rules produces holds on other apps with family `policy`).
 - Agent (an app with a companion grant may call them too): `rules_explain` (read), `rule_draft_submit` (write; draft only; records who proposed it: `source` {kind `agent` or `app`, product, name}), `draft_status` (read; answers only for drafts the caller itself submitted, any other id is `not_found`, the same as a missing one).
 - Person read: `rules_list`, `rules_get`, `rules_preview` (dry run), `decisions_list`, `drafts_list`, `fleet_status`. Person write: `rules_set`, `rules_delete`, `draft_decide`.
-- Writers refuse a rule that can never match (unknown app or op, person-only op, impossible effect) using the app catalog. An empty `anyOf` from an owner is refused (C115).
+- Writers refuse a rule that can never match (unknown app or op, person-only op, impossible effect) using the app catalog. An empty `anyOf` from an owner is refused (C115). Writers also refuse an invalid or repeated `callerProducts` id and a combination of `callerProducts` with `modes`, `callerTeams` or `agents` that lists only `agt_` ids (an app call has none of them).
+- Caller identity (S4-5): an app caller is its VERIFIED product (hook `caller.product`, bridge 0.2.2 or later; `ctx.caller.product` on ops), never a name; an agent is its agent id and never matches `callerProducts`. An app with no valid product fails closed with the same machinery as unavailable Fleet facts (`closedOnProduct`, trace detail `callerProductUnavailable`). `rules_explain` reads an app's decisions by `decisions.caller_product`, older rows by instance id.
 
 ## Scopes, hooks and companions
 
@@ -41,7 +42,7 @@ None. No keys. Test-only variable `TB_RULES_CATALOG_OFF`.
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0005 (0003 to 0005: `fleet_trust`, `fleet_sync.usable`, `fleet_members.active`, `drafts.source`; they clear the 0.2.x Fleet copy): `rules` (current spec JSON, priority, active, soft delete), `rule_revisions`, `drafts`, `decisions` (trace per call and phase; pruned to 30 days and 100,000 rows), `fleet_teams`, `fleet_members`, `fleet_trust`, `fleet_sync`, `catalog_manifests`, `catalog_sync`.
+- **Stored:** Migrations 0001 to 0006 (0003 to 0005: `fleet_trust`, `fleet_sync.usable`, `fleet_members.active`, `drafts.source`; they clear the 0.2.x Fleet copy; 0006: nullable `decisions.caller_product`): `rules` (current spec JSON, priority, active, soft delete), `rule_revisions`, `drafts`, `decisions` (trace per call and phase; pruned to 30 days and 100,000 rows), `fleet_teams`, `fleet_members`, `fleet_trust`, `fleet_sync`, `catalog_manifests`, `catalog_sync`.
 - **Never stored:** Call inputs and outputs. Traces hold ids, product, op, effect, decision, reason, rule reference and onBehalfOf.
 
 ## External calls and background work
@@ -55,7 +56,7 @@ Rules (editor and dry run), Drafts, Decisions, Teams, Holds, Agents and scopes (
 
 ## Requirements and runtime hints
 
-Bridge 0.1.17 or later. Fleet recommended. Outbound HTTPS to github.com.
+Bridge 0.1.17 or later (0.2.2 or later for `callerProducts` to see the calling app's product). Fleet recommended. Outbound HTTPS to github.com.
 
 Port 8080. 0.25 cpu, 256 MB. Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *`, retain 7.
 

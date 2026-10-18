@@ -2,6 +2,29 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.3.1 - Unreleased
+
+Calls from product X (decision C237; Lane D review items S4-3 and S4-5). Needs bridge >= 0.2.2, which sends `HookCallInfo.caller.product` (spec 0.1.45); on older bridges a deny/hold rule with `callerProducts` applies to every app call and an allow rule with it never matches (see "Fail closed"). `requires.bridge` stays 0.1.17: nothing else needs the newer bridge, and an older one only makes these rules stricter. The version in `package.json` and the manifest is bumped by a separate chore PR.
+
+### Added
+- Match criterion `callerProducts` (list of product ids, unique, at most 50; `[a-z0-9][a-z0-9_-]*`, at most 40 characters) in every rule schema of the manifest (`rules_set`, `rule_draft_submit`, `rules_list`, `rules_get`, the drafts, `rules_preview` candidate). It matches only an APP caller whose VERIFIED product is listed. The product is the one the bridge sends on the hook call (`caller.product`, from its signed config), never an input field, a context field, a manifest name or an instance id. An AGENT never matches a rule that names `callerProducts`, whatever the decision (deny, hold or allow): an agent is not a product.
+- `rules_preview` takes `call.caller.product` for an app caller and answers `callerProductUnavailable`; the step text says when a rule applied or was skipped for that reason. `rules_explain` adds `callerProductUnavailable` per decision, next to `fleetUnavailable`. `decisions_list` adds `caller.product`. `rules_list` adds `catalog.productIds` (the editor's app picker).
+- Editor: the field "Calls from apps" (chips of the catalog's apps; an app the catalog does not list stays visible while a rule names it), the rule list line "calls from app ...", the dry run caller "An app" with its product, and the notice "The calling app's product can't be verified, ...". The Decisions page names an app by its product and says when it was not verified.
+- Migration `migrations/0006_caller_product.sql`: nullable `decisions.caller_product` and an index on it. No row changes; no down migration. A failed update is rolled back by the SDK pre-update snapshot.
+
+### Changed
+- `rules_explain` for an app caller reads its decisions by its verified product (S4-3): every instance of the product, so a reinstall keeps the history. Rows recorded before 0.3.1 have no product and are found by the instance id. An app with no verified product reads by its instance id only. An agent reads by its agent id as before.
+- The decision trace records the verified product of an app caller (`decisions.caller_product`). The context-phase trace of a narrowing now carries the same `fleetUnavailable` and `callerProductUnavailable` flags as the before-phase trace.
+- Writers stay strict (L24): a rule is refused when `callerProducts` holds an id that is not a product id, lists an id twice, or is combined with a field that can never match an app: `agents` that lists only `agt_` ids (an app is listed by its instance id `ins_...`), `modes`, or `callerTeams`. Stored rules and drafts are read as they are (they simply never match); the Rules page flags them "never matches".
+- The product validity rule (`validProduct`) lives in `src/engine.ts` only; the draft identity, the hook facts, the dry run and the writers share it.
+
+### Fail closed (C237)
+- An app caller with an absent or invalid product (a bridge older than 0.2.2, a caller the bridge cannot map, or a value that is not a product id) is handled like unavailable Fleet facts, with the same machinery and severity order: a deny or hold rule that names `callerProducts` APPLIES (flag `closedOnProduct`; trace and `rules_explain` detail `callerProductUnavailable: true`), an allow rule that names them does NOT apply and its narrowing still applies (merged strictly, as for a Fleet gap). The decision is the highest severity among the closed deny/hold rules before the first rule that matches without unavailable facts, together with that rule.
+- Seeded fuzz tests (30 000 and 40 000 random rule sets) check that an app without a product is never decided less strictly, and never narrowed less, than with any product; an agent is decided as if the product rules did not exist.
+
+### Caller identity (S4-5)
+- An app caller is identified by its verified product everywhere in Rules: draft keys (0.3.0), `callerProducts` rules and `rules_explain` (0.3.1). Names are labels only. An agent is identified by its agent id and never matches a product rule.
+
 ## 0.3.0 - Unreleased
 
 Governance feed contract, G-3 (decisions C230, C166, C236). Not tagged: the release order is Governance 0.2.0 on qa1, then Rules 0.3.0, then Governance 0.2.1. Rules 0.3.0 reads `directory_feed`, which Governance 0.2.0 adds; against Governance 0.1.x it finds no such op, so its Fleet facts are unavailable (see "Fail closed").
