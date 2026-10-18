@@ -8,7 +8,7 @@ import { type CallFacts, evaluate, explain, order, type Rule, TRUSTS, type Trust
 import { parseFeed, parseFeedChunked, syncFleet } from "../src/fleet.ts";
 import { makeHooks } from "../src/hooks.ts";
 import { fleetFacts, fleetState, saveRule } from "../src/store.ts";
-import { AGENT_A, AGENT_B, feed, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts } from "./helpers.ts";
+import { AGENT_A, AGENT_B, cpuNowMs, feed, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts, WALL_CEILING_MS } from "./helpers.ts";
 
 type Db = ReturnType<typeof migratedDb>["db"];
 const hooks = makeHooks("rules");
@@ -93,6 +93,8 @@ test("PROPERTY (fuzz): the decision without the facts is never less strict than 
       if (rnd() < 0.3) obo.teams = subset(["a", "b"], 1);
       if (rnd() < 0.3) obo.trust = subset(TRUSTS, 1);
       if (rnd() < 0.15) obo.kinds = [pickOne(["person", "channel_sender"])];
+      // a claim rule by id alone (no Fleet fact) ends the scan early: the C82 second pass must still apply (C266)
+      if (rnd() < 0.1) obo.ids = ["slack:U123"];
       if (Object.keys(obo).length) match.onBehalfOf = obo;
       const narrowing = decision === "allow" && rnd() < 0.5 ? { memoryTags: rnd() < 0.5 ? { anyOf: subset(TAGS, 1) } : { noneOf: subset(TAGS, 1) } } : undefined;
       rules.push(rule(`rul_${r}`, spec({ priority: Math.floor(rnd() * 4), match: match as never, decision, reason: "r", ...(narrowing ? { narrowing } : {}) })));
@@ -304,17 +306,24 @@ test("a big answer is read in slices with a yield between them; no block comes n
   const teams = Array.from({ length: 100 }, (_, t) => ({ id: `tm_${t}`, members: Array.from({ length: 4000 }, (_, m) => (m % 2 === 0 ? { kind: "contact", id: `ct_${m / 2}`, role: "member" } : { kind: "agent", id: agentId((m - 1) / 2), role: "member" })) }));
   const doc = { v: 1, revision: 1, teams, contacts, agents } as unknown as Json;
   let last = performance.now();
+  let lastCpu = cpuNowMs();
   let max = 0;
+  let maxCpu = 0;
   let yields = 0;
   const parsed = await parseFeedChunked(doc, async () => {
     max = Math.max(max, performance.now() - last);
+    maxCpu = Math.max(maxCpu, cpuNowMs() - lastCpu);
     yields++;
     await new Promise((r) => setImmediate(r));
     last = performance.now();
+    lastCpu = cpuNowMs();
   });
   max = Math.max(max, performance.now() - last);
+  maxCpu = Math.max(maxCpu, cpuNowMs() - lastCpu);
   assert.ok(yields > 100, `many yields (${yields})`);
-  assert.ok(max < 50, `longest block ${max.toFixed(1)} ms`);
+  // ceilings (T-1): CPU longest block measured 7 to 13 ms at load 9 to 12 (2026-10-18), ceiling = the 50 ms target; wall clock only loose (see cpuNowMs)
+  assert.ok(maxCpu < 50, `longest block CPU ${maxCpu.toFixed(1)} ms`);
+  assert.ok(max < WALL_CEILING_MS, `longest block wall clock ${max.toFixed(1)} ms`);
   assert.equal(parsed.model.teams.length, 100);
   assert.equal(parsed.model.teams[0]?.keys.length, 2000 * 5 + 2000, "contact + 4 handles each, plus the agents");
   // the sliced read means the same as the one-go read, and a slice with a defect is refused with the schema's message

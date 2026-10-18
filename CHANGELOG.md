@@ -2,7 +2,20 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.3.1 - Unreleased
+
+Fix release (decision C266). Rules 0.3.0 is not promoted to stable; 0.3.1 replaces it.
+
+### Fixed
+- C82 under unavailable Fleet facts (review S1): an UNVERIFIED on-behalf-of claim could turn a deny into a hold. Example: hold on a team (priority 1), allow by claim kind `person` (priority 2), deny all (priority 3); an agent calls while the Governance data is unavailable. Without a claim the deny decided; with a forged person claim the allow by claim ended the scan, so the earlier closed hold decided (a hold the owner could approve; never an allow). Now every call with an unverified claim is also decided without the claim-dependent rules and the stricter result applies (`evaluate` in `src/engine.ts`). A call with no claim, or with a verified claim, decides as before.
+- Tests: `test/c82-claim.test.ts` (the case above through the engine and through `rules_gate`, fire-on-bad and quiet-on-good with a verified claim, and a seeded fuzz of 40 000 rule sets: an unverified claim is never less strict than no claim, narrowing included, with and without the Fleet facts). The fuzz of `test/review2.test.ts` now also draws claim rules by id alone.
+
+### Changed
+- Timing budgets (T-1, L39): the engine, Fleet write and feed parse budgets check the CPU time of the test process against measured ceilings (25, 50 and 50 ms; measured 1 to 4, 12 to 14 and 7 to 13 ms at load 9 to 12) and keep a loose 500 ms wall-clock ceiling. A hard 50 ms wall-clock maximum failed on a loaded machine without any code fault.
+
 ## 0.3.0 - 2026-10-18
+
+**Do not promote (C266):** see 0.3.1.
 
 Governance feed contract, G-3 (decisions C230, C166, C236). Release order: Governance 0.2.0 on qa1, then Rules 0.3.0, then Governance 0.2.1. Rules 0.3.0 reads `directory_feed`, which Governance 0.2.0 adds; against Governance 0.1.x it finds no such op, so its Fleet facts are unavailable (see "Fail closed").
 
