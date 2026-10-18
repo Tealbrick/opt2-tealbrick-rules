@@ -181,13 +181,18 @@ test("budget: 500 rules evaluate far below the 2 s hook limit (no model call, no
   const f = facts({ claim: { kind: "person", id: "psn_x" }, claimTeams: ["t499"], product: "p499" });
   let worst = 0;
   let worstCpu = 0;
+  const wall: number[] = [];
   for (let i = 0; i < 2000; i++) {
     const t0 = performance.now();
     const c0 = cpuNowMs();
     evaluate(many, f);
     worstCpu = Math.max(worstCpu, cpuNowMs() - c0);
-    worst = Math.max(worst, performance.now() - t0);
+    wall.push(performance.now() - t0);
+    worst = Math.max(worst, wall[wall.length - 1] as number);
   }
+  // the median is immune to preemption and GC pauses: measured about 0.02 ms, ceiling 1 ms (an O(n^2) slip is ~10 ms)
+  const median = wall.sort((x, y) => x - y)[wall.length >> 1] as number;
+  assert.ok(median < 1, `median evaluation ${median.toFixed(3)} ms`);
   assert.equal(evaluate(many, f).rule?.id, "rul_0499");
   // ceilings (T-1): CPU worst measured 1 to 4 ms at load 9 to 12 (2026-10-18), ceiling 25 ms leaves room for one GC sweep; wall clock only loose (see cpuNowMs)
   assert.ok(worstCpu < 25, `worst evaluation CPU ${worstCpu.toFixed(2)} ms`);

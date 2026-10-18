@@ -94,8 +94,17 @@ test("PROPERTY (fuzz): an unverified claim is never less strict than no claim, w
   let stricter = 0;
   let claimRuleDecided = 0;
   let identical = 0;
+  let secondPassStricter = 0;
   for (let i = 0; i < CASES; i++) {
     const rules: Rule[] = [];
+    // the S1 shape (closed hold on a team, then an allow by claim, then a deny) in 10% of the cases, with the facts
+    // unavailable, so the bug path is always exercised (review of #15: random sets alone hit it about 7 times in 40 000)
+    const s1Shape = rnd() < 0.1;
+    if (s1Shape) {
+      rules.push(rule("rul_sh", spec({ priority: 0, match: { callerTeams: ["a"] }, decision: "hold", reason: "r" })));
+      rules.push(rule("rul_sc", spec({ priority: 1, match: { onBehalfOf: { kinds: ["person", "channel_sender"] } }, decision: "allow", reason: "r" })));
+      rules.push(rule("rul_sd", spec({ priority: 3, match: {}, decision: "deny", reason: "r" })));
+    }
     for (let r = 0; r < 1 + Math.floor(rnd() * 6); r++) {
       const decision = pickOne(["allow", "deny", "hold"] as const);
       const match: Record<string, unknown> = {};
@@ -120,7 +129,7 @@ test("PROPERTY (fuzz): an unverified claim is never less strict than no claim, w
     const claimTeams = subset(["a", "b"]);
     const common = {
       target: { product: "connect", op: "buzz_dm", effect: pickOne(["outward", "read"]) },
-      fleetAvailable: rnd() < 0.5,
+      fleetAvailable: !s1Shape && rnd() < 0.5,
       callerTeams,
       callerTeamsAny: [...new Set([...callerTeams, ...subset(["a", "b"])])],
     };
@@ -140,6 +149,10 @@ test("PROPERTY (fuzz): an unverified claim is never less strict than no claim, w
     assert.ok(SEV[b.decision] >= SEV[a.decision], `an unverified claim must not be less strict than no claim: ${where}`);
     if (SEV[b.decision] > SEV[a.decision]) stricter++;
     if (b.viaClaim) claimRuleDecided++;
+    // the claim pass alone (a verified claim decides by it): the second pass made the result stricter although the
+    // claim pass was not decided by a claim rule = the S1 path that 0.3.0 skipped
+    const claimPass = evaluate(ordered, { ...unverified, claimVerified: true });
+    if (!claimPass.viaClaim && SEV[b.decision] > SEV[claimPass.decision]) secondPassStricter++;
     if (a.decision === "allow" && b.decision === "allow") {
       const pa = passes(a);
       const pb = passes(b);
@@ -151,5 +164,5 @@ test("PROPERTY (fuzz): an unverified claim is never less strict than no claim, w
       assert.deepEqual([b.decision, b.rule?.id, b.narrowing], [a.decision, a.rule?.id, a.narrowing], `no claim criterion: identical: ${where}`);
     }
   }
-  assert.ok(stricter > 500 && claimRuleDecided > 500 && identical > 500, `the fuzz exercised every side (stricter ${stricter}, claim rule decided ${claimRuleDecided}, identical ${identical})`);
+  assert.ok(stricter > 500 && claimRuleDecided > 500 && identical > 500 && secondPassStricter > 100, `the fuzz exercised every side (stricter ${stricter}, claim rule decided ${claimRuleDecided}, identical ${identical}, S1 path ${secondPassStricter})`);
 });
