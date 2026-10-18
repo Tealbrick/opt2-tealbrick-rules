@@ -121,3 +121,17 @@ export function opCtx(db: Db, caller: { type: "person" | "agent" | "app"; id: st
     signal: new AbortController().signal,
   } as unknown as OpContext;
 }
+
+/**
+ * Timing budgets (T-1, L39, C266). This Mac runs many sessions (load average 8 to 29), so the wall-clock maximum of
+ * thousands of samples measures the scheduler, not the code: a hard 50 ms wall-clock maximum failed at load 8. A budget
+ * therefore checks the CPU time of this process (`process.cpuUsage`, user + system), which other processes do not
+ * inflate, against a ceiling measured on the code, and keeps a loose wall-clock ceiling that still catches a gross
+ * regression (an accidental O(n^2) or a missing yield is far above both).
+ */
+export function cpuNowMs(): number {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+}
+/** Loose wall-clock ceiling for one measured block: 10x the 50 ms target, for preemption on a loaded machine. */
+export const WALL_CEILING_MS = 500;

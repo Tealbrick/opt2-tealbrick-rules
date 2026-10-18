@@ -255,8 +255,10 @@ export function mergeNarrowing(a: Narrowing | null, b: Narrowing | null): Narrow
 /** The decision for one call. `rules` must already be in evaluation order (see `order`). */
 export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
   const withClaim = verdictOf(firstMatch(ordered, facts, true));
-  if (!facts.claim || facts.claimVerified || !withClaim.viaClaim) return withClaim;
-  // Unverified claim: never wider than the decision without claim-dependent rules (C82).
+  if (!facts.claim || facts.claimVerified) return withClaim;
+  // Unverified claim: never wider than the decision without claim-dependent rules (C82). Always compare, also when the
+  // decisive rule does not name the claim: a claim rule that matches ends the scan early, so an earlier closed hold
+  // (Fleet facts unavailable) could decide where the scan without the claim reaches a later deny.
   const base = verdictOf(firstMatch(ordered, facts, false));
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;

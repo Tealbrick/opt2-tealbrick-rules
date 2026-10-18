@@ -10,7 +10,7 @@ import { type CallFacts, evaluate, type Narrowing, order, type Rule, type Trust 
 import { FEED_INVALID, parseFeed, strictest, syncFleet } from "../src/fleet.ts";
 import { makeHooks, PIN_MAX, PIN_TTL_MS, pinnedNarrowing, pinVerdict } from "../src/hooks.ts";
 import { FLEET_WRITE_CHUNK_ROWS, fleetFacts, fleetState, listDecisions, markFleetStale, saveRule, writeFleetChunked } from "../src/store.ts";
-import { AGENT_A, AGENT_B, AGENT_R, feed, hookCtx, hookReq, migratedDb, NPUB, OWNER, opCtx, spec, trustFacts } from "./helpers.ts";
+import { AGENT_A, AGENT_B, AGENT_R, cpuNowMs, feed, hookCtx, hookReq, migratedDb, NPUB, OWNER, opCtx, spec, trustFacts, WALL_CEILING_MS } from "./helpers.ts";
 
 type Db = ReturnType<typeof migratedDb>["db"];
 const hooks = makeHooks("rules");
@@ -253,12 +253,15 @@ test("write-time index: the first fleetFacts after a sync reads nothing from the
 test("200 teams x 350 members: every write transaction stays well under 50 ms and the write yields between them", async () => {
   const { db } = migratedDb();
   const times: number[] = [];
+  const cpu: number[] = [];
   const orig = db.transaction.bind(db);
   (db as any).transaction = (fn: () => unknown) => {
     const t = performance.now();
+    const c = cpuNowMs();
     try {
       return orig(fn);
     } finally {
+      cpu.push(cpuNowMs() - c);
       times.push(performance.now() - t);
     }
   };
@@ -279,7 +282,9 @@ test("200 teams x 350 members: every write transaction stays well under 50 ms an
     await new Promise((r) => setImmediate(r));
   });
   assert.ok(times.length > 20 && pauses >= times.length - 2, `many short transactions with a yield between each (${times.length} tx, ${pauses} yields)`);
-  assert.ok(Math.max(...times) < 50, `longest transaction ${Math.max(...times).toFixed(1)} ms`);
+  // ceilings (T-1): CPU longest measured 12 to 14 ms at load 9 to 12 (2026-10-18), ceiling = the 50 ms target; wall clock only loose (see cpuNowMs)
+  assert.ok(Math.max(...cpu) < 50, `longest transaction CPU ${Math.max(...cpu).toFixed(1)} ms`);
+  assert.ok(Math.max(...times) < WALL_CEILING_MS, `longest transaction wall clock ${Math.max(...times).toFixed(1)} ms`);
   assert.ok(FLEET_WRITE_CHUNK_ROWS <= 5000);
   assert.equal(fleetState(db).usable, true);
   assert.equal(fleetFacts(db).teamsAny.get("handle:slack:U69999")?.[0], "tm_199");
