@@ -193,7 +193,7 @@ test("draft_status: only the submitter sees a draft; anyone else gets the SAME n
   const { db } = migratedDb();
   const a = opCtx(db, { type: "agent", id: AGENT_A });
   const b = opCtx(db, { type: "agent", id: AGENT_B });
-  const app = opCtx(db, { type: "app", id: "ins_01J00000000000000000000GOV", name: "Governance" });
+  const app = opCtx(db, { type: "app", id: "ins_01J00000000000000000000GOV", name: "Governance", product: "fleet" });
   const owner = opCtx(db, { type: "person", id: OWNER });
   const sub = (ctx: OpContext) => run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
   const da = await sub(a);
@@ -228,19 +228,119 @@ test("draft_status: only the submitter sees a draft; anyone else gets the SAME n
 test("rule_draft_submit from an APP records source {kind:'app', product, name}; an agent records {kind:'agent'}", async () => {
   const { db } = migratedDb();
   const owner = opCtx(db, { type: "person", id: OWNER });
-  const app = opCtx(db, { type: "app", id: "ins_01J00000000000000000000GOV", name: "Governance" });
-  const unknown = opCtx(db, { type: "app", id: "ins_01J00000000000000000000OTH", name: "Some Other App" });
+  const app = opCtx(db, { type: "app", id: "ins_01J00000000000000000000GOV", name: "Governance", product: "fleet" });
+  const unknown = opCtx(db, { type: "app", id: "ins_01J00000000000000000000OTH", name: "Some Other App", product: "other" });
   const agent = opCtx(db, { type: "agent", id: AGENT_A, name: "Front desk" });
   const ids: Record<string, string> = {};
   for (const [k, ctx] of [["app", app], ["unknown", unknown], ["agent", agent]] as const) ids[k] = (await run(OP.ruleDraftSubmit)({ text: k, rules: [spec({})] }, ctx)).draftId;
-  assert.deepEqual(getDraft(db, ids.app as string)?.source, { kind: "app", name: "Governance", instance: "ins_01J00000000000000000000GOV" }, "no product: the SDK has no Caller.product, so none is verified");
-  assert.deepEqual(getDraft(db, ids.unknown as string)?.source, { kind: "app", name: "Some Other App", instance: "ins_01J00000000000000000000OTH" }, "another app: same shape");
+  assert.deepEqual(getDraft(db, ids.app as string)?.source, { kind: "app", product: "fleet", name: "Governance", instance: "ins_01J00000000000000000000GOV" }, "the verified Caller.product");
+  assert.deepEqual(getDraft(db, ids.unknown as string)?.source, { kind: "app", product: "other", name: "Some Other App", instance: "ins_01J00000000000000000000OTH" }, "another app: same shape");
   assert.deepEqual(getDraft(db, ids.agent as string)?.source, { kind: "agent" });
   const listed = (await run(OP.draftsList)({}, owner)).drafts;
   assert.equal(listed.find((d: { id: string }) => d.id === ids.app).source.name, "Governance");
   // the draft list output stays valid against the manifest (source is declared)
   const listOp = manifest.operations.find((o) => o.id === "drafts_list");
   assert.equal(validateAgainstSchema(listOp?.output as never, { drafts: listed } as Json).ok, true);
+});
+
+// ── (f) app callers are identified by the verified product, never by the name (C236, SDK 0.1.27) ─────────────
+test("an app caller is identified by its verified product; a name that matches another app's name gives nothing", async () => {
+  const { db } = migratedDb();
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  // two different apps with the SAME manifest name, and one app named like a product
+  const real = opCtx(db, { type: "app", id: "ins_01J00000000000000000000AAA", name: "Observer", product: "observer" });
+  const twin = opCtx(db, { type: "app", id: "ins_01J00000000000000000000BBB", name: "Observer", product: "evil" });
+  const sub = (ctx: OpContext) => run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
+  const dReal = await sub(real);
+  const dTwin = await sub(twin);
+  assert.deepEqual(getDraft(db, dReal.draftId)?.source, { kind: "app", product: "observer", name: "Observer", instance: "ins_01J00000000000000000000AAA" });
+  assert.deepEqual(getDraft(db, dTwin.draftId)?.source, { kind: "app", product: "evil", name: "Observer", instance: "ins_01J00000000000000000000BBB" });
+  assert.equal(getDraft(db, dReal.draftId)?.submittedBy.id, "observer", "the recorded identity is the product");
+  // the same name does not open the other's draft; the product does, from a new instance too
+  assert.equal((await run(OP.draftStatus)({ draftId: dReal.draftId }, real)).status, "pending");
+  const e = await run(OP.draftStatus)({ draftId: dReal.draftId }, twin).catch((x) => x);
+  assert.equal(e.code, "not_found");
+  const reinstalled = opCtx(db, { type: "app", id: "ins_01J00000000000000000000CCC", name: "Renamed", product: "observer" });
+  assert.equal((await run(OP.draftStatus)({ draftId: dReal.draftId }, reinstalled)).status, "pending", "same product, other instance and name");
+  // the pending-draft cap counts per product, not per name
+  const cap = opCtx(db, { type: "app", id: "ins_01J00000000000000000000DDD", name: "Observer", product: "capped" });
+  for (let i = 0; i < 20; i++) await sub(cap).catch(() => undefined);
+  const over = await sub(cap).catch((x) => x);
+  assert.equal(over.code, "too_many_drafts");
+  assert.equal((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000EEE", name: "Observer", product: "other2" }))).status, "pending", "another product with the same name is not capped");
+  // the listing output still validates against the manifest
+  const listed = (await run(OP.draftsList)({}, owner)).drafts;
+  const listOp = manifest.operations.find((o) => o.id === "drafts_list");
+  assert.equal(validateAgainstSchema(listOp?.output as never, { drafts: listed } as Json).ok, true);
+});
+
+test("an app caller with no verified product fails closed: no product is recorded or matched, whatever its name says", async () => {
+  const { db } = migratedDb();
+  // the real "fleet" app: verified product fleet
+  const real = opCtx(db, { type: "app", id: "ins_01J00000000000000000000FLT", name: "Governance", product: "fleet" });
+  const dReal = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, real);
+  // another app with no verified product, whose manifest name AND instance claim to be "fleet"
+  const noProduct = opCtx(db, { type: "app", id: "ins_01J00000000000000000000NOP", name: "fleet" });
+  const empty = opCtx(db, { type: "app", id: "ins_01J00000000000000000000EMP", name: "fleet", product: "" });
+  const dNo = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, noProduct);
+  const dEmpty = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, empty);
+  // it runs (a draft is only a proposal), but no product is recorded: the owner sees an unverified app
+  assert.deepEqual(getDraft(db, dNo.draftId)?.source, { kind: "app", name: "fleet", instance: "ins_01J00000000000000000000NOP" });
+  assert.deepEqual(getDraft(db, dEmpty.draftId)?.source, { kind: "app", name: "fleet", instance: "ins_01J00000000000000000000EMP" });
+  assert.equal(getDraft(db, dNo.draftId)?.submittedBy.id, "ins_01J00000000000000000000NOP", "keyed by the verified instance id, never by the name");
+  // it cannot read the verified app's draft (same not_found as a missing id), and the verified app cannot read its drafts
+  for (const [who, id] of [[noProduct, dReal.draftId], [empty, dReal.draftId], [real, dNo.draftId]] as const) {
+    const e = await run(OP.draftStatus)({ draftId: id }, who).catch((x: unknown) => x);
+    assert.equal((e as { code: string }).code, "not_found");
+  }
+  assert.equal((await run(OP.draftStatus)({ draftId: dNo.draftId }, noProduct)).status, "pending", "its own draft, by its instance id");
+});
+
+test("unverified apps share ONE pending cap: a reinstall (new instance id) cannot reset it; an agent and an app with the same id do not share a cap", async () => {
+  const { db } = migratedDb();
+  const sub = (ctx: OpContext) => run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
+  const unverified = (n: number) => opCtx(db, { type: "app", id: `ins_01J0000000000000000000${String(n).padStart(4, "0")}`, name: "Observer" });
+  for (let i = 0; i < 20; i++) await sub(unverified(i));
+  // a reinstall = a new instance id: still capped; so is any other unverified app, whatever its name
+  const again = await sub(unverified(99)).catch((x: unknown) => x);
+  assert.equal((again as { code: string }).code, "too_many_drafts");
+  assert.equal(((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000ZZZ", name: "Other" })).catch((x: unknown) => x)) as { code: string }).code, "too_many_drafts");
+  // a verified app is not affected by the unverified cap, and an agent neither
+  assert.equal((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000VER", name: "Observer", product: "observer" }))).status, "pending");
+  assert.equal((await sub(opCtx(db, { type: "agent", id: AGENT_A }))).status, "pending");
+  // the cap is per type: an agent and an app (verified product) with the SAME id string do not share it
+  for (let i = 0; i < 20; i++) await sub(opCtx(db, { type: "agent", id: "agt_shared" }));
+  assert.equal(((await sub(opCtx(db, { type: "agent", id: "agt_shared" })).catch((x: unknown) => x)) as { code: string }).code, "too_many_drafts");
+  assert.equal((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000SHR", name: "x", product: "agt_shared" }))).status, "pending", "an agent id equal to a product id: other type, other cap");
+});
+
+test("a product that is not a valid product id is no verified product (defence in depth)", async () => {
+  const { db } = migratedDb();
+  const bad = ["", "Fleet", " fleet", "fleet ", "fl/eet", "../fleet", "-fleet", "_fleet", "flêet", "fleet\u202e", "a".repeat(41)];
+  for (const [i, product] of bad.entries()) {
+    const ctx = opCtx(db, { type: "app", id: `ins_01J0000000000000000000B${String(i).padStart(3, "0")}`, name: "fleet", product });
+    const d = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
+    const src = getDraft(db, d.draftId)?.source;
+    assert.equal(src?.product, undefined, `product ${JSON.stringify(product)} is not verified`);
+    assert.equal(getDraft(db, d.draftId)?.submittedBy.id, `ins_01J0000000000000000000B${String(i).padStart(3, "0")}`);
+  }
+  for (const [i, product] of ["fleet", "a", "my-app_2", "a".repeat(40)].entries()) {
+    const d = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, opCtx(db, { type: "app", id: `ins_01J0000000000000000000G${String(i).padStart(3, "0")}`, name: "n", product }));
+    assert.equal(getDraft(db, d.draftId)?.source.product, product);
+  }
+});
+
+test("rules_explain for an app answers for the decisions recorded under its (verified) instance id", async () => {
+  const { db } = migratedDb();
+  const ins = "ins_01J00000000000000000000XPL";
+  const app = opCtx(db, { type: "app", id: ins, name: "Explainer", product: "explainer" });
+  const facts = (id: string): CallFacts => ({ caller: { type: "app", id, mode: null }, target: { product: "connect", op: "tools", effect: "outward" }, claim: null, claimVerified: false, claimTeams: [], claimTeamsAny: [], callerTeams: [], callerTeamsAny: [], claimTrusts: [], claimTrustActive: true, fleetAvailable: true });
+  const rec = (callId: string, id: string) =>
+    recordDecision(db, { callId, phase: "before", facts: facts(id), decision: "allow", answered: "allow", reason: "no rule", rule: null, durationUs: 1 });
+  rec("cal_mine", ins);
+  rec("cal_other", "ins_01J00000000000000000000OTH");
+  const mine = await run(OP.rulesExplain)({}, app);
+  assert.deepEqual(mine.decisions.map((d: { callId: string }) => d.callId), ["cal_mine"]);
 });
 
 // ── migrations: the upgrade from a 0.2.12-shaped database ────────────────────────────────────────────────────

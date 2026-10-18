@@ -61,7 +61,7 @@ Port 8080. 0.25 cpu, 256 MB. Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *
 
 ## Pinned packages
 
-Stable 0.2.11: miniapp-sdk 0.1.22. Main (0.2.12): miniapp-sdk 0.1.25. Both: manifest 0.1.18, conformance 0.1.18, ui 0.2.4. There is no `@opt2-tealbrick/spec` dependency.
+Stable 0.2.11: miniapp-sdk 0.1.22. Main (0.3.0): miniapp-sdk 0.1.31, manifest 0.1.25, conformance 0.1.22, ui 0.2.4 (`ctx.caller.product`, the verified product of an app caller, is in 0.1.27 and later). Stable: manifest 0.1.18, conformance 0.1.18, ui 0.2.4. There is no `@opt2-tealbrick/spec` dependency.
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app only where the pin above says 0.1.25 (the plain version 0.2.12 is on the dev channel; its qa1 soak is the gate for stable, C221, PROMOTE-STABLE §7). All RS-3 apps pin SDK 0.1.25 (dev channel; stable after the qa1 soak of the plain version). Core restores the snapshot on an automatic rollback (portal-core#1, E3). This Core is live since 2026-10-16 22:37:58Z (Core 29ae2fe).
 

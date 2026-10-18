@@ -109,11 +109,11 @@ export function spec(o: Partial<RuleSpec> & { decision?: RuleSpec["outcome"]["de
 }
 
 /** Minimal OpContext for handler tests (person or agent caller). */
-export function opCtx(db: Db, caller: { type: "person" | "agent" | "app"; id: string; name?: string; mode?: "free" | "bound" | null }, callApp?: OpContext["callApp"]): OpContext {
+export function opCtx(db: Db, caller: { type: "person" | "agent" | "app"; id: string; name?: string; mode?: "free" | "bound" | null; product?: string }, callApp?: OpContext["callApp"]): OpContext {
   const meta: Json[] = [];
   return {
     db,
-    caller: { type: caller.type, id: caller.id, name: caller.name ?? caller.id, mode: caller.mode ?? null },
+    caller: { type: caller.type, id: caller.id, name: caller.name ?? caller.id, mode: caller.mode ?? null, ...(caller.product ? { product: caller.product } : {}) },
     log: quiet,
     receipt: { summary() {}, meta: (v: Json) => meta.push(v) },
     statusChanged() {},

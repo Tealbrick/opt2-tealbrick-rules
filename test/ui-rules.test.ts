@@ -330,6 +330,19 @@ describe("G-3: match fields and who proposed a draft", () => {
     OUTPUTS.drafts_list = saved;
   });
 
+  it("the Drafts page shows the verified product of an app, with the name only as its own label", async () => {
+    reset();
+    const byApp = { ...draft("drf_app", "Hold sends for team X.", [null]), source: { kind: "app", product: "fleet", name: "Observer", instance: "ins_1" }, submittedBy: { type: "app", id: "fleet", name: "Observer" } };
+    const saved = OUTPUTS.drafts_list;
+    OUTPUTS.drafts_list = { drafts: [byApp] };
+    const m = await mount(h(drafts.DraftsPage, { onChange: () => {} }));
+    const [app] = cards(m.host) as [Element];
+    assert.match(textOf(app), /proposed by the app fleet \(called itself “Observer”\)/);
+    assert.doesNotMatch(textOf(app), /unverified/);
+    await m.unmount();
+    OUTPUTS.drafts_list = saved;
+  });
+
   it("a rule list line names caller teams and requester trust", async () => {
     reset();
     const r = { ...RULE, spec: { ...spec("Team X holds", "hold"), match: { callerTeams: ["tm_x"], onBehalfOf: { trust: ["unreviewed", "blocked"] } } } };

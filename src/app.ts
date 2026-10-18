@@ -53,6 +53,7 @@ import {
   markFleetStale,
   pendingDraftCount,
   ruleProblem,
+  type Submitter,
   saveRule,
   submitDraft,
 } from "./store.ts";
@@ -68,6 +69,27 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
 function person(ctx: OpContext): string {
   if (ctx.caller.type !== "person") throw new TbError("forbidden", "only the owner may do this", 403);
   return ctx.caller.id;
+}
+
+/**
+ * The identity of the caller of an agent-audience op. An agent is its agent id. An APP is its VERIFIED product
+ * (`ctx.caller.product`, SDK 0.1.27: the Portal-signed slice entry for the grant's instance), never its manifest name
+ * (display only; two apps can share one). An app caller with no verified product fails closed: nothing that depends on a
+ * product applies to it (no product is recorded or matched), and its own draft is keyed by its instance id (`ctx.caller.id`,
+ * a verified id) with no product, shown to the owner as unverified. The conformance check A12.companion_inbound requires
+ * such a caller to be able to run `rule_draft_submit`; a draft is only a proposal the owner must approve (C84).
+ */
+/** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
+const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
+function validProduct(p: unknown): p is string {
+  return typeof p === "string" && p.length <= 40 && PRODUCT_ID.test(p);
+}
+
+function identity(ctx: OpContext): Submitter {
+  const { type, id, name, product } = ctx.caller;
+  if (type !== "app") return { type, id, name };
+  if (!validProduct(product)) return { type, id, name };
+  return { type, id: product, name, product, instance: id };
 }
 
 /** Companion read through the op's own context (person ops); outside handlers once C85 lands (see onStart). */
@@ -211,6 +233,7 @@ export const handlers = {
   [OP.rulesExplain]: op<RulesExplainInput, RulesExplainOutput>({
     // An agent sees only its own calls' decisions (caller id is bound by the grant, never by input).
     async run(input, ctx) {
+      // Decisions are recorded under the caller id of the hook call: an agent id, or an app's instance id (the hook call has no product).
       const { items } = listDecisions(ctx.db, { caller: ctx.caller.id, callId: input.callId, limit: input.limit ?? 10 });
       return {
         decisions: items.map((d) => ({
@@ -231,7 +254,8 @@ export const handlers = {
   [OP.draftStatus]: op<DraftStatusInput, DraftStatusOutput>({
     // Only for drafts THIS caller submitted (agent or companion app); anyone else's draft answers like a missing one.
     async run(input, ctx) {
-      return draftStatusFor(ctx.db, { type: ctx.caller.type, id: ctx.caller.id }, input.draftId);
+      const me = identity(ctx);
+      return draftStatusFor(ctx.db, { type: me.type, id: me.id }, input.draftId);
     },
   }),
   [OP.ruleDraftSubmit]: op<RuleDraftSubmitInput, RuleDraftSubmitOutput>({
@@ -239,7 +263,7 @@ export const handlers = {
     redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
     async run(input, ctx) {
       await catalogFor(ctx, input.rules);
-      const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: { type: ctx.caller.type, id: ctx.caller.id, name: ctx.caller.name } });
+      const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: identity(ctx) });
       ctx.receipt.meta({ draftId: d.id });
       ctx.statusChanged();
       return { draftId: d.id, status: "pending" as const };

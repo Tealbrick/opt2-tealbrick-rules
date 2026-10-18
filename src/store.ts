@@ -158,19 +158,38 @@ export interface DraftView {
 
 export interface DraftSource {
   kind: "agent" | "app";
-  /** product id of the proposing app, only when verified (never today: the SDK has no Caller.product) */
+  /** product id of the proposing app: the VERIFIED `Caller.product` (SDK 0.1.27); absent on drafts stored before it */
   product?: string;
   name?: string;
   instance?: string;
 }
 
 /**
- * Who proposed a draft. An app caller is named by the SDK from the verified slice (`Caller.name` = the caller's manifest
- * name, `Caller.id` = its instance id, SDK 0.1.25). The SDK gives no product id on the context, so `product` is NEVER set
- * here: a product is recorded only when it is verified (SDK request pending). The Drafts page shows the name as unverified.
+ * Who proposed a draft, derived for a draft stored without `source` (before 0.3.0). An app caller of that time is known
+ * by its instance id and manifest name only: no product is verified for it, so none is shown (the Drafts page says "unverified").
  */
 export function sourceOf(by: { type: string; id: string; name: string }): DraftSource {
   if (by.type !== "app") return { kind: "agent" };
+  return { kind: "app", name: by.name.slice(0, 80), instance: by.id };
+}
+
+/**
+ * Who proposes a draft now. `id` is the identity: the agent id, or for an app the VERIFIED product (`Caller.product`,
+ * SDK 0.1.27), or its instance id when no product is verified. `name` is a display label only (an app's own manifest name; two apps can share one). `instance` is the
+ * app's instance id, kept for the owner's information.
+ */
+export interface Submitter {
+  type: string;
+  id: string;
+  name: string;
+  /** an app's VERIFIED product (then `id` is the product); absent for an agent and for an app with no verified product (then `id` is its instance id) */
+  product?: string;
+  instance?: string;
+}
+
+function sourceFor(by: Submitter): DraftSource {
+  if (by.type !== "app") return { kind: "agent" };
+  if (by.product) return { kind: "app", product: by.product, name: by.name.slice(0, 80), ...(by.instance ? { instance: by.instance } : {}) };
   return { kind: "app", name: by.name.slice(0, 80), instance: by.id };
 }
 
@@ -191,16 +210,24 @@ function draftView(r: Record<string, unknown>): DraftView {
   };
 }
 
-export function submitDraft(db: Db, input: { text: string; note?: string; rules: RuleSpec[]; by: { type: string; id: string; name: string } }, now = Date.now()): DraftView {
+export function submitDraft(db: Db, input: { text: string; note?: string; rules: RuleSpec[]; by: Submitter }, now = Date.now()): DraftView {
   input.rules.forEach((spec, i) => {
     checkSpec(db, spec, `rule ${i + 1} (“${spec.title}”): `);
   });
-  const pending = Number(db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_id = ?").get(input.by.id)?.n ?? 0);
-  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per agent; ask the owner to review them`, 429);
+  // The cap counts per identity AND type. All unverified apps (no verified product, so no identity but an instance id that a
+  // reinstall changes) share ONE cap, so a reinstall cannot reset it. A draft stored before 0.3.0 has no `source` and counts there.
+  const unverifiedApp = input.by.type === "app" && !input.by.product;
+  const pending = Number(
+    (unverifiedApp
+      ? db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = 'app' AND json_extract(source, '$.product') IS NULL").get()
+      : db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = ? AND submitted_by_id = ?").get(input.by.type, input.by.id)
+    )?.n ?? 0,
+  );
+  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : "agent"}; ask the owner to review them`, 429);
   const id = `drf_${ulid(now)}`;
   db.prepare(
     "INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at, source) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, input.text, input.note ?? "", JSON.stringify(input.rules), input.by.type, input.by.id, input.by.name.slice(0, 120), now, JSON.stringify(sourceOf(input.by)));
+  ).run(id, input.text, input.note ?? "", JSON.stringify(input.rules), input.by.type, input.by.id, input.by.name.slice(0, 120), now, JSON.stringify(sourceFor(input.by)));
   return draftView(db.prepare("SELECT * FROM drafts WHERE id = ?").get(id) as Record<string, unknown>);
 }
 
