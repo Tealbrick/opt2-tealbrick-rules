@@ -296,6 +296,40 @@ test("an app caller with no verified product fails closed: no product is recorde
   assert.equal((await run(OP.draftStatus)({ draftId: dNo.draftId }, noProduct)).status, "pending", "its own draft, by its instance id");
 });
 
+test("unverified apps share ONE pending cap: a reinstall (new instance id) cannot reset it; an agent and an app with the same id do not share a cap", async () => {
+  const { db } = migratedDb();
+  const sub = (ctx: OpContext) => run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
+  const unverified = (n: number) => opCtx(db, { type: "app", id: `ins_01J0000000000000000000${String(n).padStart(4, "0")}`, name: "Observer" });
+  for (let i = 0; i < 20; i++) await sub(unverified(i));
+  // a reinstall = a new instance id: still capped; so is any other unverified app, whatever its name
+  const again = await sub(unverified(99)).catch((x: unknown) => x);
+  assert.equal((again as { code: string }).code, "too_many_drafts");
+  assert.equal(((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000ZZZ", name: "Other" })).catch((x: unknown) => x)) as { code: string }).code, "too_many_drafts");
+  // a verified app is not affected by the unverified cap, and an agent neither
+  assert.equal((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000VER", name: "Observer", product: "observer" }))).status, "pending");
+  assert.equal((await sub(opCtx(db, { type: "agent", id: AGENT_A }))).status, "pending");
+  // the cap is per type: an agent and an app (verified product) with the SAME id string do not share it
+  for (let i = 0; i < 20; i++) await sub(opCtx(db, { type: "agent", id: "agt_shared" }));
+  assert.equal(((await sub(opCtx(db, { type: "agent", id: "agt_shared" })).catch((x: unknown) => x)) as { code: string }).code, "too_many_drafts");
+  assert.equal((await sub(opCtx(db, { type: "app", id: "ins_01J00000000000000000000SHR", name: "x", product: "agt_shared" }))).status, "pending", "an agent id equal to a product id: other type, other cap");
+});
+
+test("a product that is not a valid product id is no verified product (defence in depth)", async () => {
+  const { db } = migratedDb();
+  const bad = ["", "Fleet", " fleet", "fleet ", "fl/eet", "../fleet", "-fleet", "_fleet", "flêet", "fleet\u202e", "a".repeat(41)];
+  for (const [i, product] of bad.entries()) {
+    const ctx = opCtx(db, { type: "app", id: `ins_01J0000000000000000000B${String(i).padStart(3, "0")}`, name: "fleet", product });
+    const d = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, ctx);
+    const src = getDraft(db, d.draftId)?.source;
+    assert.equal(src?.product, undefined, `product ${JSON.stringify(product)} is not verified`);
+    assert.equal(getDraft(db, d.draftId)?.submittedBy.id, `ins_01J0000000000000000000B${String(i).padStart(3, "0")}`);
+  }
+  for (const [i, product] of ["fleet", "a", "my-app_2", "a".repeat(40)].entries()) {
+    const d = await run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({})] }, opCtx(db, { type: "app", id: `ins_01J0000000000000000000G${String(i).padStart(3, "0")}`, name: "n", product }));
+    assert.equal(getDraft(db, d.draftId)?.source.product, product);
+  }
+});
+
 test("rules_explain for an app answers for the decisions recorded under its (verified) instance id", async () => {
   const { db } = migratedDb();
   const ins = "ins_01J00000000000000000000XPL";

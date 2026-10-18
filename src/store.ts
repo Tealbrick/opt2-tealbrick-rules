@@ -214,8 +214,16 @@ export function submitDraft(db: Db, input: { text: string; note?: string; rules:
   input.rules.forEach((spec, i) => {
     checkSpec(db, spec, `rule ${i + 1} (“${spec.title}”): `);
   });
-  const pending = Number(db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_id = ?").get(input.by.id)?.n ?? 0);
-  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per agent; ask the owner to review them`, 429);
+  // The cap counts per identity AND type. All unverified apps (no verified product, so no identity but an instance id that a
+  // reinstall changes) share ONE cap, so a reinstall cannot reset it. A draft stored before 0.3.0 has no `source` and counts there.
+  const unverifiedApp = input.by.type === "app" && !input.by.product;
+  const pending = Number(
+    (unverifiedApp
+      ? db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = 'app' AND json_extract(source, '$.product') IS NULL").get()
+      : db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = ? AND submitted_by_id = ?").get(input.by.type, input.by.id)
+    )?.n ?? 0,
+  );
+  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : "agent"}; ask the owner to review them`, 429);
   const id = `drf_${ulid(now)}`;
   db.prepare(
     "INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at, source) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",

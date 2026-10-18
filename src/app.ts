@@ -79,10 +79,16 @@ function person(ctx: OpContext): string {
  * a verified id) with no product, shown to the owner as unverified. The conformance check A12.companion_inbound requires
  * such a caller to be able to run `rule_draft_submit`; a draft is only a proposal the owner must approve (C84).
  */
+/** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
+const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
+function validProduct(p: unknown): p is string {
+  return typeof p === "string" && p.length <= 40 && PRODUCT_ID.test(p);
+}
+
 function identity(ctx: OpContext): Submitter {
   const { type, id, name, product } = ctx.caller;
   if (type !== "app") return { type, id, name };
-  if (typeof product !== "string" || product.length === 0) return { type, id, name };
+  if (!validProduct(product)) return { type, id, name };
   return { type, id: product, name, product, instance: id };
 }
 
