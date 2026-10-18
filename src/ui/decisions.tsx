@@ -77,6 +77,7 @@ export function DecisionsPage() {
                 {d.reason}
                 {d.ruleTitle ? ` · rule “${d.ruleTitle}” rev ${d.ruleRev}` : ""}
                 {d.onBehalfOf ? ` · on behalf of ${JSON.stringify(d.onBehalfOf)}` : ""}
+                {d.detail?.callerProductUnavailable === true ? " · the calling app’s product could not be verified, so this rule applied strictly" : ""}
                 {d.callId ? (
                   <>
                     {" · call "}
@@ -85,7 +86,7 @@ export function DecisionsPage() {
                 ) : null}
               </p>
               <span className="meta">
-                {d.caller.type} {d.caller.type === "agent" ? agentName(d.caller.id) : d.caller.id}
+                {d.caller.type} {d.caller.type === "agent" ? agentName(d.caller.id) : (d.caller.product ? `${d.caller.product} (instance ${shortId(d.caller.id)})` : d.caller.id)}
                 {d.caller.mode ? ` (${d.caller.mode})` : ""} · {when(d.at)} · {d.phase} · {Math.round(d.durationUs / 100) / 10} ms
               </span>
             </div>

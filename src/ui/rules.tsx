@@ -11,13 +11,15 @@ const DECISIONS = [
   { value: "hold", label: "Hold for my review" },
 ];
 const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
+/** The dry run's caller choice for "an app" (agents are listed by id). */
+const APP_CALLER = "__app__";
 const MODES = [
   { value: "free" as const, label: "Free" },
   { value: "bound" as const, label: "Bound" },
 ];
 
 /** Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). */
-function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Directory; onDone: (saved: boolean) => void }) {
+function Editor({ initial, dir, products, onDone }: { initial: RuleRow | null; dir: Directory; products: readonly string[]; onDone: (saved: boolean) => void }) {
   const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -114,6 +116,13 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
           onChange={(v) => setMatch({ callerTeams: v })}
         />
         <ChipChoice
+          label="Calls from apps"
+          hint="none = any caller. An app is identified by its verified product, never by its name; an agent never matches. If the product can’t be verified, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
+          value={m.callerProducts}
+          onChange={(v) => setMatch({ callerProducts: v })}
+        />
+        <ChipChoice
           label="On behalf of a member of team (from Governance)"
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={obo.teams}
@@ -152,7 +161,9 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
 /** Dry run: which rule would decide a sample call (with the edited rule included). */
 function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [caller, setCaller] = useState("");
+  const [appProduct, setAppProduct] = useState("");
   const [mode, setMode] = useState<"free" | "bound">("free");
+  const isApp = caller === APP_CALLER;
   const [product, setProduct] = useState("knowledge");
   const [op, setOp] = useState("memory_recall");
   const [effect, setEffect] = useState<(typeof EFFECTS)[number]>("read");
@@ -168,7 +179,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       setResult(
         await run("rules_preview", {
           call: {
-            caller: { type: "agent", id, mode },
+            caller: isApp ? { type: "app", id: "ins_preview", ...(appProduct.trim() ? { product: appProduct.trim() } : {}) } : { type: "agent", id, mode },
             target: { product, op, effect },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
@@ -187,11 +198,17 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       <h3>Try a call (dry run)</h3>
       <div className="rules-form">
         <Field label="Caller">
-          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name }))]} onValueChange={setCaller} />
+          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name })), { value: APP_CALLER, label: "An app" }]} onValueChange={setCaller} />
         </Field>
-        <Field label="Mode">
-          <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
-        </Field>
+        {isApp ? (
+          <Field label="App product" hint="Its verified product id, such as knowledge. Leave empty to try an app whose product can’t be verified.">
+            <TextInput value={appProduct} onChange={(e) => setAppProduct(e.target.value)} />
+          </Field>
+        ) : (
+          <Field label="Mode">
+            <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
+          </Field>
+        )}
         <Field label="App">
           <TextInput value={product} onChange={(e) => setProduct(e.target.value)} />
         </Field>
@@ -231,6 +248,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>
           )}
+          {result.callerProductUnavailable ? (
+            <p className="tb-soft">The calling app’s product can’t be verified, so refuse and hold rules that name apps (calls from) apply and allow rules that name them do not.</p>
+          ) : null}
           {result.decision === "hold" && result.answered === "deny" ? (
             <p className="tb-soft">Holds from rules arrive with the next platform release. Until then a hold rule refuses.</p>
           ) : null}
@@ -367,6 +387,7 @@ export function RulesPage() {
         <Editor
           initial={editing === "new" ? null : editing}
           dir={dir}
+          products={data?.catalog.productIds ?? []}
           onDone={(saved) => {
             setEditing(null);
             if (saved) reload();
