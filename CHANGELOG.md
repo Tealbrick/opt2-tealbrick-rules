@@ -2,7 +2,7 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## 0.3.1 - Unreleased
+## 0.3.1 - 2026-10-18
 
 Fix release (decision C266). Rules 0.3.0 is not promoted to stable; 0.3.1 replaces it.
 
