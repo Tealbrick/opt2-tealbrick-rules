@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 
 const DECISIONS = [
@@ -164,6 +164,8 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [appProduct, setAppProduct] = useState("");
   const [mode, setMode] = useState<"free" | "bound">("free");
   const isApp = caller === APP_CALLER;
+  // like the gate: the product is not trimmed; one that is not a product id is no verified product (the dry run sends none)
+  const badProduct = appProduct !== "" && !verifiableProduct(appProduct);
   const [product, setProduct] = useState("knowledge");
   const [op, setOp] = useState("memory_recall");
   const [effect, setEffect] = useState<(typeof EFFECTS)[number]>("read");
@@ -179,7 +181,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       setResult(
         await run("rules_preview", {
           call: {
-            caller: isApp ? { type: "app", id: "ins_preview", ...(appProduct.trim() ? { product: appProduct.trim() } : {}) } : { type: "agent", id, mode },
+            caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}) } : { type: "agent", id, mode },
             target: { product, op, effect },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
@@ -201,7 +203,14 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name })), { value: APP_CALLER, label: "An app" }]} onValueChange={setCaller} />
         </Field>
         {isApp ? (
-          <Field label="App product" hint="Its verified product id, such as knowledge. Leave empty to try an app whose product can’t be verified.">
+          <Field
+            label="App product"
+            hint={
+              badProduct
+                ? "This is not a product id (lower-case letters, digits, - and _; no spaces), so the dry run treats it as an app whose product can’t be verified."
+                : "Its verified product id, such as knowledge. Leave empty to try an app whose product can’t be verified."
+            }
+          >
             <TextInput value={appProduct} onChange={(e) => setAppProduct(e.target.value)} />
           </Field>
         ) : (

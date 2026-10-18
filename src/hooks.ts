@@ -65,6 +65,11 @@ export function callerProductOf(caller: HookRequest["call"]["caller"]): string |
   return caller.type === "app" && validProduct(caller.product) ? caller.product : null;
 }
 
+/** The reason of a narrowing that comes from another (skipped or earlier) allow rule: with the unavailable facts when there are some, neutral when there are none. */
+export function otherRuleNarrowing(gaps: string): string {
+  return gaps ? `${gaps.charAt(0).toUpperCase()}${gaps.slice(1)}: the narrowing of an allow rule applies` : "The narrowing of an allow rule applies";
+}
+
 /** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows). */
 export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct">): Record<string, boolean> {
   return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}) };
@@ -178,7 +183,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     if (v.decision === "allow" && v.narrowing?.memoryTags && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
       const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified"].filter(Boolean).join("; ");
-      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : `${gaps.charAt(0).toUpperCase()}${gaps.slice(1)}: the narrowing of an allow rule applies`;
+      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : otherRuleNarrowing(gaps);
       add[`${product}.narrowing`] = { v: 1, ruleId: narrowingRuleId, reason: clamp(reason), memoryTags: v.narrowing.memoryTags as Json };
       recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown>, ...unavailableDetail(v) }, durationUs: elapsedUs(t0) });
     }

@@ -119,9 +119,9 @@ export function summarize(m: Manifest): OpSummary[] {
 // ── writer checks ────────────────────────────────────────────────────────────
 export const CATALOG_MISSING = "Rules has not read the app catalog yet, so it cannot check app and operation names. Try again in a minute.";
 
-/** True when checking `spec` needs the catalog (it names apps or operations). */
+/** True when checking `spec` needs the catalog (it names apps, calling apps or operations). */
 export function needsCatalog(spec: RuleSpec): boolean {
-  return (spec.match.products?.length ?? 0) > 0 || (spec.match.operations?.length ?? 0) > 0;
+  return (spec.match.products?.length ?? 0) > 0 || (spec.match.operations?.length ?? 0) > 0 || (spec.match.callerProducts?.length ?? 0) > 0;
 }
 
 const q = (s: string) => `“${s}”`;
@@ -135,13 +135,16 @@ const agentOpIds = (p: ProductOps) => [...p.ops].filter(([, o]) => o.agent).map(
 export function catalogProblem(spec: RuleSpec, cat: Catalog | null): string {
   const m = spec.match;
   const products = m.products ?? [];
+  const callers = m.callerProducts ?? [];
   const ops = m.operations ?? [];
   const effects: readonly string[] = m.effects ?? [];
   const bad = effects.find((e) => !(EFFECTS as readonly string[]).includes(e));
   if (bad) return `unknown effect ${q(bad)} (effects: ${EFFECTS.join(", ")})`;
-  if (products.length === 0 && ops.length === 0) return "";
+  if (products.length === 0 && ops.length === 0 && callers.length === 0) return "";
   if (!cat) return CATALOG_MISSING;
   for (const p of products) if (!cat.has(p)) return `unknown app ${q(p)}: no release of it is in the signed app catalog`;
+  // `callerProducts` names the CALLING app: a product that is not in the signed catalog can never be a verified caller, so the rule never matches
+  for (const p of callers) if (!cat.has(p)) return `unknown calling app ${q(p)} in callerProducts: no release of it is in the signed app catalog, so the rule would never match`;
   for (const op of ops) {
     for (const p of products) {
       const po = cat.get(p) as ProductOps;

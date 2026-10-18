@@ -35,6 +35,17 @@ export function migratedDb(): { db: Db; raw: DatabaseSync } {
   return { db: db as unknown as Db, raw };
 }
 
+/**
+ * A signed-catalog stand-in for tests that save rules naming apps (`products`, `callerProducts`): each product is known with no
+ * operations, and the last read counts as just done (a rule that names another product never triggers a network read).
+ * Call it right after `migratedDb()`, before anything reads the catalog.
+ */
+export function seedCatalog(db: Db, products: readonly string[]): Db {
+  for (const [i, p] of products.entries()) db.prepare("INSERT INTO catalog_manifests (digest, product, version, published_at, ops) VALUES (?, ?, '1.0.0', '2026-10-13T00:00:00.000Z', '[]')").run(`sha256:seed${i}`, p);
+  db.prepare("UPDATE catalog_sync SET generated_at = '2026-10-13T12:00:00.000Z', synced_at = ?, attempted_at = ?, digests = ?, error = NULL WHERE id = 1").run(Date.now(), Date.now(), JSON.stringify(products.map((_, i) => `sha256:seed${i}`)));
+  return db;
+}
+
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 
 export function hookCtx(db: Db, signal: AbortSignal = new AbortController().signal): HookContext {

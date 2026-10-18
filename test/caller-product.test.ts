@@ -1,4 +1,4 @@
-// Rules 0.3.1 (C237): "calls from product X" (`match.callerProducts`). The hook's VERIFIED caller product (spec 0.1.45) for app callers:
+// Rules 0.3.2 (C237): "calls from product X" (`match.callerProducts`). The hook's VERIFIED caller product (spec 0.1.45) for app callers:
 // engine semantics (agent never matches, listed / not listed, absent or invalid = fail closed with its own flag), the fact source
 // (the caller only), writer strictness (L24), the decision trace and rules_explain by verified product (S4-3), the upgrade of a
 // 0.3.0 database. Every check has a quiet-on-good and a fire-on-bad case with exact outcomes (L27, L34).
@@ -11,12 +11,17 @@ import { validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { OP } from "#kit";
 import { handlers, manifest, migrationsDir } from "../src/app.ts";
+import { buildCatalog, CATALOG_MISSING, catalogOf, catalogProblem, needsCatalog, syncCatalog } from "../src/catalog.ts";
 import { type CallFacts, dependsOnProduct, evaluate, explain, NEEDS_PRODUCT, NO_MATCH_REASON, order, type Rule, specProblem, strictestNarrowing, tagsPass, validProduct } from "../src/engine.ts";
 import { callerProductOf, makeHooks } from "../src/hooks.ts";
 import { decideDraft, listDecisions, listDrafts, recordDecision, saveRule, submitDraft } from "../src/store.ts";
-import { AGENT_A, APP_INSTANCE, hookCtx, hookReq, migratedDb, OWNER, opCtx, prng, spec } from "./helpers.ts";
+import { verifiableProduct } from "../src/ui/api.ts";
+import { AGENT_A, APP_INSTANCE, hookCtx, hookReq, migratedDb, OWNER, opCtx, prng, seedCatalog, spec } from "./helpers.ts";
 
 type Db = ReturnType<typeof migratedDb>["db"];
+/** The apps these tests name as callers; a callerProducts rule must name an app of the signed catalog (S2). */
+const KNOWN_APPS = ["a", "b", "p", "q", "good", "blocked-app", "watched", "other-app", "evil", "fleet", "z"] as const;
+const catalogDb = (): Db => seedCatalog(migratedDb().db, KNOWN_APPS);
 type Run = (input: unknown, ctx: ReturnType<typeof opCtx>) => Promise<any>;
 const run = (id: keyof typeof handlers) => (handlers[id] as unknown as { run: Run }).run;
 const hooks = makeHooks("rules");
@@ -156,7 +161,14 @@ test("strictestNarrowing (no pinned verdict): an allow rule's narrowing could ap
   assert.equal(strictestNarrowing(r, agent()), null, "quiet: an agent");
 });
 
-test("PROPERTY (fuzz): an app without a verified product is never decided less strictly, nor narrowed less, than with ANY product; an agent never sees a product rule", () => {
+/**
+ * TODO: enabled after main (0.3.1 C82 fix) is merged. With an UNVERIFIED claim the engine's `evaluate` still has the C82 bug (main fixes it in
+ * 0.3.1: `if (!facts.claim || facts.claimVerified || !withClaim.viaClaim) return withClaim;` becomes `if (!facts.claim || facts.claimVerified) return withClaim;`).
+ * Until then the fuzz below runs claim rules with VERIFIED claims and with no claim only. The lead flips this constant to `true` after the merge.
+ */
+const FUZZ_UNVERIFIED_CLAIMS = false;
+
+test("PROPERTY (fuzz): an app without a verified product is never decided less strictly, nor narrowed less, than with ANY product (also with claim rules and claims); an agent never sees a product rule", () => {
   const rnd = prng(0xc237);
   const pickOne = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
   const subset = <T,>(xs: readonly T[], min = 0): T[] => {
@@ -171,8 +183,13 @@ test("PROPERTY (fuzz): an app without a verified product is never decided less s
   const passes = (v: ReturnType<typeof evaluate>) => subsets.map((tags) => (v.decision !== "allow" ? false : v.narrowing ? tagsPass(tags, v.narrowing) : true));
   const PRODUCTS = ["a", "b", "z"] as const;
   const CASES = 30_000;
+  const KINDS = ["person", "channel_sender"] as const;
+  const IDS = ["u1", "u2", "slack:U1"] as const;
   let stricter = 0;
   let flagged = 0;
+  let claimRules = 0;
+  let verifiedClaimCalls = 0;
+  let unverifiedClaimCalls = 0;
   for (let i = 0; i < CASES; i++) {
     const rules: Rule[] = [];
     for (let r = 0; r < 1 + Math.floor(rnd() * 6); r++) {
@@ -180,16 +197,27 @@ test("PROPERTY (fuzz): an app without a verified product is never decided less s
       const match: Rule["spec"]["match"] = {};
       if (rnd() < 0.4) match.effects = [pickOne(["outward", "read"])];
       if (rnd() < 0.7) match.callerProducts = subset(["a", "b"], 1);
+      // claim rules: the claimed requester's kind and/or id alone (no Fleet fact)
+      if (rnd() < 0.4) {
+        match.onBehalfOf = { ...(rnd() < 0.7 ? { kinds: subset(KINDS, 1) } : {}), ...(rnd() < 0.5 ? { ids: subset(IDS, 1) } : {}) };
+        claimRules++;
+      }
       const narrowing = decision === "allow" && rnd() < 0.5 ? { memoryTags: rnd() < 0.5 ? { anyOf: subset(TAGS, 1) } : { noneOf: subset(TAGS, 1) } } : undefined;
       rules.push(rule(`rul_${r}`, spec({ priority: Math.floor(rnd() * 4), match, decision, reason: "r", ...(narrowing ? { narrowing } : {}) })));
     }
     const ordered = order(rules);
     const effect = pickOne(["outward", "read"]);
     const target = { product: "connect", op: "buzz_dm", effect };
-    const absent = evaluate(ordered, app(null, { target }));
-    const where = JSON.stringify({ rules: ordered.map((r) => [r.id, r.spec.priority, r.spec.outcome.decision, r.spec.match, r.spec.narrowing]), effect, absent: [absent.decision, absent.rule?.id, absent.narrowing] });
+    // the claim of the call: none, or a claimed requester that is verified or (when enabled) unverified
+    const claimed = rnd() < 0.6;
+    const claimVerified = FUZZ_UNVERIFIED_CLAIMS ? rnd() < 0.5 : true;
+    const claim = claimed ? { kind: pickOne(KINDS), id: pickOne(IDS) } : null;
+    if (claim) claimVerified ? verifiedClaimCalls++ : unverifiedClaimCalls++;
+    const extra = { target, claim, claimVerified: claim ? claimVerified : false };
+    const absent = evaluate(ordered, app(null, extra));
+    const where = JSON.stringify({ claim, claimVerified: extra.claimVerified, rules: ordered.map((r) => [r.id, r.spec.priority, r.spec.outcome.decision, r.spec.match, r.spec.narrowing]), effect, absent: [absent.decision, absent.rule?.id, absent.narrowing] });
     for (const p of PRODUCTS) {
-      const known = evaluate(ordered, app(p, { target }));
+      const known = evaluate(ordered, app(p, extra));
       assert.ok(SEV[absent.decision] >= SEV[known.decision], `no product must not be less strict than product ${p}: ${where}`);
       if (known.decision === "allow" && absent.decision === "allow") {
         const pk = passes(known);
@@ -197,15 +225,18 @@ test("PROPERTY (fuzz): an app without a verified product is never decided less s
       }
       assert.equal(known.closedOnProduct, false, "a verified product is never a gap");
     }
-    if (SEV[absent.decision] > SEV[evaluate(ordered, app("z", { target })).decision]) stricter++;
+    if (SEV[absent.decision] > SEV[evaluate(ordered, app("z", extra)).decision]) stricter++;
     if (absent.closedOnProduct) flagged++;
     // an agent: the rules that name callerProducts do not exist for it
-    const agentResult = evaluate(ordered, agent({ target }));
-    const noProductRules = evaluate(order(ordered.filter((r) => !dependsOnProduct(r.spec))), agent({ target }));
+    const agentResult = evaluate(ordered, agent(extra));
+    const noProductRules = evaluate(order(ordered.filter((r) => !dependsOnProduct(r.spec))), agent(extra));
     assert.deepEqual([agentResult.decision, agentResult.rule?.id ?? null, agentResult.narrowing, agentResult.closedOnProduct], [noProductRules.decision, noProductRules.rule?.id ?? null, noProductRules.narrowing, false], `an agent: ${where}`);
   }
   assert.ok(stricter > 1000 && flagged > 1000, `the fuzz exercised the gap (stricter without the product ${stricter}, flagged ${flagged})`);
-  console.log(`product fuzz cases: ${CASES} (strictly stricter without the product than with an unlisted one: ${stricter}, flagged: ${flagged})`);
+  assert.ok(claimRules > 5000 && verifiedClaimCalls > 5000, `the fuzz exercised claim rules (${claimRules}) with verified claims (${verifiedClaimCalls})`);
+  if (FUZZ_UNVERIFIED_CLAIMS) assert.ok(unverifiedClaimCalls > 5000, `the fuzz exercised unverified claims (${unverifiedClaimCalls})`);
+  else assert.equal(unverifiedClaimCalls, 0, "unverified claims are off until the C82 fix is merged");
+  console.log(`product fuzz cases: ${CASES} (strictly stricter without the product than with an unlisted one: ${stricter}, flagged: ${flagged}; claim rules ${claimRules}, verified-claim calls ${verifiedClaimCalls}, unverified-claim calls ${unverifiedClaimCalls})`);
 });
 
 // ── 4. where the product comes from ─────────────────────────────────────────────────────────────────────────
@@ -213,6 +244,13 @@ test("validProduct: [a-z0-9][a-z0-9_-]*, at most 40 characters", () => {
   for (const ok of ["a", "0", "fleet", "my-app_2", "a".repeat(40)]) assert.equal(validProduct(ok), true, ok);
   for (const bad of ["", "Fleet", " fleet", "fleet ", "-a", "_a", "a/b", "../a", "flêet", "a‮", "a".repeat(41), 5, null, undefined, {}, ["a"]])
     assert.equal(validProduct(bad), false, JSON.stringify(bad));
+});
+
+test("the dry run validates a typed product exactly like the gate does (no trim): same answer for every case", () => {
+  const cases = ["a", "0", "fleet", "my-app_2", "a".repeat(40), "", " ", " fleet", "fleet ", " fleet ", "\tfleet", "fleet\n", "-a", "_a", "a/b", "Fleet", "a".repeat(41), "flêet", "a‮"];
+  for (const c of cases) assert.equal(verifiableProduct(c), validProduct(c), JSON.stringify(c));
+  assert.equal(verifiableProduct("fleet"), true, "quiet: a product id");
+  assert.equal(verifiableProduct(" fleet "), false, "fire: padded");
 });
 
 test("callerProductOf reads the product of an APP caller only; an invalid or missing one is null", () => {
@@ -224,7 +262,7 @@ test("callerProductOf reads the product of an APP caller only; an invalid or mis
 
 // ── 5. the gate, the context hook and the after hook ────────────────────────────────────────────────────────
 function productDb() {
-  const { db } = migratedDb();
+  const db = catalogDb();
   saveRule(db, { spec: spec({ title: "blocked app may not send", priority: 1, match: { effects: ["outward"], callerProducts: ["blocked-app"] }, decision: "deny", reason: "that app may not send" }), actor: OWNER });
   saveRule(db, { spec: spec({ title: "watched app money", priority: 2, match: { effects: ["money"], callerProducts: ["watched"] }, decision: "hold", reason: "money from that app needs review" }), actor: OWNER });
   return db;
@@ -274,7 +312,7 @@ test("gate: an invalid product string from the bridge is treated as absent (fail
 });
 
 test("the product comes from the caller only: a product in the input, the context or a name never counts", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   saveRule(db, { spec: spec({ title: "good app may send", priority: 1, match: { effects: ["outward"], callerProducts: ["good"] }, decision: "allow", reason: "good app" }), actor: OWNER });
   saveRule(db, { spec: spec({ title: "nothing else sends", priority: 2, match: { effects: ["outward"] }, decision: "deny", reason: "nothing else sends" }), actor: OWNER });
   const lie = { input: { product: "good", caller: { product: "good" } }, context: { product: "good", "tb.caller": { product: "good" }, "tb.product": "good" } as Record<string, Json> };
@@ -291,7 +329,7 @@ test("the product comes from the caller only: a product in the input, the contex
 });
 
 test("context and after hooks: the narrowing of an allow rule that names callerProducts survives an unverified product (flagged, strict)", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   const r = saveRule(db, { spec: spec({ title: "good app: work only", priority: 1, match: { callerProducts: ["good"] }, decision: "allow", reason: "good app sees work memories", narrowing: WORK }), actor: OWNER });
   const ctx = (o: Record<string, unknown>) => call("rules_context", hookReq("context", { ...readCall, ...o }), hookCtx(db));
   const narrowingOf = (a: Record<string, any>) => a.add["rules.narrowing"];
@@ -314,6 +352,28 @@ test("context and after hooks: the narrowing of an allow rule that names callerP
   assert.deepEqual(await call("rules_filter", hookReq("after", { callId: "cal_f3", ...readCall, app: { product: "other" }, output }), hookCtx(db)), {}, "quiet: another app is not narrowed");
 });
 
+test("S3: the narrowing reason names the gap when there is one and is neutral (no leading colon, no Governance text) when there is none", async () => {
+  const db = catalogDb();
+  // P1 allows a claimed person (no narrowing); P2 allows everyone, narrowed. With an UNVERIFIED claim the engine also asks "without the claim":
+  // that answer (P2) is as strict, so its narrowing is merged in and belongs to P2 while P1 is the deciding rule. No fact is missing.
+  const p1 = saveRule(db, { spec: spec({ title: "claimed person", priority: 1, match: { onBehalfOf: { kinds: ["person"] } }, decision: "allow", reason: "a person may" }), actor: OWNER });
+  const p2 = saveRule(db, { spec: spec({ title: "work only", priority: 2, match: {}, decision: "allow", reason: "work only", narrowing: WORK }), actor: OWNER });
+  const context = { "tb.onBehalfOf": { claim: { kind: "person", id: "u1" }, verified: false } };
+  const ctx = (o: Record<string, unknown>) => call("rules_context", hookReq("context", { ...readCall, context: context as never, ...o }), hookCtx(db));
+  const narrowing = (a: Record<string, any>) => a.add["rules.narrowing"];
+  const none = narrowing(await ctx({ callId: "cal_n1", app: { product: "good" } }));
+  assert.deepEqual(none, { v: 1, ruleId: p2.id, reason: "The narrowing of an allow rule applies", memoryTags: WORK.memoryTags }, "no gap: neutral text");
+  assert.doesNotMatch(String(none.reason), /^:|Governance|unverified/);
+  // the rule that decides keeps its own reason (quiet: the neutral text is only for a narrowing from another rule)
+  const t1 = traces(db).find((x) => x.callId === "cal_n1");
+  assert.equal(t1?.detail?.callerProductUnavailable, undefined);
+  assert.equal(t1?.ruleId, p1.id);
+  // fire: with a gap, the text names it (unverified product)
+  saveRule(db, { spec: spec({ title: "good app: work only", priority: 0, match: { callerProducts: ["good"] }, decision: "allow", reason: "good app", narrowing: WORK }), actor: OWNER });
+  const gap = narrowing(await ctx({ callId: "cal_n2", app: {} }));
+  assert.match(String(gap.reason), /^The calling app's product is unverified: the narrowing of an allow rule applies$/);
+});
+
 // ── 6. writers stay strict (L24), readers tolerate ──────────────────────────────────────────────────────────
 test("writers refuse a callerProducts rule that is malformed or can never match an app; good shapes pass", () => {
   const p = (match: Rule["spec"]["match"]) => specProblem(spec({ match }));
@@ -332,7 +392,7 @@ test("writers refuse a callerProducts rule that is malformed or can never match 
 });
 
 test("the writers apply it: rules_set, a draft from an agent and approving a stored draft; the manifest schemas back it up", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   const owner = opCtx(db, { type: "person", id: OWNER });
   const bad = spec({ title: "agent-only app rule", match: { callerProducts: ["a"], modes: ["free"] }, decision: "deny", reason: "r" });
   const refused = await run(OP.rulesSet)({ rule: bad }, owner).catch((e: unknown) => e as { code: string; httpStatus: number; message: string });
@@ -369,8 +429,86 @@ test("the writers apply it: rules_set, a draft from an agent and approving a sto
   for (const badList of [["a", "a"], ["Bad"], [""], ["a".repeat(41)], Array.from({ length: 51 }, (_, i) => `p${i}`), "a", [1]]) assert.equal(validateAgainstSchema(input, withProducts(badList)).ok, false, JSON.stringify(badList));
 });
 
-test("readers tolerate: a stored rule that can never match is listed with its problem and the gate does not throw on it", async () => {
+// ── 6b. callerProducts is checked against the signed catalog like products (S2) ─────────────────────────────
+const unknownCaller = (id: string) => `unknown calling app “${id}” in callerProducts: no release of it is in the signed app catalog, so the rule would never match`;
+
+test("S2: catalogProblem checks callerProducts like products: an unknown id fires, a known id is quiet, no catalog is CATALOG_MISSING", () => {
+  const cat = buildCatalog([{ product: "knowledge", ops: [] }, { product: "crm", ops: [] }]);
+  const p = (match: Rule["spec"]["match"], c: Parameters<typeof catalogProblem>[1] = cat) => catalogProblem(spec({ match }), c);
+  // quiet-on-good
+  assert.equal(p({ callerProducts: ["knowledge"] }), "");
+  assert.equal(p({ callerProducts: ["knowledge", "crm"] }), "");
+  assert.equal(p({ callerProducts: [] }), "", "none named: nothing to check");
+  assert.equal(p({ effects: ["outward"] }, null), "", "a rule that names no app needs no catalog");
+  assert.equal(p({ callerProducts: ["knowledge"] }, cat), "");
+  // fire-on-bad, exact reasons
+  assert.equal(p({ callerProducts: ["knowlege"] }), unknownCaller("knowlege"), "the typo from the review");
+  assert.equal(p({ callerProducts: ["knowledge", "knowlege"] }), unknownCaller("knowlege"), "one unknown id among known ones");
+  assert.equal(p({ products: ["knowlege"], callerProducts: ["knowledge"] }), "unknown app “knowlege”: no release of it is in the signed app catalog", "products still say so first");
+  assert.equal(p({ callerProducts: ["knowlege"] }, null), CATALOG_MISSING, "no catalog: refused like products");
+  assert.equal(p({ products: ["knowledge"] }, null), CATALOG_MISSING, "the same for products");
+  assert.equal(needsCatalog(spec({ match: { callerProducts: ["knowledge"] } })), true);
+  assert.equal(needsCatalog(spec({ match: { effects: ["outward"] } })), false);
+});
+
+test("S2: every writer refuses an unknown callerProducts id (rules_set, a draft, a dry-run candidate, an approved stored draft); a known id passes", async () => {
+  const db = catalogDb();
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  const agentCtx = opCtx(db, { type: "agent", id: AGENT_A });
+  const typo = spec({ title: "typo", match: { callerProducts: ["knowlege"] }, decision: "deny", reason: "r" });
+  const good = spec({ title: "known", match: { callerProducts: ["good"] }, decision: "deny", reason: "r" });
+  const refused = await run(OP.rulesSet)({ rule: typo }, owner).catch((e: unknown) => e as { code: string; httpStatus: number; message: string });
+  assert.deepEqual([refused.code, refused.httpStatus, refused.message], ["input_invalid", 400, unknownCaller("knowlege")]);
+  assert.equal((await run(OP.rulesList)({}, owner)).rules.length, 0, "nothing was stored");
+  const e = await run(OP.ruleDraftSubmit)({ text: "t", rules: [good, typo] }, agentCtx).catch((x: unknown) => x as { code: string; message: string });
+  assert.deepEqual([e.code, e.message], ["input_invalid", `rule 2 (“typo”): ${unknownCaller("knowlege")}`]);
+  assert.equal(listDrafts(db, undefined, 10).length, 0);
+  const call = { caller: { type: "app", id: "ins_preview", product: "good" }, target: { product: "connect", op: "buzz_dm", effect: "outward" } };
+  await assert.rejects(run(OP.rulesPreview)({ call, candidate: typo }, owner), { code: "input_invalid", message: unknownCaller("knowlege") });
+  // quiet: the known id is stored, drafted and used in a dry run
+  assert.deepEqual((await run(OP.rulesSet)({ rule: good }, owner)).rule.spec.match, { callerProducts: ["good"] });
+  assert.equal((await run(OP.ruleDraftSubmit)({ text: "t", rules: [good] }, agentCtx)).status, "pending");
+  assert.equal((await run(OP.rulesPreview)({ call, candidate: good }, owner)).decision, "deny");
+  // a draft stored before this check is flagged and cannot be applied
+  db.prepare("INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at) VALUES ('drf_typo', 'pending', 't', '', ?, 'agent', 'agt_1', 'x', 1)").run(JSON.stringify([typo]));
+  const drafts = (await run(OP.draftsList)({ status: "pending" }, owner)).drafts as { id: string; problems: (string | null)[] }[];
+  assert.deepEqual(drafts.find((d) => d.id === "drf_typo")?.problems, [unknownCaller("knowlege")]);
+  assert.deepEqual(drafts.find((d) => d.id !== "drf_typo")?.problems, [null], "quiet: the known draft has no problem");
+  const e2 = await run(OP.draftDecide)({ id: "drf_typo", decision: "approve" }, owner).catch((x: unknown) => x as { code: string; httpStatus: number; message: string });
+  assert.deepEqual([e2.code, e2.httpStatus], ["draft_never_matches", 409]);
+  assert.match(e2.message, /rule 1 \(“typo”\): unknown calling app “knowlege” in callerProducts/);
+});
+
+test("S2: a stored rule that names an unknown caller product stays, is flagged 'never matches' on the Rules page data, and does not cover the app that was meant", async () => {
+  const db = catalogDb();
+  const stored = spec({ title: "typo", priority: 1, match: { callerProducts: ["knowlege"] }, decision: "deny", reason: "r" });
+  db.prepare("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES ('rul_typo', 1, ?, 1, 1, 0, 'owner', 1, 1)").run(JSON.stringify(stored));
+  saveRule(db, { spec: spec({ title: "known", priority: 2, match: { callerProducts: ["good"] }, decision: "deny", reason: "r" }), actor: OWNER });
+  const listed = (await run(OP.rulesList)({}, opCtx(db, { type: "person", id: OWNER }))).rules as { id: string; problem: string | null }[];
+  assert.equal(listed.length, 2, "never deleted");
+  assert.equal(listed.find((r) => r.id === "rul_typo")?.problem, unknownCaller("knowlege"));
+  assert.equal(listed.find((r) => r.id !== "rul_typo")?.problem, null, "quiet: the rule with a known app has no problem");
+  assert.deepEqual(await gate(db, { app: { product: "knowledge" } }), { allow: true }, "the app the owner meant is not covered: the typo rule does not fire for it");
+});
+
+test("S2: without a signed catalog, a rule that names callerProducts is refused like one that names products (catalog_unavailable, 503); a rule that names no app passes", async () => {
   const { db } = migratedDb();
+  // a failed read (unreachable registry) leaves no catalog and counts as the last attempt
+  await syncCatalog(db, { url: "https://registry.test/index.json", fetchText: async () => Promise.reject(new Error("offline")) });
+  assert.equal(catalogOf(db), null);
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  const refusal = (match: Rule["spec"]["match"]) => run(OP.rulesSet)({ rule: spec({ title: "r", match, decision: "deny", reason: "r" }) }, owner).catch((e: unknown) => e as { code: string; httpStatus: number });
+  const byCaller = await refusal({ callerProducts: ["good"] });
+  const byProduct = await refusal({ products: ["connect"] });
+  assert.deepEqual([byCaller.code, byCaller.httpStatus], ["catalog_unavailable", 503]);
+  assert.deepEqual([byProduct.code, byProduct.httpStatus], [byCaller.code, byCaller.httpStatus], "the same as products");
+  const agentCtx = opCtx(db, { type: "agent", id: AGENT_A });
+  await assert.rejects(run(OP.ruleDraftSubmit)({ text: "t", rules: [spec({ match: { callerProducts: ["good"] } })] }, agentCtx), { code: "catalog_unavailable" });
+  assert.ok((await run(OP.rulesSet)({ rule: spec({ title: "r", match: { effects: ["money"] }, decision: "hold", reason: "payments wait" }) }, owner)).rule.id, "quiet: no app named");
+});
+
+test("readers tolerate: a stored rule that can never match is listed with its problem and the gate does not throw on it", async () => {
+  const db = catalogDb();
   const stored = spec({ title: "stored", priority: 1, match: { callerProducts: ["Bad", "a", "a"], agents: ["agt_X1"] }, decision: "deny", reason: "r" });
   db.prepare("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES ('rul_stored', 1, ?, 1, 1, 0, 'owner', 1, 1)").run(JSON.stringify(stored));
   const listed = await run(OP.rulesList)({}, opCtx(db, { type: "person", id: OWNER }));
@@ -381,7 +519,7 @@ test("readers tolerate: a stored rule that can never match is listed with its pr
 
 // ── 7. the dry run ──────────────────────────────────────────────────────────────────────────────────────────
 test("rules_preview: an app caller with a product, without one, an unlisted one and an agent; the answer says when the product was unavailable", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   const owner = opCtx(db, { type: "person", id: OWNER });
   saveRule(db, { spec: spec({ title: "app a is refused", match: { callerProducts: ["a"] }, decision: "deny", reason: "no" }), actor: OWNER });
   const preview = (caller: Record<string, unknown>) => run(OP.rulesPreview)({ call: { caller, target: { product: "connect", op: "buzz_dm", effect: "outward" } } }, owner);
@@ -407,7 +545,7 @@ test("rules_preview: an app caller with a product, without one, an unlisted one 
 
 // ── 8. rules_explain reads an app's decisions by verified product (S4-3) ────────────────────────────────────
 test("rules_explain: an app reads its decisions by VERIFIED product (any instance of it); older rows and unverified apps by instance id; an agent by its own id", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   saveRule(db, { spec: spec({ title: "app p refused", match: { effects: ["outward"], callerProducts: ["p"] }, decision: "deny", reason: "no" }), actor: OWNER });
   const I1 = "ins_01J000000000000000000000I1";
   const I2 = "ins_01J000000000000000000000I2";
@@ -418,7 +556,7 @@ test("rules_explain: an app reads its decisions by VERIFIED product (any instanc
   await gate(db, { callId: "cal_q_i3", app: { id: I3, product: "q" } });
   await gate(db, { callId: "cal_none_i4", app: { id: I4 } }); // no verified product
   await gate(db, { callId: "cal_agent", caller: AGENT_A });
-  // rows recorded before 0.3.1 have no product: they belong to an instance id only
+  // rows recorded before 0.3.2 have no product: they belong to an instance id only
   const legacy = (callId: string, id: string) =>
     recordDecision(db, { callId, phase: "before", facts: { ...base, caller: { type: "app", id, mode: null }, callerProduct: null }, decision: "allow", answered: "allow", reason: "old", rule: null, durationUs: 1 });
   legacy("cal_old_i1", I1);
@@ -447,7 +585,7 @@ test("rules_explain: an app reads its decisions by VERIFIED product (any instanc
 });
 
 test("decisions_list and rules_list carry the product (owner pages); the answers fit their output schemas", async () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   saveRule(db, { spec: spec({ title: "app p refused", match: { callerProducts: ["p"] }, decision: "deny", reason: "no" }), actor: OWNER });
   await gate(db, { callId: "cal_1", app: { product: "p" } });
   await gate(db, { callId: "cal_2", caller: AGENT_A });
@@ -456,7 +594,7 @@ test("decisions_list and rules_list carry the product (owner pages); the answers
   assert.deepEqual(Object.fromEntries(list.items.map((d: any) => [d.callId, d.caller.product])), { cal_1: "p", cal_2: null });
   assert.equal(validateAgainstSchema(manifest.operations.find((o) => o.id === "decisions_list")?.output as never, list as never).ok, true);
   const rules = await run(OP.rulesList)({}, owner);
-  assert.deepEqual(rules.catalog.productIds, [], "no catalog read yet: nothing to choose from");
+  assert.deepEqual(rules.catalog.productIds, [...KNOWN_APPS].sort(), "the editor chooses from the catalog's apps");
   assert.deepEqual(rules.rules[0].spec.match.callerProducts, ["p"]);
   assert.equal(validateAgainstSchema(manifest.operations.find((o) => o.id === "rules_list")?.output as never, rules as never).ok, true);
 });
@@ -497,7 +635,7 @@ test("migration 0006 on a 0.3.0 database: the column is added, no row changes, o
 
 // ── 10. the draft path still keys apps by product (0.3.0), unchanged ────────────────────────────────────────
 test("a draft from a verified app is keyed by product as before (quiet-on-good: no change to 0.3.0 drafts)", () => {
-  const { db } = migratedDb();
+  const db = catalogDb();
   const d = submitDraft(db, { text: "t", rules: [spec({ match: { callerProducts: ["a"] } })], by: { type: "app", id: "fleet", name: "Observer", product: "fleet", instance: "ins_1" } });
   assert.deepEqual(d.source, { kind: "app", product: "fleet", name: "Observer", instance: "ins_1" });
   assert.equal(decideDraft(db, { id: d.id, decision: "approve", actor: OWNER }).ruleIds.length, 1);

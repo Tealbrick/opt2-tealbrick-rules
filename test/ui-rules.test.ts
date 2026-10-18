@@ -370,7 +370,7 @@ describe("G-3: match fields and who proposed a draft", () => {
   });
 });
 
-// ── C237 / 0.3.1: calls from apps ──────────────────────────────────────────────────────────────────────────────
+// ── C237 / 0.3.2: calls from apps ──────────────────────────────────────────────────────────────────────────────
 const optionOf = (root: Element, label: string) => {
   const found = [...root.querySelectorAll('[role="option"]')].find((o) => o.textContent === label);
   assert.ok(found, `option "${label}"`);
@@ -474,6 +474,35 @@ describe("C237: calls from apps", () => {
     assert.deepEqual(lastCall("rules_preview").call.caller, { type: "app", id: "ins_preview" });
     assert.match(dialog.textContent ?? "", NO_PRODUCT_NOTICE);
     assert.match(dialog.textContent ?? "", /the calling app's verified product is unavailable, so this rule applies/);
+    await m.unmount();
+    OUTPUTS.rules_preview = saved;
+  });
+
+  it("dry run (S4): the product is not trimmed; a padded or malformed one is sent as no product and shown as unverifiable; a valid one is sent as typed", async () => {
+    reset();
+    const saved = OUTPUTS.rules_preview;
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "New rule"));
+    const dialog = document.querySelector("dialog") as HTMLElement;
+    await click(optionOf(dialog, "An app"));
+    const product = inputOf(dialog, "App product") as HTMLInputElement;
+    const BAD_HINT = /This is not a product id .* so the dry run treats it as an app whose product can’t be verified\./;
+    // quiet: a valid id is sent as typed and no warning shows
+    await typeInto(product, "knowledge");
+    assert.doesNotMatch(dialog.textContent ?? "", BAD_HINT);
+    await click(button(dialog, "Run dry run"));
+    await flush();
+    assert.deepEqual(lastCall("rules_preview").call.caller, { type: "app", id: "ins_preview", product: "knowledge" });
+    // fire: the gate does not trim, so neither does the dry run: " knowledge " is no verified product
+    OUTPUTS.rules_preview = { ...(saved as object), decision: "deny", answered: "deny", reason: "no", ruleId: "rul_1", ruleTitle: "No sends", callerProductUnavailable: true, steps: [] };
+    for (const bad of [" knowledge ", "knowledge ", " knowledge", "Knowledge", "know ledge", " ", "a".repeat(41)]) {
+      await typeInto(product, bad);
+      assert.match(dialog.textContent ?? "", BAD_HINT, JSON.stringify(bad));
+      await click(button(dialog, "Run dry run"));
+      await flush();
+      assert.deepEqual(lastCall("rules_preview").call.caller, { type: "app", id: "ins_preview" }, `${JSON.stringify(bad)}: no product is sent`);
+      assert.match(dialog.textContent ?? "", NO_PRODUCT_NOTICE, JSON.stringify(bad));
+    }
     await m.unmount();
     OUTPUTS.rules_preview = saved;
   });

@@ -15,7 +15,7 @@
 // - Two membership sets (C236 review): deny/hold rules see EVERY member of a team, including blocked, departed and removed
 //   ones (`*Any` fields); allow rules see only the members that count (`callerTeams`, `claimTeams`).
 // - A requester the directory does not know has trust `unreviewed`.
-// - Calls from product X (`callerProducts`, 0.3.1): only an APP caller whose VERIFIED product (the bridge's signed
+// - Calls from product X (`callerProducts`, 0.3.2): only an APP caller whose VERIFIED product (the bridge's signed
 //   `caller.product`, never a name, input or context) is listed matches. An AGENT never matches a rule that names it
 //   (an agent is not a product), whatever the decision. An app caller with no valid product is handled like unavailable
 //   Fleet facts: a deny or hold rule APPLIES (its own flag, `closedOnProduct`) and an allow rule does NOT (its narrowing still
