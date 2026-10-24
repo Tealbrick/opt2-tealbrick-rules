@@ -112,7 +112,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
           <Field label="Operations" hint="Operation ids, comma separated. Needs the app above.">
             <TextInput value={joinList(m.operations)} onChange={(e) => setMatch({ operations: list(e.target.value) })} />
           </Field>
-          <Field label="Tools" hint="Tool names of a connected service, comma separated. Needs the app above. Matches only a call that names the tool.">
+          <Field label="Tools" hint="Tool names of a connected service, exact and case-sensitive, comma separated. Needs the app above and a dynamic operation.">
             <TextInput value={joinList(m.tools)} onChange={(e) => setMatch({ tools: list(e.target.value) })} />
           </Field>
         </div>
@@ -151,10 +151,10 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
             <Field label="Never memories tagged">
               <TextInput value={joinList(tags.noneOf)} onChange={(e) => setTags({ noneOf: list(e.target.value) })} />
             </Field>
-            <Field label="Only datasets (any of)" hint="Dataset names such as public.orders, comma separated. Deep knowledge reads nothing outside them.">
+            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated. Deep knowledge reads nothing outside them.">
               <TextInput value={joinList(sets.anyOf)} onChange={(e) => setSets({ anyOf: list(e.target.value) })} />
             </Field>
-            <Field label="Never datasets">
+            <Field label="Never datasets" hint="Exact ids, case-sensitive.">
               <TextInput value={joinList(sets.noneOf)} onChange={(e) => setSets({ noneOf: list(e.target.value) })} />
             </Field>
           </div>

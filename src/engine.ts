@@ -16,9 +16,11 @@
 //   ones (`*Any` fields); allow rules see only the members that count (`callerTeams`, `claimTeams`).
 // - A requester the directory does not know has trust `unreviewed`.
 // - Dataset narrowing (spec 0.1.66, C336 RQ-2): `narrowing.deepDatasets {anyOf, noneOf}` limits the datasets a data app (Knowledge
-//   deep knowledge) may read for the call. It merges exactly like `memoryTags` (anyOf intersects, noneOf unites, disjoint anyOf
-//   gives [] = nothing passes) and is compared after trim + lower case.
-// - Match field `tools` (spec 0.1.66): the dynamic entry name the bridge sends as `target.tool`. Without `target.tool`: a STATIC op
+//   deep knowledge) may read for the call. It merges like `memoryTags` (per key: anyOf intersects, noneOf unites, disjoint anyOf
+//   gives [] = nothing passes, a list present on either side survives; absent is not "all"). Dataset ids are the data app's
+//   canonical ids: EXACT and CASE-SENSITIVE, never trimmed or case-folded. The context hook emits `v: 2` exactly when the merged
+//   narrowing has deepDatasets (spec 0.1.68), so a reader without dataset narrowing refuses it.
+// - Match field `tools` (spec 0.1.68): the dynamic entry name the bridge sends as `target.tool`. Without `target.tool`: a STATIC op
 //   never matches a `tools` rule. A DYNAMIC op (or one the catalog cannot place) fails CLOSED like the Fleet facts do: a DENY or HOLD
 //   rule with `tools` applies (the tool is unknown, an older bridge or a bridge bug must not switch it off), an ALLOW rule with
 //   `tools` does not. With `target.tool` the match is exact. The verdict says so in `toolUnknown`.
@@ -59,7 +61,7 @@ export interface CallFacts {
     product: string;
     op: string;
     effect: string;
-    /** spec 0.1.66: the dynamic catalog entry name of a dynamic call; absent for static ops and dynamic search */
+    /** spec 0.1.68: the dynamic catalog entry name of a dynamic call; absent for static ops and dynamic search */
     tool?: string;
     /**
      * Whether the target op is dynamic, from the app catalog (a local cached table). `undefined` = the catalog cannot place the
@@ -92,7 +94,7 @@ export interface CallFacts {
 
 export interface Narrowing {
   memoryTags?: { anyOf?: string[]; noneOf?: string[] };
-  /** spec 0.1.66 (SDK-API §18.5): datasets a data app may read for this call; `anyOf` PRESENT but EMPTY = nothing passes */
+  /** spec 0.1.68 (SDK-API §18.5): canonical dataset ids a data app may read for this call (exact, case-sensitive); `anyOf` PRESENT but EMPTY = nothing passes */
   deepDatasets?: { anyOf?: string[]; noneOf?: string[] };
 }
 
@@ -151,7 +153,7 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
   const strict = spec.outcome.decision !== "allow";
   let closed = false;
   let toolClosed = false;
-  // spec 0.1.66: a rule that names tools matches a call that carries one of them. A call WITHOUT `target.tool`: a static op never
+  // spec 0.1.68: a rule that names tools matches a call that carries one of them. A call WITHOUT `target.tool`: a static op never
   // matches; a dynamic op (or one the catalog cannot place) is fail closed: deny and hold rules apply, allow rules do not.
   if (m.tools?.length) {
     const tool = facts.target.tool;
@@ -286,29 +288,25 @@ function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
 }
 
 /**
- * Dataset names compare after trim + lower case (spec 0.1.66, SDK-API §18.5).
- * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` / its normalisation from @opt2-tealbrick/manifest >= 0.1.30 (one mechanism, L1).
- * Delete this copy and import the helper when the manifest package that carries it is released and pinned.
+ * Local copy of the shared dataset comparison (spec 0.1.68, SDK-API 18.5 rule 3). Dataset ids are the data app's canonical ids:
+ * EXACT and CASE-SENSITIVE, no trimming, no case folding, no Unicode normalisation. Key absent → pass; `anyOf` present → `ids`
+ * is non-empty and every id is in it (`anyOf: []` passes nothing); `noneOf` present → no id is in it. A call that names no
+ * dataset (rule 4) is enforced by the data app, not here.
+ * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` from @opt2-tealbrick/manifest (>= 0.1.30; the release that carries the v0.1.68
+ * contract is the one to pin). One mechanism (L1): delete this copy and import the helper when that package is released and pinned.
  */
-export const normalizeDataset = (name: string): string => name.trim().toLowerCase();
-
-/**
- * Local copy of the shared dataset comparison (contract of `datasetsMatch` in @opt2-tealbrick/manifest >= 0.1.30; see the TODO
- * on `normalizeDataset`): `anyOf` PRESENT (even empty) → every named dataset must be in it (`[]` passes nothing); `noneOf` → no named
- * dataset is in it; absent `deepDatasets` or absent `anyOf` → no anyOf constraint.
- */
-export function datasetsMatch(deepDatasets: Lists | undefined, names: readonly string[]): boolean {
+export function datasetsMatch(deepDatasets: Lists | undefined, ids: readonly string[]): boolean {
   if (!deepDatasets) return true;
-  const have = names.map(normalizeDataset);
   if (deepDatasets.anyOf !== undefined) {
-    const allowed = new Set(deepDatasets.anyOf.map(normalizeDataset));
-    if (!have.every((n) => allowed.has(n))) return false;
+    if (ids.length === 0) return false;
+    const allowed = new Set(deepDatasets.anyOf);
+    if (!ids.every((n) => allowed.has(n))) return false;
   }
-  const denied = new Set((deepDatasets.noneOf ?? []).map(normalizeDataset));
-  return !have.some((n) => denied.has(n));
+  const denied = new Set(deepDatasets.noneOf ?? []);
+  return !ids.some((n) => denied.has(n));
 }
 
-/** Merge two optional narrowing lists: anyOf intersect, noneOf unite, both compared through `norm`. */
+/** Merge two optional narrowing lists: anyOf intersect, noneOf unite, items compared through `norm`; a list on either side survives. */
 function mergeLists(x: Lists | undefined, y: Lists | undefined, norm: (s: string) => string): Lists | undefined {
   if (!x && !y) return undefined;
   const nl = (list: readonly string[] | undefined) => (list ? [...new Set(list.map(norm))] : undefined);
@@ -321,14 +319,14 @@ function mergeLists(x: Lists | undefined, y: Lists | undefined, norm: (s: string
 
 /**
  * Both narrowings apply: anyOf lists intersect, noneOf lists unite (v1 capabilityNarrowing merge), for memory tags and for
- * datasets alike. Tags are compared after the shared `normalizeTag` (SDK-API §18.1), datasets after `normalizeDataset`. Disjoint
+ * datasets alike. Tags are compared after the shared `normalizeTag` (SDK-API §18.1), datasets EXACTLY (case-sensitive, spec 0.1.68). Disjoint
  * anyOf lists give `anyOf: []` = nothing passes (C115). A key that neither side has stays absent.
  */
 export function mergeNarrowing(a: Narrowing | null, b: Narrowing | null): Narrowing | null {
   if (!a) return b;
   if (!b) return a;
   const tags = mergeLists(a.memoryTags, b.memoryTags, normalizeTag);
-  const sets = mergeLists(a.deepDatasets, b.deepDatasets, normalizeDataset);
+  const sets = mergeLists(a.deepDatasets, b.deepDatasets, (id) => id);
   return { ...(tags ? { memoryTags: tags } : {}), ...(sets ? { deepDatasets: sets } : {}) };
 }
 
@@ -367,7 +365,7 @@ export function recorded(facts: CallFacts, v: Verdict): boolean {
   return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.toolUnknown;
 }
 
-/** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see `normalizeDataset`). */
+/** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */
 export function datasetsPass(names: readonly string[], n: Narrowing): boolean {
   return datasetsMatch(n.deepDatasets, names);
 }
@@ -438,13 +436,20 @@ export function specProblem(spec: RuleSpec): string {
   if (t?.anyOf && !t.anyOf.some((tag) => normalizeTag(tag))) return "narrowing.memoryTags.anyOf needs at least one tag";
   const d = spec.narrowing?.deepDatasets;
   if (d && d.anyOf === undefined && !d.noneOf?.length) return "narrowing.deepDatasets needs anyOf or noneOf";
-  // Writer strict (L24, C115): an owner-written empty anyOf would hide every dataset; name at least one, and no blank name.
-  if (d?.anyOf && !d.anyOf.some((name) => normalizeDataset(name))) return "narrowing.deepDatasets.anyOf needs at least one dataset";
-  if (d && [...(d.anyOf ?? []), ...(d.noneOf ?? [])].some((name) => !normalizeDataset(name))) return "narrowing.deepDatasets names must not be blank";
+  // Writer strict (L24, C115): an owner-written empty anyOf would hide every dataset; name at least one.
+  if (d?.anyOf?.length === 0) return "narrowing.deepDatasets.anyOf needs at least one dataset";
+  // SDK-API 18.5 rule 1 (well-formed only): each list 0-64 strings of 1-128 chars. Ids compare EXACTLY, so a name with a space at
+  // either end can never equal a canonical id: in anyOf it hides everything, in noneOf it blocks nothing (open), so refuse it.
+  for (const list of [d?.anyOf, d?.noneOf]) {
+    if (!list) continue;
+    if (list.length > 64) return "narrowing.deepDatasets lists hold at most 64 names";
+    if (list.some((name) => typeof name !== "string" || name.length < 1 || name.length > 128)) return "narrowing.deepDatasets names are 1 to 128 characters";
+    if (list.some((name) => name !== name.trim())) return "narrowing.deepDatasets names are exact and case-sensitive: no space at either end";
+  }
   const m = spec.match;
   if (m.operations?.length && !m.products?.length) return "operations need products (an operation id is unique only within one app)";
   if (m.tools?.length && !m.products?.length) return "tools need products (a tool name is unique only within one app)";
-  if (m.tools?.some((t) => !t.trim())) return "tools must not be blank";
+  if (m.tools?.some((t) => !t || t !== t.trim())) return "tools must not be blank or have a space at either end (tool names are exact and case-sensitive)";
   return "";
 }
 

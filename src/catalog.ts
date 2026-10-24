@@ -163,7 +163,7 @@ export function catalogProblem(spec: RuleSpec, cat: Catalog | null): string {
       if (!o.agent) return `${q(p)} operation ${q(op)} is owner-only (person audience); agent calls never reach it, so the rule would never match`;
       if (effects.length && !o.dynamic && !o.effects.some((e) => effects.includes(e)))
         return `${q(p)} operation ${q(op)} has effect ${o.effects.join("/")}, which the rule's effects (${effects.join(", ")}) exclude, so the rule would never match`;
-      // spec 0.1.66: only a dynamic call carries `target.tool`
+      // spec 0.1.68: only a dynamic call carries `target.tool`
       if (tools.length && !o.dynamic) return `${q(p)} operation ${q(op)} is not a dynamic operation, so its calls carry no tool name and the rule's tools (${tools.join(", ")}) would never match`;
     }
   }

@@ -58,7 +58,7 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
 }
 
 /**
- * Spec 0.1.66 (C336 RQ-2): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
+ * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
  * carry it yet (the pin bump follows the spec release), so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
  */
 export function toolOf(req: HookRequest): string | undefined {
@@ -187,9 +187,11 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
       const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : "Governance data unavailable: the narrowing of an allow rule applies";
-      // `deepDatasets` (spec 0.1.66, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent.
+      // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
+      // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
+      // answering unfiltered, so deepDatasets is never put under v 1.
       add[`${product}.narrowing`] = {
-        v: 1,
+        v: v.narrowing.deepDatasets ? 2 : 1,
         ruleId: narrowingRuleId,
         reason: clamp(reason),
         ...(v.narrowing.memoryTags ? { memoryTags: v.narrowing.memoryTags as Json } : {}),

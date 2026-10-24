@@ -1,4 +1,4 @@
-// C336 RQ-2 (spec 0.1.66, SDK-API §18.5): dataset narrowing `narrowing.deepDatasets` and the match field `tools`.
+// C336 RQ-2 (spec 0.1.68, SDK-API §18.5): dataset narrowing `narrowing.deepDatasets` and the match field `tools`.
 // Engine: merge like memoryTags (anyOf intersect, noneOf unite, disjoint → [] = nothing passes), the local `datasetsMatch`
 // contract, writer checks, `tools` matching. Hooks: the context hook emits `rules.narrowing.deepDatasets` next to
 // `memoryTags` (same v 1, ruleId, reason); the gate matches `target.tool`. L34: each check is shown quiet on the good case
@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { validateAgainstSchema, validateManifest } from "@opt2-tealbrick/manifest";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { manifest } from "../src/app.ts";
-import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, normalizeDataset, order, type Rule, recorded, redactionsFor, specProblem, strictestNarrowing } from "../src/engine.ts";
+import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, order, type Rule, type RuleSpec, recorded, redactionsFor, specProblem, strictestNarrowing } from "../src/engine.ts";
 import { makeHooks, toolOf } from "../src/hooks.ts";
 import { listDecisions, saveRule } from "../src/store.ts";
 import { AGENT_A, AGENT_B, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts } from "./helpers.ts";
@@ -31,16 +31,21 @@ const hooks = makeHooks("rules");
 const call = (id: string, ...args: unknown[]) => (hooks[id] as unknown as (...a: unknown[]) => Promise<Record<string, unknown>>)(...args);
 
 // ── merge semantics ────────────────────────────────────────────────────────
-test("deepDatasets merge: anyOf intersect, noneOf unite, normalised; disjoint anyOf → [] = nothing passes (C115)", () => {
-  const a = { deepDatasets: { anyOf: ["Public.Orders", " public.customers "], noneOf: ["public.salaries"] } };
-  const b = { deepDatasets: { anyOf: ["public.orders", "public.invoices"], noneOf: ["Public.Payroll", "public.salaries"] } };
+test("deepDatasets merge: anyOf intersect, noneOf unite, EXACT ids; disjoint anyOf → [] = nothing passes (C115)", () => {
+  const a = { deepDatasets: { anyOf: ["public.orders", "public.customers"], noneOf: ["public.salaries"] } };
+  const b = { deepDatasets: { anyOf: ["public.orders", "public.invoices"], noneOf: ["public.payroll", "public.salaries"] } };
   assert.deepEqual(mergeNarrowing(a, b), { deepDatasets: { anyOf: ["public.orders"], noneOf: ["public.salaries", "public.payroll"] } }, "intersection of anyOf, union of noneOf");
   const disjoint = mergeNarrowing({ deepDatasets: { anyOf: ["public.orders"] } }, { deepDatasets: { anyOf: ["public.invoices"] } });
   assert.deepEqual(disjoint, { deepDatasets: { anyOf: [] } }, "disjoint → empty anyOf");
   assert.equal(datasetsPass(["public.orders"], disjoint as { deepDatasets: { anyOf: string[] } }), false, "an empty anyOf passes nothing");
   assert.equal(datasetsPass(["public.invoices"], disjoint as { deepDatasets: { anyOf: string[] } }), false);
-  // Only one side names anyOf: it stays; noneOf of the other side still unites.
+  // A list present on either side survives (absent is not "all"): anyOf on one side, noneOf on the other, both stay.
   assert.deepEqual(mergeNarrowing({ deepDatasets: { anyOf: ["a.b"] } }, { deepDatasets: { noneOf: ["a.c"] } }), { deepDatasets: { anyOf: ["a.b"], noneOf: ["a.c"] } });
+  assert.deepEqual(mergeNarrowing({ deepDatasets: { noneOf: ["a.c"] } }, { deepDatasets: { noneOf: ["a.d"] } }), { deepDatasets: { noneOf: ["a.c", "a.d"] } }, "noneOf only: no anyOf appears");
+  // Identity is exact: a case variant is ANOTHER dataset, so it does not intersect and noneOf does not unite it away.
+  assert.deepEqual(mergeNarrowing({ deepDatasets: { anyOf: ["Public.Orders"] } }, { deepDatasets: { anyOf: ["public.orders"] } }), { deepDatasets: { anyOf: [] } }, "case differs → disjoint");
+  assert.deepEqual(mergeNarrowing({ deepDatasets: { noneOf: ["Public.Salaries"] } }, { deepDatasets: { noneOf: ["public.salaries"] } }), { deepDatasets: { noneOf: ["Public.Salaries", "public.salaries"] } }, "both ids stay blocked");
+  assert.deepEqual(mergeNarrowing({ deepDatasets: { anyOf: [" a.b"] } }, { deepDatasets: { anyOf: ["a.b"] } }), { deepDatasets: { anyOf: [] } }, "no trimming");
 });
 
 test("memoryTags and deepDatasets merge independently; a key no rule sets stays absent", () => {
@@ -53,15 +58,18 @@ test("memoryTags and deepDatasets merge independently; a key no rule sets stays 
   assert.equal(mergeNarrowing(null, setsOnly), setsOnly);
 });
 
-test("datasetsMatch (local copy of the manifest helper): trim + lower case; anyOf present-but-empty passes nothing; noneOf blocks", () => {
-  assert.equal(normalizeDataset("  Public.Orders "), "public.orders");
-  assert.equal(datasetsMatch(undefined, ["public.orders"]), true, "no narrowing = no constraint");
+test("datasetsMatch (local copy, SDK-API 18.5 rule 3): exact and case-sensitive; anyOf needs ids and every id in it; noneOf blocks", () => {
+  assert.equal(datasetsMatch(undefined, ["public.orders"]), true, "key absent = pass");
   assert.equal(datasetsMatch({}, ["public.orders"]), true, "absent anyOf and noneOf = no constraint");
-  assert.equal(datasetsMatch({ anyOf: ["PUBLIC.orders"] }, [" public.Orders"]), true);
-  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, ["public.orders", "public.customers"]), false, "EVERY named dataset must be in anyOf");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, ["public.orders"]), true, "quiet on good: the allowed id");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, ["Public.Orders"]), false, "case variant is another id");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, [" public.orders"]), false, "no trimming");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, ["public.orders", "public.customers"]), false, "EVERY id must be in anyOf");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, []), false, "anyOf present and no ids: nothing to allow, refused (rule 3)");
   assert.equal(datasetsMatch({ anyOf: [] }, ["public.orders"]), false, "[] passes nothing, it is not 'no constraint' (L13)");
-  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders", "Public.Salaries"]), false);
-  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders"]), true);
+  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders", "public.salaries"]), false);
+  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders", "Public.Salaries"]), true, "exact: the case variant is not the blocked id");
+  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, []), true, "noneOf alone: no ids, nothing blocked (the data app enforces rule 4)");
 });
 
 // ── the engine decides and merges ──────────────────────────────────────────
@@ -125,9 +133,15 @@ test("specProblem: deepDatasets and tools — quiet on a good rule, firing on ea
   assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: {} } })), "narrowing.deepDatasets needs anyOf or noneOf");
   assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { noneOf: [] } } })), "narrowing.deepDatasets needs anyOf or noneOf");
   assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: [] } } })), "narrowing.deepDatasets.anyOf needs at least one dataset", "an empty anyOf would hide every dataset");
-  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: ["  "] } } })), "narrowing.deepDatasets.anyOf needs at least one dataset");
-  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: ["public.orders", " "] } } })), "narrowing.deepDatasets names must not be blank");
-  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { noneOf: [" "] } } })), "narrowing.deepDatasets names must not be blank");
+  assert.match(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: [""] } } })), /1 to 128 characters/, "fire: an empty name");
+  assert.match(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { noneOf: ["x".repeat(129)] } } })), /1 to 128 characters/, "fire: 129 characters");
+  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { noneOf: ["x".repeat(128)] } } })), "", "quiet: 128 characters");
+  assert.match(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: Array.from({ length: 65 }, (_, i) => `d${i}`) } } })), /at most 64/, "fire: 65 names");
+  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: Array.from({ length: 64 }, (_, i) => `d${i}`) } } })), "", "quiet: 64 names");
+  // exact identity: a space at either end can never equal a canonical id (in noneOf it would block nothing, so refuse it)
+  assert.match(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { noneOf: ["public.salaries "] } } })), /no space at either end/);
+  assert.match(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: [" public.orders"] } } })), /no space at either end/);
+  assert.equal(specProblem(spec({ decision: "allow", narrowing: { deepDatasets: { anyOf: ["Public.Orders", "my schema.t 1"] } } })), "", "mixed case and inner spaces are ids as they are");
   assert.match(specProblem(spec({ match: { tools: ["gmail_send"] } })), /tools need products/);
   assert.match(specProblem(spec({ match: { products: ["connect"], tools: [" "] } })), /tools must not be blank/);
 });
@@ -232,7 +246,7 @@ function henryDb() {
       match: { agents: [HENRY], effects: ["read"] },
       decision: "allow",
       reason: "Henry may read the orders dataset only",
-      narrowing: { memoryTags: { anyOf: ["work"] }, deepDatasets: { anyOf: [" Public.Orders "], noneOf: ["public.salaries"] } },
+      narrowing: { memoryTags: { anyOf: ["work"] }, deepDatasets: { anyOf: ["public.Orders"], noneOf: ["public.salaries"] } },
     }),
     actor: OWNER,
   });
@@ -243,11 +257,11 @@ test("context: rules.narrowing v1 carries deepDatasets next to memoryTags (same 
   const db = henryDb();
   const out = (await call("rules_context", hookReq("context", { effect: "read", product: "knowledge", op: "deep", caller: HENRY }), hookCtx(db))) as { add: Record<string, any> };
   const n = out.add["rules.narrowing"];
-  assert.equal(n.v, 1);
+  assert.equal(n.v, 2, "deepDatasets present → v 2 (a reader without dataset narrowing refuses it)");
   assert.match(n.ruleId, /^rul_/);
   assert.equal(n.reason, "Henry may read the orders dataset only");
   assert.deepEqual(n.memoryTags, { anyOf: ["work"] });
-  assert.deepEqual(n.deepDatasets, { anyOf: [" Public.Orders "], noneOf: ["public.salaries"] }, "emitted as the rule has it; the reader compares after trim + lower case");
+  assert.deepEqual(n.deepDatasets, { anyOf: ["public.Orders"], noneOf: ["public.salaries"] }, "emitted exactly as the rule has it: ids are case-sensitive");
   assert.equal(n.ruleId, out.add["rules.matched"].ruleId);
   const other = (await call("rules_context", hookReq("context", { effect: "read", product: "knowledge", op: "deep", caller: AGENT_B }), hookCtx(db))) as { add: Record<string, unknown> };
   assert.deepEqual(other.add, {}, "quiet on good: another agent gets no narrowing");
@@ -255,19 +269,52 @@ test("context: rules.narrowing v1 carries deepDatasets next to memoryTags (same 
   assert.ok(trace);
   assert.equal(trace.answered, "narrow");
   const kept = trace.detail?.narrowing as { deepDatasets: unknown } | undefined;
-  assert.deepEqual(kept?.deepDatasets, { anyOf: [" Public.Orders "], noneOf: ["public.salaries"] }, "the trace keeps the narrowing");
+  assert.deepEqual(kept?.deepDatasets, { anyOf: ["public.Orders"], noneOf: ["public.salaries"] }, "the trace keeps the narrowing");
 });
 
 test("context: a datasets-only narrowing is emitted without a memoryTags key; no narrowing key at all when neither is set", async () => {
   const { db } = migratedDb();
   saveRule(db, { spec: spec({ title: "datasets only", match: { agents: [HENRY] }, decision: "allow", reason: "orders only", narrowing: { deepDatasets: { anyOf: ["public.orders"] } } }), actor: OWNER });
   const out = (await call("rules_context", hookReq("context", { effect: "read", product: "knowledge", op: "deep", caller: HENRY }), hookCtx(db))) as { add: Record<string, any> };
-  assert.deepEqual(Object.keys(out.add["rules.narrowing"]).sort(), ["deepDatasets", "reason", "ruleId", "v"]);
+  assert.deepEqual(Object.keys(out.add["rules.narrowing"]).sort(), ["deepDatasets", "reason", "ruleId", "v"], "a deepDatasets-only narrowing is emitted, not dropped");
+  assert.equal(out.add["rules.narrowing"].v, 2);
   const { db: db2 } = migratedDb();
   saveRule(db2, { spec: spec({ title: "plain allow", match: { agents: [HENRY] }, decision: "allow", reason: "ok" }), actor: OWNER });
   const plain = (await call("rules_context", hookReq("context", { effect: "read", caller: HENRY }), hookCtx(db2))) as { add: Record<string, any> };
   assert.equal(plain.add["rules.narrowing"], undefined);
   assert.ok(plain.add["rules.matched"]);
+});
+
+test("context: v is 1 exactly when the merged narrowing has no deepDatasets; deepDatasets is never under v 1 (spec 0.1.68)", async () => {
+  const emit = async (narrowing: RuleSpec["narrowing"]) => {
+    const { db } = migratedDb();
+    saveRule(db, { spec: spec({ title: "n", match: { agents: [HENRY] }, decision: "allow", reason: "r", narrowing }), actor: OWNER });
+    const out = (await call("rules_context", hookReq("context", { effect: "read", product: "knowledge", op: "deep", caller: HENRY }), hookCtx(db))) as { add: Record<string, any> };
+    return out.add["rules.narrowing"] as Record<string, unknown>;
+  };
+  const tags = await emit({ memoryTags: { anyOf: ["work"] } });
+  assert.equal(tags.v, 1, "quiet on good: memory tags only stays v 1");
+  assert.equal("deepDatasets" in tags, false);
+  const sets = await emit({ deepDatasets: { noneOf: ["public.salaries"] } });
+  assert.equal(sets.v, 2, "fire on bad: datasets → v 2");
+  assert.equal("memoryTags" in sets, false, "no memoryTags key from a datasets-only rule");
+  const both = await emit({ memoryTags: { anyOf: ["work"] }, deepDatasets: { anyOf: ["public.orders"] } });
+  assert.equal(both.v, 2);
+  assert.deepEqual(both.memoryTags, { anyOf: ["work"] });
+  // every emission: a deepDatasets key implies v 2
+  for (const n of [tags, sets, both]) assert.equal("deepDatasets" in n, n.v === 2);
+  // merged from two rules (an unverified claim: the claim rule and the base rule both narrow): tags + datasets → v 2 with both keys
+  const { db } = migratedDb();
+  saveRule(db, { spec: spec({ title: "tags", priority: 1, match: { agents: [HENRY], onBehalfOf: { kinds: ["person"] } }, decision: "allow", reason: "t", narrowing: { memoryTags: { anyOf: ["work"] } } }), actor: OWNER });
+  saveRule(db, { spec: spec({ title: "sets", priority: 2, match: { agents: [HENRY] }, decision: "allow", reason: "s", narrowing: { deepDatasets: { anyOf: ["public.orders"] } } }), actor: OWNER });
+  const ctx = { "tb.onBehalfOf": { claim: { kind: "person", id: "psn_1" }, verified: false, via: "mcp_meta" } } as Record<string, Json>;
+  const merged = (await call("rules_context", hookReq("context", { effect: "read", caller: HENRY, context: ctx }), hookCtx(db))) as { add: Record<string, any> };
+  assert.equal(merged.add["rules.narrowing"].v, 2);
+  assert.deepEqual(merged.add["rules.narrowing"].memoryTags, { anyOf: ["work"] });
+  assert.deepEqual(merged.add["rules.narrowing"].deepDatasets, { anyOf: ["public.orders"] }, "a key present on either side survives the merge");
+  const noClaim = (await call("rules_context", hookReq("context", { effect: "read", caller: HENRY }), hookCtx(db))) as { add: Record<string, any> };
+  assert.equal(noClaim.add["rules.narrowing"].v, 2, "no claim: the datasets rule alone");
+  assert.equal("memoryTags" in noClaim.add["rules.narrowing"], false);
 });
 
 test("context: two matching allow rules (unverified claim) never emit a wider dataset list than either — merged by the engine", async () => {
@@ -321,6 +368,18 @@ test("manifest: rules_set, rule_draft_submit and rules_preview take match.tools 
   assert.ok(refused(ruleWith({ narrowing: { deepDatasets: { anyOf: [""] } } })), "no empty name");
   assert.ok(refused(ruleWith({ narrowing: { deepDatasets: { allOf: ["a.b"] } } })), "unknown key");
   assert.ok(refused(ruleWith({ match: { tools: [""] } })));
+  assert.ok(refused(ruleWith({ match: { tools: ["a"] } })), "canonical names have at least 2 characters");
   assert.ok(refused(ruleWith({ match: { tools: ["x".repeat(129)] } })));
+  // tools are the bridge's canonical tool names (^[a-z][a-z0-9_]{1,47}$): exact, so a name that can never equal one is refused
+  assert.ok(!refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(48)] } })), "48 characters is the longest canonical name");
+  assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(49)] } })));
+  assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["Gmail_Send"] } })), "case-sensitive canonical names are lower case");
+  assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["gmail*"] } })), "no wildcard or prefix");
+  // the deepDatasets object needs a list
+  assert.ok(refused(ruleWith({ narrowing: { deepDatasets: {} } })), "{} is not well-formed");
+  assert.ok(!refused(ruleWith({ narrowing: { deepDatasets: { noneOf: ["a.b"] } } })));
+  assert.ok(refused(ruleWith({ narrowing: { deepDatasets: { anyOf: "a.b" } } })), "a non-array");
+  assert.ok(refused(ruleWith({ narrowing: { deepDatasets: { anyOf: [7] } } })), "a non-string item");
+  assert.ok(refused(ruleWith({ narrowing: { deepDatasets: null } })));
   assert.ok(refused(ruleWith({ match: { tools: Array.from({ length: 101 }, (_, i) => `t${i}`) } })));
 });

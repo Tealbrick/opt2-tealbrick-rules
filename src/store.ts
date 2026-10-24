@@ -324,7 +324,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.rule?.rev ?? null,
     t.rule?.title ?? null,
     obo,
-    // spec 0.1.66: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration)
+    // spec 0.1.68: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration)
     t.detail || t.facts.target.tool !== undefined ? JSON.stringify({ ...t.detail, ...(t.facts.target.tool !== undefined ? { tool: t.facts.target.tool } : {}) }) : null,
     Math.max(0, Math.round(t.durationUs)),
   );
