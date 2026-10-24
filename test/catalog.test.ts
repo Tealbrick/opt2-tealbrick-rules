@@ -178,11 +178,53 @@ test("tools (spec 0.1.66): accepted on a dynamic op, refused on a static op or a
   const other = await run(OP.rulesPreview)({ call: call("gmail_read"), candidate: good }, owner);
   assert.equal(other.decision, "allow", "quiet-on-good: another tool");
   assert.equal(other.ruleId, null);
-  assert.equal((await run(OP.rulesPreview)({ call: call(), candidate: good }, owner)).ruleId, null, "no tool: no rule matches");
+  const noTool = await run(OP.rulesPreview)({ call: call(), candidate: good }, owner);
+  assert.equal(noTool.decision, "deny", "dynamic op without a tool: a deny rule with tools applies (fail closed)");
+  assert.deepEqual(noTool.steps.find((x: { ruleId: string }) => x.ruleId === "candidate")?.why, "matches: the call names no tool, so this rule applies (fail closed)");
   // The real hook call: the bridge sends `target.tool` for a dynamic call (BRIDGE v0.1.66).
   const { rules_gate } = makeHooks("rules") as unknown as Record<string, (r: unknown, c: unknown) => Promise<{ allow: boolean; reason?: string }>>;
   const sent = await rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward", tool: "gmail_send" }), hookCtx(db));
   assert.equal(sent.allow, false);
   assert.match(sent.reason ?? "", /sends need the owner/);
   assert.equal((await rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward", tool: "gmail_read" }), hookCtx(db))).allow, true);
+});
+
+// Review of rules#18: with the real catalog the gate knows which ops are dynamic. No target.tool: a static op never matches a
+// tools rule; a dynamic op applies deny and hold rules (fail closed) and not allow rules. Quiet AND firing (L34).
+test("tools without target.tool through the gate and the catalog: static op quiet, dynamic op fails closed for deny and hold, never for allow", async () => {
+  const { db } = await withCatalog();
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  const { rules_gate } = makeHooks("rules") as unknown as Record<string, (r: unknown, c: unknown) => Promise<{ allow: boolean; reason?: string }>>;
+  const gate = (op: string, tool?: string, callId = "cal_01J00000000000000000000001") =>
+    rules_gate(hookReq("before", { product: "connect", op, effect: "outward", callId, ...(tool ? { tool } : {}) }), hookCtx(db));
+  // products-only rule (no operations): the catalog decides per call whether the op is dynamic
+  const mk = (decision: "allow" | "deny" | "hold") => spec({ title: `tools ${decision}`, priority: 10, match: { products: ["connect"], tools: ["gmail_send"] }, decision, reason: `tool ${decision} rule` });
+  const saved = (await run(OP.rulesSet)({ rule: mk("deny") }, owner)).rule;
+  // static op without a tool: quiet; dynamic op without a tool: fire
+  assert.equal((await gate("buzz_dm")).allow, true, "static op without a tool: not matched");
+  const closed = await gate("tools");
+  assert.equal(closed.allow, false, "dynamic op without a tool: the deny rule applies");
+  assert.match(closed.reason ?? "", /tool deny rule/);
+  // dynamic op with a tool: normal
+  assert.equal((await gate("tools", "gmail_send")).allow, false);
+  assert.equal((await gate("tools", "gmail_read")).allow, true);
+  // the decision detail says the tool was unknown, and only then
+  const detailOf = async (callId: string) => (await run(OP.decisionsList)({ callId }, owner)).items[0]?.detail;
+  await gate("tools", undefined, "cal_01J00000000000000000000002");
+  await gate("tools", "gmail_send", "cal_01J00000000000000000000003");
+  assert.deepEqual(await detailOf("cal_01J00000000000000000000002"), { toolUnknown: true });
+  assert.equal((await detailOf("cal_01J00000000000000000000003"))?.toolUnknown, undefined);
+  // hold: same
+  await run(OP.rulesSet)({ id: saved.id, expectedRev: saved.rev, rule: mk("hold") }, owner);
+  const held = await gate("tools") as { allow: boolean; hold?: { family: string } };
+  assert.equal(held.allow, false);
+  assert.equal(held.hold?.family, "policy", "dynamic op without a tool: the hold rule applies");
+  assert.equal((await gate("buzz_dm")).allow, true);
+  // allow: never matched without a tool, so it cannot widen anything; it matches with the listed tool
+  await run(OP.rulesSet)({ id: saved.id, expectedRev: saved.rev + 1, rule: mk("allow") }, owner);
+  const base = (await run(OP.rulesSet)({ rule: spec({ title: "deny all connect", priority: 50, match: { products: ["connect"] }, decision: "deny", reason: "base deny" }) }, owner)).rule;
+  assert.ok(base.id);
+  assert.match((await gate("tools")).reason ?? "", /base deny/, "an allow rule with tools does not lift the deny when the tool is unknown");
+  assert.equal((await gate("tools", "gmail_send")).allow, true, "quiet on good: the listed tool reaches the allow rule");
+  assert.match((await gate("tools", "gmail_read")).reason ?? "", /base deny/);
 });

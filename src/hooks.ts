@@ -4,6 +4,7 @@
 import { performance } from "node:perf_hooks";
 import { hookResponseProblem } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
+import { isDynamicOp } from "./catalog.ts";
 import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict } from "./engine.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
@@ -65,6 +66,22 @@ export function toolOf(req: HookRequest): string | undefined {
   return typeof t === "string" && t.length > 0 && t.length <= 128 ? t : undefined;
 }
 
+/**
+ * The tool facts of a call: `tool` (when sent) and `dynamic` (from the local app catalog, a cached table: no network). A
+ * `tools` rule needs both to fail closed on a dynamic op that arrives without a tool (see engine.ts); `dynamic` is absent when
+ * the catalog cannot place the op, which counts as dynamic there. Never throws: a catalog read that fails leaves `dynamic` unknown.
+ */
+export function toolFacts(req: HookRequest, db: Db): { tool?: string; dynamic?: boolean } {
+  const tool = toolOf(req);
+  let dynamic: boolean | undefined;
+  try {
+    dynamic = isDynamicOp(db, req.call.target.product, req.call.target.op);
+  } catch {
+    dynamic = undefined;
+  }
+  return { ...(tool !== undefined ? { tool } : {}), ...(dynamic !== undefined ? { dynamic } : {}) };
+}
+
 /** Facts for one hook call: caller (and its teams), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
@@ -75,7 +92,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const callerKey = req.call.caller.type === "agent" ? `agent:${req.call.caller.id}` : null;
   return {
     caller: { type: req.call.caller.type, id: req.call.caller.id, mode: req.call.caller.mode ?? null },
-    target: { product: req.call.target.product, op: req.call.target.op, effect: req.call.target.effect, ...(toolOf(req) !== undefined ? { tool: toolOf(req) as string } : {}) },
+    target: { product: req.call.target.product, op: req.call.target.op, effect: req.call.target.effect, ...toolFacts(req, db) },
     claim,
     claimVerified: verified,
     ...claimFleetFacts(fx, claim, live),
@@ -151,7 +168,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
       if (recorded(facts, v))
-        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet ? { detail: { fleetUnavailable: true } } : {}), durationUs: elapsedUs(t0) });
+        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet || v.toolUnknown ? { detail: { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) } } : {}), durationUs: elapsedUs(t0) });
       return answer;
     } catch (e) {
       ctx.log.warn("rules_gate refused (fail closed)", { error: e instanceof Error ? e.message : "unknown", call: req.call.id });

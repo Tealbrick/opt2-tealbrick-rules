@@ -81,6 +81,11 @@ export function catalogOf(db: Db): Catalog | null {
   return cat;
 }
 
+/** Whether an op is dynamic by the catalog; `undefined` = the catalog cannot place it (no catalog, unknown app or op). Local read, no network. */
+export function isDynamicOp(db: Db, product: string, op: string): boolean | undefined {
+  return catalogOf(db)?.get(product)?.ops.get(op)?.dynamic;
+}
+
 /** Folds manifest summaries (oldest first) into one catalog: ops are the union over releases, titles from the newest. */
 export function buildCatalog(manifests: readonly { product: string; ops: readonly OpSummary[] }[]): Catalog {
   const cat: Catalog = new Map();

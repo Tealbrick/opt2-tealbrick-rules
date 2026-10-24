@@ -18,8 +18,10 @@
 // - Dataset narrowing (spec 0.1.66, C336 RQ-2): `narrowing.deepDatasets {anyOf, noneOf}` limits the datasets a data app (Knowledge
 //   deep knowledge) may read for the call. It merges exactly like `memoryTags` (anyOf intersects, noneOf unites, disjoint anyOf
 //   gives [] = nothing passes) and is compared after trim + lower case.
-// - Match field `tools` (spec 0.1.66): the dynamic entry name the bridge sends as `target.tool`. A rule with `tools` never matches a
-//   call without `target.tool` (static ops, dynamic search, or a bridge that does not send it yet).
+// - Match field `tools` (spec 0.1.66): the dynamic entry name the bridge sends as `target.tool`. Without `target.tool`: a STATIC op
+//   never matches a `tools` rule. A DYNAMIC op (or one the catalog cannot place) fails CLOSED like the Fleet facts do: a DENY or HOLD
+//   rule with `tools` applies (the tool is unknown, an older bridge or a bridge bug must not switch it off), an ALLOW rule with
+//   `tools` does not. With `target.tool` the match is exact. The verdict says so in `toolUnknown`.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 
@@ -59,6 +61,11 @@ export interface CallFacts {
     effect: string;
     /** spec 0.1.66: the dynamic catalog entry name of a dynamic call; absent for static ops and dynamic search */
     tool?: string;
+    /**
+     * Whether the target op is dynamic, from the app catalog (a local cached table). `undefined` = the catalog cannot place the
+     * op (no catalog, or the app/op is not in it): treated as dynamic for a `tools` rule, so a deny or hold rule applies (fail closed).
+     */
+    dynamic?: boolean;
   };
   /** `tb.onBehalfOf` claim (bridge-copied, spec 0.1.13), or null */
   claim: Claim | null;
@@ -99,6 +106,8 @@ export interface Verdict {
   viaClaim: boolean;
   /** true when the decisive deny/hold rule applied only because the Fleet facts it names were unavailable */
   closedOnFleet: boolean;
+  /** true when the decisive deny/hold rule applied only because the call of a dynamic op carried no `target.tool` (fail closed) */
+  toolUnknown: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
   narrowingRuleId: string | null;
 }
@@ -130,19 +139,27 @@ export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rule
  * unavailable (`closed`, deny and hold rules only), and whether an ALLOW rule that matches on everything else was skipped
  * because the facts are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
  */
-export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why: string; closed: boolean; skipped: boolean } {
-  const no = (why: string) => ({ why, closed: false, skipped: false });
+export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why: string; closed: boolean; fleetClosed: boolean; toolClosed: boolean; skipped: boolean } {
+  const no = (why: string) => ({ why, closed: false, fleetClosed: false, toolClosed: false, skipped: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
   if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
   if (!anyOf(m.modes, facts.caller.mode)) return no("caller mode differs");
   if (!anyOf(m.products, facts.target.product)) return no("target product differs");
   if (!anyOf(m.operations, facts.target.op)) return no("target operation differs");
-  // spec 0.1.66: a rule that names tools matches only a call that carries one of them (no `target.tool` = no match, also for deny and hold)
-  if (m.tools?.length && !(facts.target.tool !== undefined && m.tools.includes(facts.target.tool))) return no(facts.target.tool === undefined ? "call has no tool name" : "target tool differs");
   if (!anyOf(m.effects, facts.target.effect)) return no("effect differs");
   const strict = spec.outcome.decision !== "allow";
   let closed = false;
+  let toolClosed = false;
+  // spec 0.1.66: a rule that names tools matches a call that carries one of them. A call WITHOUT `target.tool`: a static op never
+  // matches; a dynamic op (or one the catalog cannot place) is fail closed: deny and hold rules apply, allow rules do not.
+  if (m.tools?.length) {
+    const tool = facts.target.tool;
+    if (tool !== undefined) {
+      if (!m.tools.includes(tool)) return no("target tool differs");
+    } else if (strict && facts.target.dynamic !== false) toolClosed = true;
+    else return no(facts.target.dynamic === false ? "call has no tool name (static operation)" : "call has no tool name");
+  }
   let skipped = false;
   // A Fleet criterion: met, not met, or (copy unavailable) met for a deny/hold rule and never met for an allow rule.
   const fleet = (met: boolean, why: string): string => {
@@ -177,8 +194,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
       if (why) return no(why);
     }
   }
-  if (skipped) return { why: NEEDS_FLEET, closed: false, skipped: true };
-  return { why: "", closed, skipped: false };
+  if (skipped) return { why: NEEDS_FLEET, closed: false, fleetClosed: false, toolClosed: false, skipped: true };
+  return { why: "", closed: closed || toolClosed, fleetClosed: closed, toolClosed, skipped: false };
 }
 
 export function mismatch(spec: RuleSpec, facts: CallFacts, useClaim = true): string {
@@ -193,6 +210,9 @@ export function order(rules: readonly Rule[]): Rule[] {
 interface Hit {
   rule: Rule | null;
   closed: boolean;
+  /** why the decisive rule is closed: the Fleet facts, and/or an unknown tool */
+  fleetClosed: boolean;
+  toolClosed: boolean;
   /** merged narrowing of the allow rules skipped for unavailable Fleet facts that precede the decisive rule */
   skippedNarrowing: Narrowing | null;
   skippedRuleId: string | null;
@@ -208,6 +228,7 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
   let skippedNarrowing: Narrowing | null = null;
   let skippedRuleId: string | null = null;
   let worst: Rule | null = null;
+  let worstWhy = { fleetClosed: false, toolClosed: false };
   for (const r of ordered) {
     const j = judge(r.spec, facts, useClaim);
     if (j.skipped) {
@@ -219,18 +240,22 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
     }
     if (j.why !== "") continue;
     if (j.closed) {
-      if (!worst || SEVERITY[r.spec.outcome.decision] > SEVERITY[worst.spec.outcome.decision]) worst = r;
+      if (!worst || SEVERITY[r.spec.outcome.decision] > SEVERITY[worst.spec.outcome.decision]) {
+        worst = r;
+        worstWhy = { fleetClosed: j.fleetClosed, toolClosed: j.toolClosed };
+      }
       continue;
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
-    return { rule: decisive, closed: decisive === worst, skippedNarrowing, skippedRuleId };
+    const closed = decisive === worst;
+    return { rule: decisive, closed, fleetClosed: closed && worstWhy.fleetClosed, toolClosed: closed && worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
   }
-  return { rule: worst, closed: worst !== null, skippedNarrowing, skippedRuleId };
+  return { rule: worst, closed: worst !== null, fleetClosed: worstWhy.fleetClosed, toolClosed: worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
 }
 
 function verdictOf(hit: Hit): Verdict {
   const rule = hit.rule;
-  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skippedNarrowing !== null, narrowingRuleId: hit.skippedRuleId };
+  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skippedNarrowing !== null, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -239,7 +264,8 @@ function verdictOf(hit: Hit): Verdict {
     rule: { id: rule.id, rev: rule.rev, title: rule.spec.title },
     narrowing: allow ? mergeNarrowing(own, hit.skippedNarrowing) : null,
     viaClaim: dependsOnClaim(rule.spec),
-    closedOnFleet: hit.closed || (allow && hit.skippedNarrowing !== null),
+    closedOnFleet: hit.fleetClosed || (allow && hit.skippedNarrowing !== null),
+    toolUnknown: hit.toolClosed,
     narrowingRuleId: allow ? (own ? rule.id : hit.skippedRuleId) : null,
   };
 }
@@ -319,17 +345,26 @@ export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
   return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet };
 }
 
+const closedWhy = (j: { fleetClosed: boolean; toolClosed: boolean }): string =>
+  j.fleetClosed && j.toolClosed
+    ? "matches: Fleet facts are unavailable and the call names no tool, so this rule applies (fail closed)"
+    : j.toolClosed
+      ? "matches: the call names no tool, so this rule applies (fail closed)"
+      : j.fleetClosed
+        ? "matches: Fleet facts are unavailable, so this rule applies (fail closed)"
+        : "matches";
+
 /** Per-rule explanation for the dry run. */
 export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
   return ordered.map((r) => {
     const j = judge(r.spec, facts, true);
-    return { ruleId: r.id, title: r.spec.title, matched: j.why === "", why: j.why || (j.closed ? "matches: Fleet facts are unavailable, so this rule applies (fail closed)" : "matches") };
+    return { ruleId: r.id, title: r.spec.title, matched: j.why === "", why: j.why || closedWhy(j) };
   });
 }
 
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet;
+  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.toolUnknown;
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see `normalizeDataset`). */

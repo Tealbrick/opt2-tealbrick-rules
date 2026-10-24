@@ -8,15 +8,15 @@ import { test } from "node:test";
 import { validateAgainstSchema, validateManifest } from "@opt2-tealbrick/manifest";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { manifest } from "../src/app.ts";
-import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, normalizeDataset, order, type Rule, redactionsFor, specProblem, strictestNarrowing } from "../src/engine.ts";
+import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, normalizeDataset, order, type Rule, recorded, redactionsFor, specProblem, strictestNarrowing } from "../src/engine.ts";
 import { makeHooks, toolOf } from "../src/hooks.ts";
 import { listDecisions, saveRule } from "../src/store.ts";
 import { AGENT_A, AGENT_B, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts } from "./helpers.ts";
 
 const rule = (id: string, s: Rule["spec"], updatedAt = 1): Rule => ({ id, rev: 1, spec: s, updatedAt });
-const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { effect?: string; product?: string; op?: string; tool?: string; caller?: string } = {}): CallFacts => ({
+const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { effect?: string; product?: string; op?: string; tool?: string; dynamic?: boolean; caller?: string } = {}): CallFacts => ({
   caller: { type: "agent", id: o.caller ?? AGENT_A, mode: "free" },
-  target: { product: o.product ?? "knowledge", op: o.op ?? "deep", effect: o.effect ?? "read", ...(o.tool !== undefined ? { tool: o.tool } : {}) },
+  target: { product: o.product ?? "knowledge", op: o.op ?? "deep", effect: o.effect ?? "read", ...(o.tool !== undefined ? { tool: o.tool } : {}), ...(o.dynamic !== undefined ? { dynamic: o.dynamic } : {}) },
   claim: o.claim ?? null,
   claimVerified: o.claimVerified ?? false,
   claimTeams: o.claimTeams ?? [],
@@ -136,20 +136,15 @@ test("specProblem: deepDatasets and tools — quiet on a good rule, firing on ea
 const toolRule = (tools: string[], decision: "allow" | "deny" | "hold" = "deny") =>
   rule("rul_tool", spec({ title: "gate gmail send", match: { products: ["connect"], operations: ["tools"], tools }, decision, reason: "sends need the owner" }));
 
-test("tools: a rule matches a call whose target.tool is listed; not another tool; never a call without target.tool", () => {
+test("tools with a target.tool: the listed tool matches, another tool and a different case do not", () => {
   const r = toolRule(["gmail_send", "calendar_create"]);
-  const at = (tool?: string) => facts({ product: "connect", op: "tools", effect: "outward", ...(tool !== undefined ? { tool } : {}) });
+  const at = (tool: string) => facts({ product: "connect", op: "tools", effect: "outward", dynamic: true, tool });
   assert.equal(evaluate([r], at("gmail_send")).decision, "deny", "fire-on-bad: the listed tool is refused");
   assert.equal(evaluate([r], at("calendar_create")).decision, "deny");
-  assert.equal(evaluate([r], at("gmail_read")).decision, "allow", "quiet-on-good: another tool of the same op passes");
+  const other = evaluate([r], at("gmail_read"));
+  assert.equal(other.decision, "allow", "quiet-on-good: another tool of the same op passes");
+  assert.equal(other.toolUnknown, false);
   assert.equal(evaluate([r], at("Gmail_Send")).decision, "allow", "tool names compare exactly");
-  const none = evaluate([r], at());
-  assert.equal(none.decision, "allow", "a call without target.tool never matches a rule with tools");
-  assert.equal(none.rule, null);
-  assert.deepEqual(
-    explain([r], at()).map((s) => [s.matched, s.why]),
-    [[false, "call has no tool name"]],
-  );
   assert.deepEqual(
     explain([r], at("gmail_read")).map((s) => [s.matched, s.why]),
     [[false, "target tool differs"]],
@@ -157,7 +152,58 @@ test("tools: a rule matches a call whose target.tool is listed; not another tool
   // No `tools` on a rule: the tool name is irrelevant (existing rules keep matching dynamic calls).
   const plain = rule("rul_plain", spec({ match: { products: ["connect"], operations: ["tools"] }, decision: "hold", reason: "wait" }));
   assert.equal(evaluate([plain], at("gmail_send")).decision, "hold");
-  assert.equal(evaluate([plain], at()).decision, "hold");
+  assert.equal(evaluate([plain], facts({ product: "connect", op: "tools", effect: "outward", dynamic: true })).decision, "hold");
+});
+
+// Review of rules#18: a call WITHOUT target.tool. Static op: a `tools` rule never matches. Dynamic op: deny and hold rules
+// APPLY (fail closed, like the Fleet facts, C236), allow rules do not. Dynamic with a tool: normal matching. Each cell quiet AND firing.
+test("tools without target.tool: static op never matches; dynamic op fails closed for deny and hold, not for allow (decision matrix)", () => {
+  const no = { product: "connect", effect: "outward" };
+  const stat = facts({ ...no, op: "buzz_dm", dynamic: false });
+  const dyn = facts({ ...no, op: "tools", dynamic: true });
+  const unknown = facts({ ...no, op: "tools" }); // the catalog cannot place the op
+  const rules = (decision: "allow" | "deny" | "hold") => [rule("rul_t", spec({ title: "t", match: { products: ["connect"], tools: ["gmail_send"] }, decision, reason: "tool rule" }))];
+  for (const decision of ["deny", "hold"] as const) {
+    // static op, no tool: quiet
+    const s = evaluate(rules(decision), stat);
+    assert.equal(s.decision, "allow", `${decision}: static op without a tool is not matched`);
+    assert.equal(s.rule, null);
+    assert.equal(s.toolUnknown, false);
+    // dynamic op, no tool: fire
+    const d = evaluate(rules(decision), dyn);
+    assert.equal(d.decision, decision, `${decision}: dynamic op without a tool applies (fail closed)`);
+    assert.equal(d.toolUnknown, true);
+    assert.equal(d.closedOnFleet, false, "the Fleet flag is its own");
+    assert.equal(recorded(dyn, d), true, "the decision is recorded");
+    // an op the catalog cannot place counts as dynamic: fire
+    assert.equal(evaluate(rules(decision), unknown).decision, decision, `${decision}: unplaced op without a tool applies`);
+    // dynamic op, a tool: normal matching (fire on the listed tool, quiet on another)
+    const hit = evaluate(rules(decision), { ...dyn, target: { ...dyn.target, tool: "gmail_send" } });
+    assert.equal(hit.decision, decision);
+    assert.equal(hit.toolUnknown, false, "a known tool is not 'unknown'");
+    assert.equal(evaluate(rules(decision), { ...dyn, target: { ...dyn.target, tool: "gmail_read" } }).decision, "allow");
+  }
+  // allow rules with tools: never matched without a tool, on a static or a dynamic op
+  for (const f of [stat, dyn, unknown]) {
+    const a = evaluate(rules("allow"), f);
+    assert.equal(a.rule, null, "an allow rule with tools does not match without a tool");
+    assert.equal(a.toolUnknown, false);
+  }
+  assert.equal(evaluate(rules("allow"), { ...dyn, target: { ...dyn.target, tool: "gmail_send" } }).rule?.id, "rul_t", "allow rule with the listed tool: matched");
+  assert.equal(evaluate(rules("allow"), { ...dyn, target: { ...dyn.target, tool: "gmail_read" } }).rule, null);
+  // explain says why
+  assert.deepEqual(explain(rules("deny"), dyn).map((x) => [x.matched, x.why]), [[true, "matches: the call names no tool, so this rule applies (fail closed)"]]);
+  assert.deepEqual(explain(rules("deny"), stat).map((x) => [x.matched, x.why]), [[false, "call has no tool name (static operation)"]]);
+  assert.deepEqual(explain(rules("allow"), dyn).map((x) => [x.matched, x.why]), [[false, "call has no tool name"]]);
+});
+
+test("tools without target.tool: the closed rule joins the severity scan (a later deny beats an earlier closed hold; a fact-free allow after it does not lift it)", () => {
+  const dyn = facts({ product: "connect", op: "tools", effect: "outward", dynamic: true });
+  const tl = (id: string, priority: number, decision: "allow" | "deny" | "hold") => rule(id, spec({ priority, match: { products: ["connect"], tools: ["gmail_send"] }, decision, reason: id }));
+  const plain = (id: string, priority: number, decision: "allow" | "deny" | "hold") => rule(id, spec({ priority, match: { products: ["connect"] }, decision, reason: id }));
+  assert.equal(evaluate(order([tl("rul_h", 1, "hold"), plain("rul_a", 2, "allow")]), dyn).rule?.id, "rul_h", "closed hold before a plain allow still holds");
+  assert.equal(evaluate(order([tl("rul_h", 1, "hold"), plain("rul_d", 2, "deny")]), dyn).rule?.id, "rul_d", "the later deny is stricter");
+  assert.equal(evaluate(order([plain("rul_a", 1, "allow"), tl("rul_d", 2, "deny")]), dyn).decision, "allow", "the first fact-free match decides when it comes first");
 });
 
 test("tools: strictestNarrowing (after-hook without a pin) skips a rule whose tools cannot match the call", () => {
@@ -233,7 +279,7 @@ test("context: two matching allow rules (unverified claim) never emit a wider da
   assert.deepEqual(out.add["rules.narrowing"].deepDatasets, { anyOf: ["public.orders"], noneOf: ["public.salaries"] });
 });
 
-test("gate: target.tool reaches the decision and the trace; the dry-run style call without a tool is not matched", async () => {
+test("gate: target.tool reaches the decision and the trace; without a catalog an absent tool fails closed with toolUnknown recorded", async () => {
   const { db, raw } = migratedDb();
   // The writer needs the app catalog to accept `tools` (catalog.test.ts covers that path); a stored rule is read as it is.
   const toolSpec = spec({ title: "gate gmail send", priority: 5, match: { products: ["connect"], operations: ["tools"], tools: ["gmail_send"] }, decision: "deny", reason: "sends need the owner" });
@@ -246,11 +292,14 @@ test("gate: target.tool reaches the decision and the trace; the dry-run style ca
   const good = await call("rules_gate", hookReq("before", { product: "connect", op: "tools", effect: "outward", tool: "gmail_read", callId: "cal_good" }), hookCtx(db));
   assert.deepEqual(good, { allow: true });
   const noTool = await call("rules_gate", hookReq("before", { product: "connect", op: "tools", effect: "outward", callId: "cal_none" }), hookCtx(db));
-  assert.deepEqual(noTool, { allow: true }, "a call without target.tool never matches a tools rule");
+  assert.equal(noTool.allow, false, "no catalog: the op cannot be placed, so it counts as dynamic and the deny rule applies");
   const traces = listDecisions(db, { limit: 10 }).items;
   assert.equal(traces.find((t) => t.callId === "cal_bad")?.target.tool, "gmail_send", "the decision log names the tool");
   assert.equal(traces.find((t) => t.callId === "cal_good")?.target.tool, "gmail_read");
-  assert.equal(traces.find((t) => t.callId === "cal_none")?.target.tool, undefined);
+  const none = traces.find((t) => t.callId === "cal_none");
+  assert.equal(none?.target.tool, undefined);
+  assert.equal(none?.detail?.toolUnknown, true, "the decision detail records that the tool was unknown");
+  assert.equal(traces.find((t) => t.callId === "cal_bad")?.detail?.toolUnknown, undefined, "a known tool leaves no toolUnknown");
 });
 
 // ── the owner and agent ops accept the new fields and refuse out-of-range ones ─────────────────────────────────
