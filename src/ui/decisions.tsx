@@ -71,7 +71,8 @@ export function DecisionsPage() {
             <div className="item" key={d.id}>
               <Swatch className={d.answered === "deny" ? "is-needs-you" : undefined} />
               <h3>
-                <DecisionTag decision={d.answered} /> {d.target.product}.{d.target.op} <Tag>{d.target.effect}</Tag>
+                <DecisionTag decision={d.answered} /> {d.target.product}.{d.target.op}
+                {d.target.tool ? ` (${d.target.tool})` : ""} <Tag>{d.target.effect}</Tag>
               </h3>
               <p>
                 {d.reason}

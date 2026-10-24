@@ -3,7 +3,7 @@
 // manifest operation id and one handler per manifest hook id. Op ids and I/O types come from the generated kit (`#kit`).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type DecisionsListInput,
   type DecisionsListOutput,
@@ -32,7 +32,7 @@ import {
   type RulesSetInput,
   type RulesSetOutput,
 } from "#kit";
-import { catalogOf, catalogState, ensureCatalog, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
+import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
@@ -119,6 +119,11 @@ function reviewed(ctx: OpContext, d: DraftView): DraftView & { problems: (string
   return { ...d, problems: d.rules.map((s) => ruleProblem(ctx.db, s) || null), opTitles: opTitles(d.rules, catalogOf(ctx.db)) };
 }
 
+const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
+  const dynamic = isDynamicOp(db, product, op);
+  return dynamic === undefined ? {} : { dynamic };
+};
+
 export const handlers = {
   [OP.rulesList]: op<RulesListInput, RulesListOutput>({
     async run(input, ctx) {
@@ -167,7 +172,7 @@ export const handlers = {
       const fx = fleetFacts(ctx.db);
       const facts: CallFacts = {
         caller: { type: input.call.caller.type, id: input.call.caller.id, mode: input.call.caller.mode ?? null },
-        target: { ...input.call.target },
+        target: { ...input.call.target, ...dynamicFact(ctx.db, input.call.target.product, input.call.target.op) },
         claim,
         claimVerified: false,
         ...claimFleetFacts(fx, claim),

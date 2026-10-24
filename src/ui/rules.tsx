@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 
 const DECISIONS = [
@@ -29,10 +29,17 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
     setMatch({ onBehalfOf: next.teams || next.ids || next.kinds || next.trust ? next : undefined });
   };
   const tags = s.narrowing?.memoryTags ?? {};
-  const setTags = (patch: { anyOf?: string[]; noneOf?: string[] }) => {
-    const next = { ...tags, ...patch };
-    setS({ ...s, narrowing: next.anyOf || next.noneOf ? { memoryTags: next } : undefined });
+  const sets = s.narrowing?.deepDatasets ?? {};
+  type Lists = { anyOf?: string[]; noneOf?: string[] };
+  // One narrowing object holds both kinds: change one key, keep the other, drop the object when both are empty.
+  const setNarrowing = (key: "memoryTags" | "deepDatasets", next: Lists) => {
+    const rest = { ...s.narrowing, [key]: next.anyOf || next.noneOf ? next : undefined };
+    if (!rest.memoryTags) delete rest.memoryTags;
+    if (!rest.deepDatasets) delete rest.deepDatasets;
+    setS({ ...s, narrowing: rest.memoryTags || rest.deepDatasets ? rest : undefined });
   };
+  const setTags = (patch: Lists) => setNarrowing("memoryTags", { ...tags, ...patch });
+  const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
   const save = async () => {
     if (busy) return;
     setBusy(true);
@@ -105,6 +112,9 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
           <Field label="Operations" hint="Operation ids, comma separated. Needs the app above.">
             <TextInput value={joinList(m.operations)} onChange={(e) => setMatch({ operations: list(e.target.value) })} />
           </Field>
+          <Field label="Tools" hint="Tool names of a connected service, exact and case-sensitive, comma separated; a name also covers its x__… variants. Needs the app above and a dynamic operation.">
+            <TextInput value={joinList(m.tools)} onChange={(e) => setMatch({ tools: list(e.target.value) })} />
+          </Field>
         </div>
         <ChipChoice
           label="Caller is a member of team (from Governance)"
@@ -141,6 +151,12 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
             <Field label="Never memories tagged">
               <TextInput value={joinList(tags.noneOf)} onChange={(e) => setTags({ noneOf: list(e.target.value) })} />
             </Field>
+            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated. Deep knowledge reads nothing outside them.">
+              <TextInput value={joinList(sets.anyOf)} onChange={(e) => setSets({ anyOf: list(e.target.value) })} />
+            </Field>
+            <Field label="Never datasets" hint="Exact ids, case-sensitive.">
+              <TextInput value={joinList(sets.noneOf)} onChange={(e) => setSets({ noneOf: list(e.target.value) })} />
+            </Field>
           </div>
         </section>
       ) : null}
@@ -155,6 +171,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [mode, setMode] = useState<"free" | "bound">("free");
   const [product, setProduct] = useState("knowledge");
   const [op, setOp] = useState("memory_recall");
+  const [tool, setTool] = useState("");
   const [effect, setEffect] = useState<(typeof EFFECTS)[number]>("read");
   const [handle, setHandle] = useState("");
   const [result, setResult] = useState<Out<"rules_preview"> | null>(null);
@@ -169,7 +186,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         await run("rules_preview", {
           call: {
             caller: { type: "agent", id, mode },
-            target: { product, op, effect },
+            target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}) },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
           ...(candidate?.title && candidate.outcome.reason ? { candidate } : {}),
@@ -198,6 +215,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <Field label="Operation">
           <TextInput value={op} onChange={(e) => setOp(e.target.value)} />
         </Field>
+        <Field label="Tool (optional)" hint="Only for a call of a connected service tool.">
+          <TextInput value={tool} onChange={(e) => setTool(e.target.value)} />
+        </Field>
         <Field label="Effect">
           <Select value={effect} options={EFFECTS.map((e) => ({ value: e, label: e }))} onValueChange={(v) => setEffect(v as (typeof EFFECTS)[number])} />
         </Field>
@@ -222,7 +242,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
             <span>{result.reason}</span>
             {result.ruleTitle ? <span className="tb-hint">by “{result.ruleTitle}”</span> : null}
           </div>
-          {result.narrowing ? <p className="tb-soft">Narrowed to memories: {JSON.stringify(result.narrowing.memoryTags)}</p> : null}
+          {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
           {result.fleetAvailable ? (
             <p className="tb-hint">
               Caller teams: {result.callerTeams.length ? result.callerTeams.map(dir.teamName).join(", ") : "none"} · requester teams: {result.teams.length ? result.teams.map(dir.teamName).join(", ") : "none"} ·
@@ -345,7 +365,7 @@ export function RulesPage() {
               </h3>
               <p>
                 {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
-                {r.spec.narrowing?.memoryTags ? ` · memories: ${JSON.stringify(r.spec.narrowing.memoryTags)}` : ""}
+                {narrowingText(r.spec.narrowing)}
               </p>
               {r.problem ? <p>Never matches: {r.problem}</p> : null}
               <span className="meta">

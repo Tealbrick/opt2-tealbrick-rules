@@ -3,7 +3,7 @@
 // time per draft.
 import { Button, Card, EmptyState, Notice, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useRef, useState } from "react";
-import { type DraftRow, day, errorText, matchText, run, shortId } from "./api.ts";
+import { type DraftRow, day, errorText, matchText, narrowingText, run, shortId } from "./api.ts";
 import { DecisionTag, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 
 const DRAFT_STATUS = { pending: "busy", approved: "live", rejected: "default" } as const;
@@ -64,7 +64,7 @@ export function DraftsPage({ onChange }: { onChange: () => void }) {
                       </b>
                       <span>
                         {matchText(r, dir.teamName, dir.agentName, d.opTitles ?? {})} → {r.outcome.reason}
-                        {r.narrowing?.memoryTags ? ` · memories: ${JSON.stringify(r.narrowing.memoryTags)}` : ""}
+                        {narrowingText(r.narrowing)}
                       </span>
                       {d.problems?.[i] ? <span>Never matches: {d.problems[i]}</span> : null}
                     </li>
