@@ -377,8 +377,8 @@ test("manifest: rules_set, rule_draft_submit and rules_preview take match.tools 
   assert.ok(refused(ruleWith({ match: { tools: ["a"] } })), "canonical names have at least 2 characters");
   assert.ok(refused(ruleWith({ match: { tools: ["x".repeat(129)] } })));
   // tools are the bridge's canonical tool names (^[a-z][a-z0-9_]{1,47}$): exact, so a name that can never equal one is refused
-  assert.ok(!refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(48)] } })), "48 characters is the longest canonical name");
-  assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(49)] } })));
+  assert.ok(!refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(63)] } })), "63 characters is the longest canonical name (catalog names <= 48; resolved variants such as <tool>__first_contact)");
+  assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["a".repeat(64)] } })));
   assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["Gmail_Send"] } })), "case-sensitive canonical names are lower case");
   assert.ok(refused(ruleWith({ match: { products: ["connect"], tools: ["gmail*"] } })), "no wildcard or prefix");
   // the deepDatasets object needs a list

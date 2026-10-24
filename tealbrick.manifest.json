@@ -263,8 +263,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -614,8 +614,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -882,8 +882,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -1166,8 +1166,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -1456,8 +1456,8 @@
                   "tool": {
                     "type": "string",
                     "minLength": 2,
-                    "maxLength": 48,
-                    "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                    "maxLength": 63,
+                    "pattern": "^[a-z][a-z0-9_]{1,62}$"
                   },
                   "effect": {
                     "enum": [
@@ -1579,8 +1579,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -2381,8 +2381,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -2796,8 +2796,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
@@ -3269,8 +3269,8 @@
                     "items": {
                       "type": "string",
                       "minLength": 2,
-                      "maxLength": 48,
-                      "pattern": "^[a-z][a-z0-9_]{1,47}$"
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
                     }
                   },
                   "effects": {
