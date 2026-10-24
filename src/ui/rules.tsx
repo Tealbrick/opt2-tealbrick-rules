@@ -112,7 +112,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
           <Field label="Operations" hint="Operation ids, comma separated. Needs the app above.">
             <TextInput value={joinList(m.operations)} onChange={(e) => setMatch({ operations: list(e.target.value) })} />
           </Field>
-          <Field label="Tools" hint="Tool names of a connected service, exact and case-sensitive, comma separated. Needs the app above and a dynamic operation.">
+          <Field label="Tools" hint="Tool names of a connected service, exact and case-sensitive, comma separated; a name also covers its x__… variants. Needs the app above and a dynamic operation.">
             <TextInput value={joinList(m.tools)} onChange={(e) => setMatch({ tools: list(e.target.value) })} />
           </Field>
         </div>

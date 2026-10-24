@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { validateAgainstSchema, validateManifest } from "@opt2-tealbrick/manifest";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { manifest } from "../src/app.ts";
-import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, order, type Rule, type RuleSpec, recorded, redactionsFor, specProblem, strictestNarrowing } from "../src/engine.ts";
+import { type CallFacts, datasetsMatch, datasetsPass, evaluate, explain, mergeNarrowing, order, type Rule, type RuleSpec, recorded, redactionsFor, specProblem, strictestNarrowing, toolListed } from "../src/engine.ts";
 import { makeHooks, toolOf } from "../src/hooks.ts";
 import { listDecisions, saveRule } from "../src/store.ts";
 import { AGENT_A, AGENT_B, hookCtx, hookReq, migratedDb, OWNER, spec, trustFacts } from "./helpers.ts";
@@ -169,6 +169,18 @@ test("tools with a target.tool: the listed tool matches, another tool and a diff
     explain([r], at("gmail_read")).map((s) => [s.matched, s.why]),
     [[false, "target tool differs"]],
   );
+  // QA-RULES18-4: a resolved variant `x__…` of a listed tool matches too, a look-alike does not
+  assert.equal(evaluate([r], at("gmail_send__first_contact")).decision, "deny", "fire-on-bad: the resolved variant");
+  assert.equal(evaluate([r], at("gmail_send_bulk")).decision, "allow", "quiet-on-good: not a prefix wildcard");
+  assert.equal(evaluate([r], at("gmail_sendx")).decision, "allow");
+  assert.equal(evaluate([toolRule(["gmail_send"], "allow")], at("gmail_send__first_contact")).rule?.id, "rul_tool", "allow rules follow the same rule");
+  assert.equal(evaluate([toolRule(["gmail_send"], "allow")], at("gmail_send_bulk")).rule, null);
+  assert.equal(toolListed(["gmail_send"], "gmail_send__"), true);
+  assert.equal(toolListed(["gmail_send"], "gmail_send"), true);
+  assert.equal(toolListed(["gmail_send"], "gmail_sen"), false);
+  assert.equal(toolListed(["gmail_send"], "Gmail_Send__first_contact"), false, "case-sensitive");
+  assert.match(specProblem(spec({ match: { products: ["connect"], tools: ["a__b"] } })), /contains “__”/, "the writer refuses a variant name");
+  assert.equal(specProblem(spec({ match: { products: ["connect"], tools: ["a_b", "gmail_send"] } })), "");
   // No `tools` on a rule: the tool name is irrelevant (existing rules keep matching dynamic calls).
   const plain = rule("rul_plain", spec({ match: { products: ["connect"], operations: ["tools"] }, decision: "hold", reason: "wait" }));
   assert.equal(evaluate([plain], at("gmail_send")).decision, "hold");

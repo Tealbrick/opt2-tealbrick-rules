@@ -228,3 +228,56 @@ test("tools without target.tool through the gate and the catalog: static op quie
   assert.equal((await gate("tools", "gmail_send")).allow, true, "quiet on good: the listed tool reaches the allow rule");
   assert.match((await gate("tools", "gmail_read")).reason ?? "", /base deny/);
 });
+
+// QA-RULES18-4 (C354): Connect resolves `gmail_send` to variants such as `gmail_send__first_contact`, which run the same upstream
+// tool. A tools condition naming `x` matches `x` and `x__…`, nothing else (catalog names never hold `__`). Real engine path: the
+// owner op rules_preview and the rules_gate hook, as QA ran them. Quiet AND firing, deny and allow.
+test("tools: a condition naming gmail_send matches gmail_send__first_contact, not gmail_sendx or gmail_send_bulk; a saved entry with __ is refused", async () => {
+  const { db } = await withCatalog();
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  const agent = opCtx(db, { type: "agent", id: AGENT_A, name: "agent", mode: "free" });
+  const { rules_gate } = makeHooks("rules") as unknown as Record<string, (r: unknown, c: unknown) => Promise<{ allow: boolean; reason?: string }>>;
+  const gate = (tool: string) => rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward", tool, callId: "cal_01J00000000000000000000009" }), hookCtx(db));
+  const preview = async (tool: string) =>
+    run(OP.rulesPreview)({ call: { caller: { type: "agent", id: AGENT_A, mode: "free" }, target: { product: "connect", op: "tools", effect: "outward", tool } } }, owner);
+  const rule = (decision: "allow" | "deny" | "hold", priority: number) => spec({ title: `gmail_send ${decision}`, priority, match: { products: ["connect"], operations: ["tools"], tools: ["gmail_send"] }, decision, reason: `gmail_send ${decision} rule` });
+
+  // deny: the exact tool and its resolved variant fire; look-alikes stay quiet
+  const saved = (await run(OP.rulesSet)({ rule: rule("deny", 10) }, owner)).rule;
+  for (const tool of ["gmail_send", "gmail_send__first_contact"]) {
+    const p = await preview(tool);
+    assert.equal(p.decision, "deny", `fire-on-bad: ${tool} (preview)`);
+    const g = await gate(tool);
+    assert.equal(g.allow, false, `fire-on-bad: ${tool} (gate)`);
+    assert.match(g.reason ?? "", /gmail_send deny rule/);
+  }
+  for (const tool of ["gmail_sendx", "gmail_send_bulk", "gmail_sen", "xgmail_send", "Gmail_Send__first_contact", "gmail_send_"]) {
+    assert.equal((await preview(tool)).decision, "allow", `quiet-on-good: ${tool} (preview)`);
+    assert.equal((await gate(tool)).allow, true, `quiet-on-good: ${tool} (gate)`);
+  }
+  // hold fires on the variant as well
+  await run(OP.rulesSet)({ id: saved.id, expectedRev: saved.rev, rule: rule("hold", 10) }, owner);
+  assert.equal((await preview("gmail_send__first_contact")).decision, "hold");
+  assert.equal((await preview("gmail_send_bulk")).decision, "allow");
+
+  // allow: an allow rule on gmail_send admits the variant over a base deny; a look-alike falls to the base deny
+  await run(OP.rulesSet)({ id: saved.id, expectedRev: saved.rev + 1, rule: rule("allow", 10) }, owner);
+  await run(OP.rulesSet)({ rule: spec({ title: "base deny", priority: 50, match: { products: ["connect"], operations: ["tools"] }, decision: "deny", reason: "base deny" }) }, owner);
+  assert.equal((await gate("gmail_send__first_contact")).allow, true, "allow rule admits the resolved variant");
+  assert.equal((await gate("gmail_send")).allow, true);
+  assert.match((await gate("gmail_send_bulk")).reason ?? "", /base deny/, "a look-alike is not admitted");
+  assert.match((await gate("gmail_sendx")).reason ?? "", /base deny/);
+  assert.equal((await preview("gmail_send__first_contact")).ruleId, saved.id);
+
+  // absent tool on a dynamic op: unchanged (deny/hold apply, allow does not)
+  const noTool = await rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward" }), hookCtx(db));
+  assert.match(noTool.reason ?? "", /base deny/, "the allow rule with tools does not match without a tool");
+
+  // save: an entry that is itself a variant name is refused, with a clear message, on every writer
+  const variant = spec({ title: "variant", match: { products: ["connect"], operations: ["tools"], tools: ["a__b"] }, decision: "deny", reason: "x" });
+  const msg = /tools entry “a__b” contains “__”.*not a catalog tool name.*“a”/;
+  await assert.rejects(run(OP.rulesSet)({ rule: variant }, owner), { code: "input_invalid", message: msg });
+  await assert.rejects(run(OP.ruleDraftSubmit)({ text: "x", rules: [variant] }, agent), { code: "input_invalid", message: msg });
+  await assert.rejects(run(OP.rulesPreview)({ call: { caller: { type: "agent", id: AGENT_A, mode: "free" }, target: { product: "connect", op: "tools", effect: "outward" } }, candidate: variant }, owner), { code: "input_invalid", message: msg });
+  assert.ok((await run(OP.rulesSet)({ rule: { ...variant, title: "plain", match: { ...variant.match, tools: ["a_b"] } } }, owner)).rule.id, "quiet: a single underscore is a catalog name");
+});

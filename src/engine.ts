@@ -134,6 +134,16 @@ export function dependsOnClaim(spec: RuleSpec): boolean {
   return !!o && ((o.teams?.length ?? 0) > 0 || (o.ids?.length ?? 0) > 0 || (o.kinds?.length ?? 0) > 0 || (o.trust?.length ?? 0) > 0);
 }
 
+/**
+ * A `tools` condition naming `x` matches `target.tool === x` OR `target.tool` starting with `x__` (QA-RULES18-4, C354, BRIDGE v0.1.68):
+ * Connect resolves a catalog tool to variants such as `gmail_send__first_contact` that run the same upstream tool. Catalog names never
+ * contain `__` (the writer refuses an entry that does), so this is not a general prefix wildcard: `gmail_sendx` and `gmail_send_bulk`
+ * do not match `gmail_send`. Case-sensitive. Used for allow, deny and hold rules alike.
+ */
+export function toolListed(tools: readonly string[], tool: string): boolean {
+  return tools.some((x) => tool === x || tool.startsWith(`${x}__`));
+}
+
 export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rules do not apply without them)";
 
 /**
@@ -158,7 +168,7 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
   if (m.tools?.length) {
     const tool = facts.target.tool;
     if (tool !== undefined) {
-      if (!m.tools.includes(tool)) return no("target tool differs");
+      if (!toolListed(m.tools, tool)) return no("target tool differs");
     } else if (strict && facts.target.dynamic !== false) toolClosed = true;
     else return no(facts.target.dynamic === false ? "call has no tool name (static operation)" : "call has no tool name");
   }
@@ -450,6 +460,8 @@ export function specProblem(spec: RuleSpec): string {
   const m = spec.match;
   if (m.operations?.length && !m.products?.length) return "operations need products (an operation id is unique only within one app)";
   if (m.tools?.length && !m.products?.length) return "tools need products (a tool name is unique only within one app)";
+  const variant = m.tools?.find((t) => t.includes("__"));
+  if (variant !== undefined) return `tools entry “${variant}” contains “__”: that is a resolved variant name, not a catalog tool name. Name the catalog tool (for example “${variant.split("__")[0] || "gmail_send"}”); it also covers its “__” variants`;
   if (m.tools?.some((t) => !t || t !== t.trim())) return "tools must not be blank or have a space at either end (tool names are exact and case-sensitive)";
   return "";
 }
@@ -466,7 +478,7 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     if (!sp.active || sp.outcome.decision !== "allow") continue;
     const m = sp.match;
     if (!anyOf(m.agents, facts.caller.id) || !anyOf(m.modes, facts.caller.mode) || !anyOf(m.products, facts.target.product) || !anyOf(m.operations, facts.target.op) || !anyOf(m.effects, facts.target.effect)) continue;
-    if (m.tools?.length && !(facts.target.tool !== undefined && m.tools.includes(facts.target.tool))) continue;
+    if (m.tools?.length && !(facts.target.tool !== undefined && toolListed(m.tools, facts.target.tool))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)
       const c = facts.claim;
