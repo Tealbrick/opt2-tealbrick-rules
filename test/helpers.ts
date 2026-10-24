@@ -43,7 +43,7 @@ export function hookCtx(db: Db, signal: AbortSignal = new AbortController().sign
 
 export function hookReq(
   phase: "before" | "context" | "after",
-  o: { caller?: string; mode?: "free" | "bound"; product?: string; op?: string; effect?: string; context?: Record<string, Json>; output?: Json; callId?: string },
+  o: { caller?: string; mode?: "free" | "bound"; product?: string; op?: string; effect?: string; tool?: string; context?: Record<string, Json>; output?: Json; callId?: string },
 ): HookRequest {
   return {
     phase,
@@ -51,7 +51,7 @@ export function hookReq(
       id: o.callId ?? "cal_01J00000000000000000000001",
       ws: "wsp_01J000000000000000000000WS",
       caller: { type: "agent", id: o.caller ?? AGENT_A, mode: o.mode ?? "free" },
-      target: { instance: "ins_01J0000000000000000000TGT", product: o.product ?? "connect", op: o.op ?? "buzz_dm", crud: ["create"], effect: o.effect ?? "outward" },
+      target: { instance: "ins_01J0000000000000000000TGT", product: o.product ?? "connect", op: o.op ?? "buzz_dm", crud: ["create"], effect: o.effect ?? "outward", ...(o.tool !== undefined ? { tool: o.tool } : {}) },
       input: { text: "hello" },
     },
     context: o.context ?? {},

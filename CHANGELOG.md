@@ -2,6 +2,25 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.4.0 - 2026-10-24 (not tagged)
+
+Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.66, specs#47, not yet published). The pins stay as they are; the pin bump follows the spec release.
+
+### Added
+- Narrowing `deepDatasets {anyOf?, noneOf?}` (dataset names such as `public.orders`, each up to 128 characters, up to 64 per list): the datasets a data app (Knowledge deep knowledge) may read for the call, so an agent such as Henry can query Foundry data only for the datasets an allow rule grants. Names compare after trim and lower case. It merges across matching rules exactly like `memoryTags` (including the skipped allow rules of the Fleet fail-closed path and the unverified-claim merge): `anyOf` lists intersect, `noneOf` lists unite, disjoint `anyOf` gives `[]` = nothing passes (C115). The context hook emits it as `rules.narrowing.deepDatasets` next to `memoryTags` (same `v: 1`, `ruleId`, `reason`); a key no rule set is absent. Writers refuse it on a deny or hold rule, an empty `anyOf`, a missing list, and blank names.
+- Match field `tools` (list of tool names, each up to 128 characters, up to 100, needs `products`): matches when the hook call's `target.tool` (new in spec 0.1.66: the dynamic entry name of a dynamic call) is in the list, compared exactly. A rule with `tools` never matches a call without `target.tool`. Writers refuse `tools` on a static operation and on an app without a dynamic agent operation (the rule could never match). The old catalog hint that Rules cannot name single tools now says to use `tools`.
+- `rules_preview` takes an optional `call.target.tool`; the decision log keeps the tool name (`detail.tool`, shown as `target.tool`); the step explanation says "call has no tool name" or "target tool differs".
+- Editor: inputs for Tools, Only datasets (any of) and Never datasets; the rule list, the draft review and the dry run show them. Dry run has a Tool field.
+- Tests: `test/c336-dataset-narrowing.test.ts` (merge semantics, local `datasetsMatch` contract, writer checks, `tools` match and non-match, context emission, gate and trace, manifest schema limits), a `tools` writer test in `test/catalog.test.ts`, editor tests in `test/ui-rules.test.ts`.
+
+### Changed
+- `mergeNarrowing` and `normNarrowing` handle both narrowing kinds with one list-merge helper. The result for memory tags alone is unchanged.
+
+### Notes
+- No migration: both fields live in the rule JSON (`rules.spec`), and a stored rule without them reads as before.
+- LOCAL COPY: `datasetsMatch` and `normalizeDataset` in `src/engine.ts` copy the contract of the shared helper in @opt2-tealbrick/manifest 0.1.30 or later (TODO in the code). The copy is replaced by the import when Rules pins the manifest package that carries it.
+- A deny or hold rule with `tools` does not apply on a bridge that does not send `target.tool` (older than spec 0.1.66). Pair a refusing `tools` rule with a rule on the operation when that matters.
+
 ## 0.3.1 - 2026-10-18
 
 Fix release (decision C266). Rules 0.3.0 is not promoted to stable; 0.3.1 replaces it.

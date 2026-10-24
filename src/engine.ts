@@ -15,6 +15,11 @@
 // - Two membership sets (C236 review): deny/hold rules see EVERY member of a team, including blocked, departed and removed
 //   ones (`*Any` fields); allow rules see only the members that count (`callerTeams`, `claimTeams`).
 // - A requester the directory does not know has trust `unreviewed`.
+// - Dataset narrowing (spec 0.1.66, C336 RQ-2): `narrowing.deepDatasets {anyOf, noneOf}` limits the datasets a data app (Knowledge
+//   deep knowledge) may read for the call. It merges exactly like `memoryTags` (anyOf intersects, noneOf unites, disjoint anyOf
+//   gives [] = nothing passes) and is compared after trim + lower case.
+// - Match field `tools` (spec 0.1.66): the dynamic entry name the bridge sends as `target.tool`. A rule with `tools` never matches a
+//   call without `target.tool` (static ops, dynamic search, or a bridge that does not send it yet).
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 
@@ -48,7 +53,13 @@ export interface Claim {
 /** What Rules knows about one call at decision time. */
 export interface CallFacts {
   caller: { type: string; id: string; mode: string | null };
-  target: { product: string; op: string; effect: string };
+  target: {
+    product: string;
+    op: string;
+    effect: string;
+    /** spec 0.1.66: the dynamic catalog entry name of a dynamic call; absent for static ops and dynamic search */
+    tool?: string;
+  };
   /** `tb.onBehalfOf` claim (bridge-copied, spec 0.1.13), or null */
   claim: Claim | null;
   claimVerified: boolean;
@@ -74,6 +85,8 @@ export interface CallFacts {
 
 export interface Narrowing {
   memoryTags?: { anyOf?: string[]; noneOf?: string[] };
+  /** spec 0.1.66 (SDK-API §18.5): datasets a data app may read for this call; `anyOf` PRESENT but EMPTY = nothing passes */
+  deepDatasets?: { anyOf?: string[]; noneOf?: string[] };
 }
 
 export interface Verdict {
@@ -125,6 +138,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
   if (!anyOf(m.modes, facts.caller.mode)) return no("caller mode differs");
   if (!anyOf(m.products, facts.target.product)) return no("target product differs");
   if (!anyOf(m.operations, facts.target.op)) return no("target operation differs");
+  // spec 0.1.66: a rule that names tools matches only a call that carries one of them (no `target.tool` = no match, also for deny and hold)
+  if (m.tools?.length && !(facts.target.tool !== undefined && m.tools.includes(facts.target.tool))) return no(facts.target.tool === undefined ? "call has no tool name" : "target tool differs");
   if (!anyOf(m.effects, facts.target.effect)) return no("effect differs");
   const strict = spec.outcome.decision !== "allow";
   let closed = false;
@@ -229,27 +244,66 @@ function verdictOf(hit: Hit): Verdict {
   };
 }
 
-function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
-  const t = n?.memoryTags;
+type Lists = { anyOf?: string[]; noneOf?: string[] };
+
+/** A narrowing list kept as the rule has it: `anyOf` present (even empty) stays, an empty `noneOf` is no constraint. */
+function keepLists(t: Lists | undefined): Lists | null {
   if (!t || (t.anyOf === undefined && !t.noneOf?.length)) return null;
-  return { memoryTags: { ...(t.anyOf ? { anyOf: [...t.anyOf] } : {}), ...(t.noneOf?.length ? { noneOf: [...t.noneOf] } : {}) } };
+  return { ...(t.anyOf ? { anyOf: [...t.anyOf] } : {}), ...(t.noneOf?.length ? { noneOf: [...t.noneOf] } : {}) };
+}
+
+function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
+  const tags = keepLists(n?.memoryTags);
+  const sets = keepLists(n?.deepDatasets);
+  if (!tags && !sets) return null;
+  return { ...(tags ? { memoryTags: tags } : {}), ...(sets ? { deepDatasets: sets } : {}) };
 }
 
 /**
- * Both narrowings apply: anyOf lists intersect, noneOf lists unite (v1 capabilityNarrowing merge, tags only). Tags are
- * compared after the shared `normalizeTag` (SDK-API §18.1). Disjoint anyOf lists give `anyOf: []` = nothing passes (C115).
+ * Dataset names compare after trim + lower case (spec 0.1.66, SDK-API §18.5).
+ * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` / its normalisation from @opt2-tealbrick/manifest >= 0.1.30 (one mechanism, L1).
+ * Delete this copy and import the helper when the manifest package that carries it is released and pinned.
+ */
+export const normalizeDataset = (name: string): string => name.trim().toLowerCase();
+
+/**
+ * Local copy of the shared dataset comparison (contract of `datasetsMatch` in @opt2-tealbrick/manifest >= 0.1.30; see the TODO
+ * on `normalizeDataset`): `anyOf` PRESENT (even empty) → every named dataset must be in it (`[]` passes nothing); `noneOf` → no named
+ * dataset is in it; absent `deepDatasets` or absent `anyOf` → no anyOf constraint.
+ */
+export function datasetsMatch(deepDatasets: Lists | undefined, names: readonly string[]): boolean {
+  if (!deepDatasets) return true;
+  const have = names.map(normalizeDataset);
+  if (deepDatasets.anyOf !== undefined) {
+    const allowed = new Set(deepDatasets.anyOf.map(normalizeDataset));
+    if (!have.every((n) => allowed.has(n))) return false;
+  }
+  const denied = new Set((deepDatasets.noneOf ?? []).map(normalizeDataset));
+  return !have.some((n) => denied.has(n));
+}
+
+/** Merge two optional narrowing lists: anyOf intersect, noneOf unite, both compared through `norm`. */
+function mergeLists(x: Lists | undefined, y: Lists | undefined, norm: (s: string) => string): Lists | undefined {
+  if (!x && !y) return undefined;
+  const nl = (list: readonly string[] | undefined) => (list ? [...new Set(list.map(norm))] : undefined);
+  const xa = nl(x?.anyOf);
+  const ya = nl(y?.anyOf);
+  const any = xa && ya ? xa.filter((t) => ya.includes(t)) : (xa ?? ya);
+  const none = [...new Set([...(nl(x?.noneOf) ?? []), ...(nl(y?.noneOf) ?? [])])];
+  return { ...(any ? { anyOf: any } : {}), ...(none.length ? { noneOf: none } : {}) };
+}
+
+/**
+ * Both narrowings apply: anyOf lists intersect, noneOf lists unite (v1 capabilityNarrowing merge), for memory tags and for
+ * datasets alike. Tags are compared after the shared `normalizeTag` (SDK-API §18.1), datasets after `normalizeDataset`. Disjoint
+ * anyOf lists give `anyOf: []` = nothing passes (C115). A key that neither side has stays absent.
  */
 export function mergeNarrowing(a: Narrowing | null, b: Narrowing | null): Narrowing | null {
   if (!a) return b;
   if (!b) return a;
-  const x = a.memoryTags ?? {};
-  const y = b.memoryTags ?? {};
-  const norm = (list: readonly string[] | undefined) => (list ? [...new Set(list.map(normalizeTag))] : undefined);
-  const xa = norm(x.anyOf);
-  const ya = norm(y.anyOf);
-  const any = xa && ya ? xa.filter((t) => ya.includes(t)) : (xa ?? ya);
-  const none = [...new Set([...(norm(x.noneOf) ?? []), ...(norm(y.noneOf) ?? [])])];
-  return { memoryTags: { ...(any ? { anyOf: any } : {}), ...(none.length ? { noneOf: none } : {}) } };
+  const tags = mergeLists(a.memoryTags, b.memoryTags, normalizeTag);
+  const sets = mergeLists(a.deepDatasets, b.deepDatasets, normalizeDataset);
+  return { ...(tags ? { memoryTags: tags } : {}), ...(sets ? { deepDatasets: sets } : {}) };
 }
 
 /** The decision for one call. `rules` must already be in evaluation order (see `order`). */
@@ -276,6 +330,11 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
   return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet;
+}
+
+/** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see `normalizeDataset`). */
+export function datasetsPass(names: readonly string[], n: Narrowing): boolean {
+  return datasetsMatch(n.deepDatasets, names);
 }
 
 /** Tags pass the narrowing: THE G5 comparison, the manifest package's `tagsMatch` (Knowledge uses the same function, L1). */
@@ -342,14 +401,21 @@ export function specProblem(spec: RuleSpec): string {
   if (t && !t.anyOf && !(t.noneOf?.length)) return "narrowing.memoryTags needs anyOf or noneOf";
   // Writer strict (L24, C115): an owner-written empty anyOf would hide every memory; name at least one tag.
   if (t?.anyOf && !t.anyOf.some((tag) => normalizeTag(tag))) return "narrowing.memoryTags.anyOf needs at least one tag";
+  const d = spec.narrowing?.deepDatasets;
+  if (d && d.anyOf === undefined && !d.noneOf?.length) return "narrowing.deepDatasets needs anyOf or noneOf";
+  // Writer strict (L24, C115): an owner-written empty anyOf would hide every dataset; name at least one, and no blank name.
+  if (d?.anyOf && !d.anyOf.some((name) => normalizeDataset(name))) return "narrowing.deepDatasets.anyOf needs at least one dataset";
+  if (d && [...(d.anyOf ?? []), ...(d.noneOf ?? [])].some((name) => !normalizeDataset(name))) return "narrowing.deepDatasets names must not be blank";
   const m = spec.match;
   if (m.operations?.length && !m.products?.length) return "operations need products (an operation id is unique only within one app)";
+  if (m.tools?.length && !m.products?.length) return "tools need products (a tool name is unique only within one app)";
+  if (m.tools?.some((t) => !t.trim())) return "tools must not be blank";
   return "";
 }
 
 /**
  * The strictest narrowing that could apply to a call: every active allow rule that has a narrowing and matches on the
- * criteria that need no Fleet fact (caller, mode, product, operation, effect, and for claim rules: a claim of a listed kind and id), merged. Used when the verdict pinned by the
+ * criteria that need no Fleet fact (caller, mode, product, operation, effect, and for claim rules: a claim of a listed kind and id), merged (and, for a rule that names tools, a call that carries one of them). Used when the verdict pinned by the
  * before phase is missing (fail closed). `null` = no allow rule could narrow it.
  */
 export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): Narrowing | null {
@@ -359,6 +425,7 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     if (!sp.active || sp.outcome.decision !== "allow") continue;
     const m = sp.match;
     if (!anyOf(m.agents, facts.caller.id) || !anyOf(m.modes, facts.caller.mode) || !anyOf(m.products, facts.target.product) || !anyOf(m.operations, facts.target.op) || !anyOf(m.effects, facts.target.effect)) continue;
+    if (m.tools?.length && !(facts.target.tool !== undefined && m.tools.includes(facts.target.tool))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)
       const c = facts.claim;

@@ -66,6 +66,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.modes?.length) parts.push(`${m.modes.join("/")} agents`);
   if (m.products?.length) parts.push(`apps ${m.products.join(", ")}`);
   if (m.operations?.length) parts.push(`operations ${m.operations.map((op) => opLabel(op, m.products ?? [], titles)).join(", ")}`);
+  if (m.tools?.length) parts.push(`tools ${m.tools.join(", ")}`);
   if (m.effects?.length) parts.push(`effects ${m.effects.join(", ")}`);
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
   const o = m.onBehalfOf;
@@ -75,6 +76,13 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (o?.trust?.length) parts.push(`requester trust ${o.trust.join(", ")}`);
   return parts.length ? parts.join("; ") : "every call";
 }
+
+/** What a rule narrows, as readable parts: ["memories: {...}", "datasets: {...}"]. */
+export function narrowingParts(n: { memoryTags?: unknown; deepDatasets?: unknown } | null | undefined): string[] {
+  return [n?.memoryTags ? `memories: ${JSON.stringify(n.memoryTags)}` : "", n?.deepDatasets ? `datasets: ${JSON.stringify(n.deepDatasets)}` : ""].filter(Boolean);
+}
+/** The parts as a list suffix: " · memories: {...} · datasets: {...}" ("" = nothing). */
+export const narrowingText = (n: { memoryTags?: unknown; deepDatasets?: unknown } | null | undefined): string => narrowingParts(n).map((x) => ` · ${x}`).join("");
 
 /** "tools (“Connected service tools”)": the op id with its manifest title from the catalog, or "(not declared)". */
 export function opLabel(op: string, products: readonly string[], titles: Record<string, string> | undefined): string {

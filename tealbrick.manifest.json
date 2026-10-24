@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.1.17"
@@ -257,6 +257,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -377,6 +386,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -572,6 +606,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -692,6 +735,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -804,6 +872,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -924,6 +1001,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -1052,6 +1154,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -1172,6 +1283,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -1309,6 +1445,11 @@
                     "maxLength": 40,
                     "pattern": "^[a-z][a-z0-9_]{1,39}$"
                   },
+                  "tool": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
                   "effect": {
                     "enum": [
                       "read",
@@ -1421,6 +1562,15 @@
                       "minLength": 2,
                       "maxLength": 40,
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
+                    }
+                  },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
                     }
                   },
                   "effects": {
@@ -1546,6 +1696,31 @@
                         }
                       }
                     }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -1621,6 +1796,27 @@
                       "noneOf": {
                         "type": "array",
                         "maxItems": 32,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
                         "items": {
                           "type": "string"
                         }
@@ -1849,6 +2045,11 @@
                   },
                   "op": {
                     "type": "string"
+                  },
+                  "tool": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
                   },
                   "effect": {
                     "type": "string"
@@ -2162,6 +2363,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -2282,6 +2492,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -2541,6 +2776,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -2661,6 +2905,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }
@@ -2978,6 +3247,15 @@
                       "pattern": "^[a-z][a-z0-9_]{1,39}$"
                     }
                   },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
                   "effects": {
                     "type": "array",
                     "maxItems": 5,
@@ -3098,6 +3376,31 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
                         }
                       }
                     }

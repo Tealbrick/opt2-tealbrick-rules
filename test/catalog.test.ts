@@ -115,7 +115,7 @@ test("fire on bad: undeclared ops are refused by every writer; an MCP tool name 
     });
   }
   await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["tools_call"]) }, owner), { code: "input_invalid", message: /Did you mean `tools`\?/ });
-  await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["gmail_send"]) }, owner), { code: "input_invalid", message: /does not declare operation “gmail_send”.*agent operations: tools.*cannot name single tools yet: use the operation `tools`/ });
+  await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["gmail_send"]) }, owner), { code: "input_invalid", message: /does not declare operation “gmail_send”.*agent operations: tools.*name the operation `tools` and list the tool in the rule's tools/ });
   await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["services_search"]) }, owner), { code: "input_invalid", message: /owner-only/ });
   await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["buzz_read"], { effects: ["outward"] }) }, owner), { code: "input_invalid", message: /effect read.*never match/ });
   await assert.rejects(run(OP.rulesSet)({ rule: spec({ match: { products: ["conect"] } }) }, owner), { code: "input_invalid", message: /unknown app “conect”/ });
@@ -157,4 +157,32 @@ test("no catalog yet: specs naming apps are refused (catalog_unavailable), specs
   await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["tools"]) }, owner), { code: "catalog_unavailable" });
   const ok = await run(OP.rulesSet)({ rule: spec({ match: { effects: ["money"] }, decision: "hold", reason: "payments wait" }) }, owner);
   assert.ok(ok.rule.id);
+});
+
+// C336 RQ-2 (spec 0.1.66): the match field `tools` names a dynamic entry (`target.tool`). Only a dynamic call carries one, so a
+// writer refuses `tools` on an op or app that has no dynamic op. Quiet on good AND firing on bad (L34).
+test("tools (spec 0.1.66): accepted on a dynamic op, refused on a static op or an app without a dynamic op; the gate matches target.tool", async () => {
+  const { db } = await withCatalog();
+  const owner = opCtx(db, { type: "person", id: OWNER });
+  const good = dmRule(["tools"], { tools: ["gmail_send"], effects: ["outward"] });
+  const created = (await run(OP.rulesSet)({ rule: good }, owner)).rule;
+  assert.ok(created.id, "quiet on good: a dynamic op with tools is accepted");
+  assert.equal((await run(OP.rulesList)({}, owner)).rules[0].problem, null);
+  assert.ok((await run(OP.rulesSet)({ rule: spec({ priority: 500, match: { products: ["connect"], tools: ["gmail_send"] }, decision: "hold", reason: "wait" }) }, owner)).rule.id, "products only: connect has a dynamic agent op");
+  await assert.rejects(run(OP.rulesSet)({ rule: dmRule(["buzz_dm"], { tools: ["gmail_send"] }) }, owner), { code: "input_invalid", message: /“buzz_dm” is not a dynamic operation.*tools \(gmail_send\) would never match/ });
+  await assert.rejects(run(OP.rulesSet)({ rule: spec({ match: { products: ["rules"], tools: ["gmail_send"] } }) }, owner), { code: "input_invalid", message: /“rules” has no dynamic agent operation/ });
+  await assert.rejects(run(OP.rulesSet)({ rule: spec({ match: { tools: ["gmail_send"] } }) }, owner), { code: "input_invalid", message: /tools need products/ });
+  // The dry run carries the tool through: the candidate matches the named tool only.
+  const call = (tool?: string) => ({ caller: { type: "agent", id: AGENT_A, mode: "free" }, target: { product: "connect", op: "tools", effect: "outward", ...(tool ? { tool } : {}) } });
+  assert.equal((await run(OP.rulesPreview)({ call: call("gmail_send"), candidate: good }, owner)).decision, "deny", "fire-on-bad: the named tool");
+  const other = await run(OP.rulesPreview)({ call: call("gmail_read"), candidate: good }, owner);
+  assert.equal(other.decision, "allow", "quiet-on-good: another tool");
+  assert.equal(other.ruleId, null);
+  assert.equal((await run(OP.rulesPreview)({ call: call(), candidate: good }, owner)).ruleId, null, "no tool: no rule matches");
+  // The real hook call: the bridge sends `target.tool` for a dynamic call (BRIDGE v0.1.66).
+  const { rules_gate } = makeHooks("rules") as unknown as Record<string, (r: unknown, c: unknown) => Promise<{ allow: boolean; reason?: string }>>;
+  const sent = await rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward", tool: "gmail_send" }), hookCtx(db));
+  assert.equal(sent.allow, false);
+  assert.match(sent.reason ?? "", /sends need the owner/);
+  assert.equal((await rules_gate(hookReq("before", { product: "connect", op: "tools", effect: "outward", tool: "gmail_read" }), hookCtx(db))).allow, true);
 });

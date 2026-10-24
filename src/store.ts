@@ -324,7 +324,8 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.rule?.rev ?? null,
     t.rule?.title ?? null,
     obo,
-    t.detail ? JSON.stringify(t.detail) : null,
+    // spec 0.1.66: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration)
+    t.detail || t.facts.target.tool !== undefined ? JSON.stringify({ ...t.detail, ...(t.facts.target.tool !== undefined ? { tool: t.facts.target.tool } : {}) }) : null,
     Math.max(0, Math.round(t.durationUs)),
   );
   if (++inserts % 1000 === 0) pruneDecisions(db, now);
@@ -342,7 +343,7 @@ export interface DecisionView {
   phase: TraceInput["phase"];
   at: string;
   caller: { type: string; id: string; mode: string | null };
-  target: { product: string; op: string; effect: string };
+  target: { product: string; op: string; effect: string; tool?: string };
   decision: Decision;
   answered: Answered;
   reason: string;
@@ -355,13 +356,15 @@ export interface DecisionView {
 }
 
 function decisionView(r: Record<string, unknown>): DecisionView {
+  const detail = json<Record<string, unknown> | null>(r.detail, null);
+  const tool = typeof detail?.tool === "string" ? detail.tool : undefined;
   return {
     id: String(r.id),
     callId: r.call_id == null ? null : String(r.call_id),
     phase: String(r.phase) as DecisionView["phase"],
     at: iso(Number(r.at)) as string,
     caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode) },
-    target: { product: String(r.product), op: String(r.op), effect: String(r.effect) },
+    target: { product: String(r.product), op: String(r.op), effect: String(r.effect), ...(tool !== undefined ? { tool } : {}) },
     decision: String(r.decision) as Decision,
     answered: String(r.answered) as Answered,
     reason: String(r.reason),
@@ -369,7 +372,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
     ruleRev: r.rule_rev == null ? null : Number(r.rule_rev),
     ruleTitle: r.rule_title == null ? null : String(r.rule_title),
     onBehalfOf: json<Record<string, unknown> | null>(r.on_behalf_of, null),
-    detail: json<Record<string, unknown> | null>(r.detail, null),
+    detail,
     durationUs: Number(r.duration_us),
   };
 }

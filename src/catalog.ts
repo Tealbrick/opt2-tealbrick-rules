@@ -137,6 +137,7 @@ export function catalogProblem(spec: RuleSpec, cat: Catalog | null): string {
   const products = m.products ?? [];
   const ops = m.operations ?? [];
   const effects: readonly string[] = m.effects ?? [];
+  const tools = m.tools ?? [];
   const bad = effects.find((e) => !(EFFECTS as readonly string[]).includes(e));
   if (bad) return `unknown effect ${q(bad)} (effects: ${EFFECTS.join(", ")})`;
   if (products.length === 0 && ops.length === 0) return "";
@@ -151,14 +152,21 @@ export function catalogProblem(spec: RuleSpec, cat: Catalog | null): string {
         if (hint) return `app ${q(p)} has no operation ${q(op)}: that is an MCP tool name, and Rules sees the operation id. Did you mean \`${hint}\`?`;
         const known = agentOpIds(po);
         const dyn = [...po.ops].find(([, o]) => o.agent && o.dynamic)?.[0];
-        const tool = dyn ? ` If ${q(op)} is a tool of a connected service, Rules cannot name single tools yet: use the operation \`${dyn}\` with an effect such as outward.` : "";
+        const tool = dyn ? ` If ${q(op)} is a tool of a connected service, name the operation \`${dyn}\` and list the tool in the rule's tools.` : "";
         return `app ${q(p)} does not declare operation ${q(op)}, so the rule would never match (its agent operations: ${known.slice(0, 15).join(", ")}${known.length > 15 ? ", …" : ""}).${tool}`;
       }
       if (!o.agent) return `${q(p)} operation ${q(op)} is owner-only (person audience); agent calls never reach it, so the rule would never match`;
       if (effects.length && !o.dynamic && !o.effects.some((e) => effects.includes(e)))
         return `${q(p)} operation ${q(op)} has effect ${o.effects.join("/")}, which the rule's effects (${effects.join(", ")}) exclude, so the rule would never match`;
+      // spec 0.1.66: only a dynamic call carries `target.tool`
+      if (tools.length && !o.dynamic) return `${q(p)} operation ${q(op)} is not a dynamic operation, so its calls carry no tool name and the rule's tools (${tools.join(", ")}) would never match`;
     }
   }
+  if (tools.length && ops.length === 0)
+    for (const p of products) {
+      const po = cat.get(p) as ProductOps;
+      if (![...po.ops.values()].some((o) => o.agent && o.dynamic)) return `app ${q(p)} has no dynamic agent operation, so no call of it carries a tool name and the rule's tools would never match`;
+    }
   if (ops.length === 0 && effects.length)
     for (const p of products) {
       const po = cat.get(p) as ProductOps;
