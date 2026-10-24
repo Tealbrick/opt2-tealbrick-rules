@@ -58,7 +58,7 @@ test("memoryTags and deepDatasets merge independently; a key no rule sets stays 
   assert.equal(mergeNarrowing(null, setsOnly), setsOnly);
 });
 
-test("datasetsMatch (local copy, SDK-API 18.5 rule 3): exact and case-sensitive; anyOf needs ids and every id in it; noneOf blocks", () => {
+test("datasetsMatch (local copy, SDK-API 18.5 rule 3): exact and case-sensitive; empty ids fail under anyOf and noneOf; noneOf blocks", () => {
   assert.equal(datasetsMatch(undefined, ["public.orders"]), true, "key absent = pass");
   assert.equal(datasetsMatch({}, ["public.orders"]), true, "absent anyOf and noneOf = no constraint");
   assert.equal(datasetsMatch({ anyOf: ["public.orders"] }, ["public.orders"]), true, "quiet on good: the allowed id");
@@ -69,7 +69,13 @@ test("datasetsMatch (local copy, SDK-API 18.5 rule 3): exact and case-sensitive;
   assert.equal(datasetsMatch({ anyOf: [] }, ["public.orders"]), false, "[] passes nothing, it is not 'no constraint' (L13)");
   assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders", "public.salaries"]), false);
   assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders", "Public.Salaries"]), true, "exact: the case variant is not the blocked id");
-  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, []), true, "noneOf alone: no ids, nothing blocked (the data app enforces rule 4)");
+  // QA-SPEC47-11/12 (specs#47 bd00164): key present + EMPTY ids = "every dataset" → fails, under noneOf as under anyOf
+  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, []), false, "fire: noneOf with empty ids fails");
+  assert.equal(datasetsMatch({ noneOf: [] }, []), false, "fire: even an empty noneOf with empty ids fails");
+  assert.equal(datasetsMatch({ anyOf: ["public.orders"], noneOf: ["public.salaries"] }, []), false);
+  assert.equal(datasetsMatch({ noneOf: ["public.salaries"] }, ["public.orders"]), true, "quiet: noneOf with a named, allowed id passes");
+  assert.equal(datasetsMatch(undefined, []), true, "quiet: key absent passes whatever ids");
+  assert.equal(datasetsMatch({}, []), false, "an empty object is not 'absent' (the schema refuses it at save)");
 });
 
 // ── the engine decides and merges ──────────────────────────────────────────

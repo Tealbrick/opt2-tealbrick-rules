@@ -18,7 +18,7 @@ Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.6
 
 ### Notes
 - No migration: both fields live in the rule JSON (`rules.spec`), and a stored rule without them reads as before.
-- LOCAL COPY: `datasetsMatch` and `normalizeDataset` in `src/engine.ts` copy the contract of the shared helper in @opt2-tealbrick/manifest (SDK-API 18.5 rule 3; exact ids, `anyOf` present needs ids; the `normalizeDataset` of the first draft is gone) (TODO in the code). The copy is replaced by the import when Rules pins the manifest package that carries it.
+- LOCAL COPY: `datasetsMatch` and `normalizeDataset` in `src/engine.ts` copy the contract of the shared helper in @opt2-tealbrick/manifest (SDK-API 18.5 rules 3 and 4, specs#47 bd00164: exact ids; key present with an EMPTY id list fails under `noneOf` as under `anyOf`; no lineage; the `normalizeDataset` of the first draft is gone) (TODO in the code). The copy is replaced by the import when Rules pins the manifest package that carries it.
 - A deny or hold rule with `tools` still applies to a dynamic call when the bridge does not send `target.tool` (older than spec 0.1.68, or a bridge bug). The editor does not show "needs a bridge with `hook_tool`": the pinned SDK gives an app no view of the bridge capabilities (Core and the GUI show it). The gate reads whether the op is dynamic from the cached app catalog (a local table, no network).
 
 ## 0.3.1 - 2026-10-18

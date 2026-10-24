@@ -288,17 +288,18 @@ function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
 }
 
 /**
- * Local copy of the shared dataset comparison (spec 0.1.68, SDK-API 18.5 rule 3). Dataset ids are the data app's canonical ids:
- * EXACT and CASE-SENSITIVE, no trimming, no case folding, no Unicode normalisation. Key absent → pass; `anyOf` present → `ids`
- * is non-empty and every id is in it (`anyOf: []` passes nothing); `noneOf` present → no id is in it. A call that names no
- * dataset (rule 4) is enforced by the data app, not here.
+ * Local copy of the shared dataset comparison (spec 0.1.68 at specs#47 bd00164, SDK-API 18.5 rules 3 and 4). Dataset ids are the
+ * data app's canonical ids: EXACT and CASE-SENSITIVE, no trimming, no case folding, no Unicode normalisation. Key absent → pass.
+ * Key present → `ids` must be non-empty (an empty list means "every dataset", rule 4, so it FAILS under `noneOf` as under `anyOf`);
+ * then `anyOf` present → every id is in it (`anyOf: []` passes nothing) and `noneOf` present → no id is in it. How the data app
+ * restricts a call that names no dataset is its own job (rule 4); there is no lineage (rule 4a).
  * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` from @opt2-tealbrick/manifest (>= 0.1.30; the release that carries the v0.1.68
  * contract is the one to pin). One mechanism (L1): delete this copy and import the helper when that package is released and pinned.
  */
 export function datasetsMatch(deepDatasets: Lists | undefined, ids: readonly string[]): boolean {
   if (!deepDatasets) return true;
+  if (ids.length === 0) return false;
   if (deepDatasets.anyOf !== undefined) {
-    if (ids.length === 0) return false;
     const allowed = new Set(deepDatasets.anyOf);
     if (!ids.every((n) => allowed.has(n))) return false;
   }
