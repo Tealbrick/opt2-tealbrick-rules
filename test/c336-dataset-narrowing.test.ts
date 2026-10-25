@@ -175,6 +175,11 @@ test("tools with a target.tool: the listed tool matches, another tool and a diff
   assert.equal(evaluate([r], at("gmail_sendx")).decision, "allow");
   assert.equal(evaluate([toolRule(["gmail_send"], "allow")], at("gmail_send__first_contact")).rule?.id, "rul_tool", "allow rules follow the same rule");
   assert.equal(evaluate([toolRule(["gmail_send"], "allow")], at("gmail_send_bulk")).rule, null);
+  // QA-RULES18-5 (a): the variant must START with `x__`; a name that merely contains it is another tool (kills `includes`)
+  assert.equal(evaluate([toolRule(["gmail_send"], "allow")], at("xgmail_send__first_contact")).rule, null, "quiet-on-good: an allow on gmail_send does not admit xgmail_send__first_contact");
+  assert.equal(evaluate([r, toolRule(["gmail_send"])], at("xgmail_send__first_contact")).decision, "allow", "a deny on gmail_send does not block it either");
+  assert.equal(toolListed(["gmail_send"], "xgmail_send__first_contact"), false);
+  assert.equal(toolListed(["gmail_send"], "send__first_contact"), false);
   assert.equal(toolListed(["gmail_send"], "gmail_send__"), true);
   assert.equal(toolListed(["gmail_send"], "gmail_send"), true);
   assert.equal(toolListed(["gmail_send"], "gmail_sen"), false);
@@ -400,4 +405,23 @@ test("manifest: rules_set, rule_draft_submit and rules_preview take match.tools 
   assert.ok(refused(ruleWith({ narrowing: { deepDatasets: { anyOf: [7] } } })), "a non-string item");
   assert.ok(refused(ruleWith({ narrowing: { deepDatasets: null } })));
   assert.ok(refused(ruleWith({ match: { tools: Array.from({ length: 101 }, (_, i) => `t${i}`) } })));
+});
+
+// QA-RULES18-5 (b): the after hook without a pinned verdict (restart, expiry, eviction) falls back to `strictestNarrowing`. The
+// allow rule's narrowing must still apply to a resolved variant of its tool (kills a matcher that is exact only in this path).
+test("rules_filter without a pin: the narrowing of an allow rule on gmail_send applies to gmail_send__first_contact, not to look-alikes", async () => {
+  const { db, raw } = migratedDb();
+  const allow = spec({ title: "gmail read narrowed", priority: 5, match: { products: ["connect"], operations: ["tools"], tools: ["gmail_send"] }, decision: "allow", reason: "work only", narrowing: { memoryTags: { anyOf: ["work"] } } });
+  raw
+    .prepare("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES (?, 1, ?, 5, 1, 0, 'owner', ?, ?)")
+    .run("rul_01J000000000000000000000TN", JSON.stringify(allow), Date.now(), Date.now());
+  const output = { results: [{ tags: ["work"] }, { tags: ["personal"] }] };
+  const after = (tool: string | undefined, callId: string) => call("rules_filter", hookReq("after", { product: "connect", op: "tools", effect: "read", callId, output, ...(tool !== undefined ? { tool } : {}) }), hookCtx(db));
+  // no pin exists for these call ids: the fallback decides
+  const variant = facts({ product: "connect", op: "tools", effect: "read", dynamic: true, tool: "gmail_send__first_contact" });
+  assert.deepEqual(strictestNarrowing([rule("rul_n", allow)], variant), { memoryTags: { anyOf: ["work"] } }, "engine: the variant is narrowed");
+  assert.deepEqual(await after("gmail_send__first_contact", "cal_var"), { redactions: ["/results/1"] }, "fire-on-bad: the variant's result is redacted without a pin");
+  assert.deepEqual(await after("gmail_send", "cal_exact"), { redactions: ["/results/1"] }, "the exact tool too");
+  assert.deepEqual(await after("xgmail_send__first_contact", "cal_x1"), {}, "quiet-on-good: a name that only contains gmail_send__ is not narrowed");
+  assert.deepEqual(await after("gmail_send_bulk", "cal_x2"), {}, "quiet-on-good: a look-alike is not narrowed");
 });

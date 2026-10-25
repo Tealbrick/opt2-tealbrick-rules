@@ -251,7 +251,7 @@ test("tools: a condition naming gmail_send matches gmail_send__first_contact, no
     assert.equal(g.allow, false, `fire-on-bad: ${tool} (gate)`);
     assert.match(g.reason ?? "", /gmail_send deny rule/);
   }
-  for (const tool of ["gmail_sendx", "gmail_send_bulk", "gmail_sen", "xgmail_send", "Gmail_Send__first_contact", "gmail_send_"]) {
+  for (const tool of ["gmail_sendx", "gmail_send_bulk", "gmail_sen", "xgmail_send", "Gmail_Send__first_contact", "gmail_send_", "xgmail_send__first_contact"]) {
     assert.equal((await preview(tool)).decision, "allow", `quiet-on-good: ${tool} (preview)`);
     assert.equal((await gate(tool)).allow, true, `quiet-on-good: ${tool} (gate)`);
   }
@@ -267,6 +267,7 @@ test("tools: a condition naming gmail_send matches gmail_send__first_contact, no
   assert.equal((await gate("gmail_send")).allow, true);
   assert.match((await gate("gmail_send_bulk")).reason ?? "", /base deny/, "a look-alike is not admitted");
   assert.match((await gate("gmail_sendx")).reason ?? "", /base deny/);
+  assert.match((await gate("xgmail_send__first_contact")).reason ?? "", /base deny/, "an allow on gmail_send does not admit xgmail_send__first_contact");
   assert.equal((await preview("gmail_send__first_contact")).ruleId, saved.id);
 
   // absent tool on a dynamic op: unchanged (deny/hold apply, allow does not)
