@@ -2,6 +2,11 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.4.1 - 2026-10-25 (not tagged)
+
+### Changed
+- Writers refuse a `tools` entry that is not a catalog tool name (QA-C354-3, spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE`): lower case letters, digits and single `_`, 2 to 48 characters, starting with a letter and not ending in `_`. Matching is unchanged: a call tool `x__…` still matches an entry `x`, also when the suffix is malformed (deny and hold fail closed; the bridge refuses such resolutions under spec 0.1.74). The regex is a local copy until the spec pin moves.
+
 ## 0.4.0 - 2026-10-24 (not tagged)
 
 Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.68, specs#47 at 3c108b0, not yet published). The pins stay as they are; the pin bump follows the spec release.

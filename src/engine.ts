@@ -134,6 +134,9 @@ export function dependsOnClaim(spec: RuleSpec): boolean {
   return !!o && ((o.teams?.length ?? 0) > 0 || (o.ids?.length ?? 0) > 0 || (o.kinds?.length ?? 0) > 0 || (o.trust?.length ?? 0) > 0);
 }
 
+/** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (copied until the spec pin moves): no `__`, no trailing `_`, 2 to 48 characters. */
+const CATALOG_TOOL_NAME = /^(?!.*__)[a-z][a-z0-9_]{0,46}[a-z0-9]$/;
+
 /**
  * A `tools` condition naming `x` matches `target.tool === x` OR `target.tool` starting with `x__` (QA-RULES18-4, C354, BRIDGE v0.1.68):
  * Connect resolves a catalog tool to variants such as `gmail_send__first_contact` that run the same upstream tool. Catalog names never
@@ -463,6 +466,9 @@ export function specProblem(spec: RuleSpec): string {
   const variant = m.tools?.find((t) => t.includes("__"));
   if (variant !== undefined) return `tools entry “${variant}” contains “__”: that is a resolved variant name, not a catalog tool name. Name the catalog tool (for example “${variant.split("__")[0] || "gmail_send"}”); it also covers its “__” variants`;
   if (m.tools?.some((t) => !t || t !== t.trim())) return "tools must not be blank or have a space at either end (tool names are exact and case-sensitive)";
+  // QA-C354-3 (spec 0.1.74 DYNAMIC_CATALOG_NAME_RE): a tools entry is a catalog tool name, so a rule never names something no catalog can list.
+  const malformed = m.tools?.find((t) => !CATALOG_TOOL_NAME.test(t));
+  if (malformed !== undefined) return `tools entry “${malformed}” is not a catalog tool name: lower case letters, digits and single “_”, 2 to 48 characters, starting with a letter and not ending in “_”`;
   return "";
 }
 

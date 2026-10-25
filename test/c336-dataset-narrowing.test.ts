@@ -185,6 +185,11 @@ test("tools with a target.tool: the listed tool matches, another tool and a diff
   assert.equal(toolListed(["gmail_send"], "gmail_sen"), false);
   assert.equal(toolListed(["gmail_send"], "Gmail_Send__first_contact"), false, "case-sensitive");
   assert.match(specProblem(spec({ match: { products: ["connect"], tools: ["a__b"] } })), /contains “__”/, "the writer refuses a variant name");
+  // QA-C354-3: every tools entry passes the catalog-name rule (spec 0.1.74 DYNAMIC_CATALOG_NAME_RE)
+  for (const bad of ["gmail_send_", "Gmail_send", "1send", "s", "send-mail", "x".repeat(49)]) {
+    assert.match(specProblem(spec({ match: { products: ["connect"], tools: [bad] } })), /not a catalog tool name/, bad);
+  }
+  for (const ok of ["gmail_send", "ab", "x".repeat(48)]) assert.equal(specProblem(spec({ match: { products: ["connect"], tools: [ok] } })), "", ok);
   assert.equal(specProblem(spec({ match: { products: ["connect"], tools: ["a_b", "gmail_send"] } })), "");
   // No `tools` on a rule: the tool name is irrelevant (existing rules keep matching dynamic calls).
   const plain = rule("rul_plain", spec({ match: { products: ["connect"], operations: ["tools"] }, decision: "hold", reason: "wait" }));
