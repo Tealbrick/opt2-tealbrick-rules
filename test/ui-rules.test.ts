@@ -355,3 +355,70 @@ describe("G-3: match fields and who proposed a draft", () => {
     OUTPUTS.rules_list = saved;
   });
 });
+
+describe("C336 RQ-2: tools and dataset narrowing in the rules editor", () => {
+  const ALLOW = {
+    ...RULE,
+    spec: { ...spec("Henry: orders only", "allow"), match: { agents: ["agt_1"], products: ["connect"], tools: ["gmail_send"] }, narrowing: { memoryTags: { anyOf: ["work"] }, deepDatasets: { anyOf: ["public.orders"], noneOf: ["public.salaries"] } } },
+  };
+  const inputOf = (root: Element, label: string): HTMLInputElement => {
+    const l = [...root.querySelectorAll("label")].find((x) => x.textContent?.trim().startsWith(label));
+    assert.ok(l, `field "${label}"`);
+    const el = (l.htmlFor ? root.ownerDocument.getElementById(l.htmlFor) : l.querySelector("input")) as HTMLInputElement | null;
+    assert.ok(el, `input of "${label}"`);
+    return el;
+  };
+  const typeInto = (el: HTMLInputElement, value: string) =>
+    act(async () => {
+      const set = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")?.set;
+      set?.call(el, value);
+      el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+    });
+
+  it("the list line and the editor show tools and datasets; saving keeps both; editing one narrowing key keeps the other", async () => {
+    reset();
+    const saved = OUTPUTS.rules_list;
+    OUTPUTS.rules_list = { ...(saved as object), rules: [ALLOW] };
+    const m = await mount(h(rules.RulesPage));
+    assert.match(textOf(m.host), /tools gmail_send/);
+    assert.match(textOf(m.host), /datasets: \{"anyOf":\["public\.orders"\],"noneOf":\["public\.salaries"\]\}/);
+    await click(button(m.host, "Edit"));
+    const dialog = document.querySelector("dialog") as HTMLElement;
+    assert.equal(inputOf(dialog, "Tools").value, "gmail_send");
+    assert.equal(inputOf(dialog, "Only datasets (any of)").value, "public.orders");
+    assert.equal(inputOf(dialog, "Never datasets").value, "public.salaries");
+    await typeInto(inputOf(dialog, "Only datasets (any of)"), "public.orders, public.customers");
+    await typeInto(inputOf(dialog, "Only memories tagged (any of)"), "work, ops");
+    await click(button(document.body, "Save rule"));
+    await flush();
+    const sent = callsOf("rules_set")[0]?.input as { rule: { match: { tools: string[] }; narrowing: unknown } };
+    assert.deepEqual(sent.rule.match.tools, ["gmail_send"]);
+    assert.deepEqual(sent.rule.narrowing, { memoryTags: { anyOf: ["work", "ops"] }, deepDatasets: { anyOf: ["public.orders", "public.customers"], noneOf: ["public.salaries"] } });
+    await m.unmount();
+    OUTPUTS.rules_list = saved;
+  });
+
+  it("emptying both dataset fields drops deepDatasets and keeps memoryTags; a deny rule shows no dataset fields", async () => {
+    reset();
+    const saved = OUTPUTS.rules_list;
+    OUTPUTS.rules_list = { ...(saved as object), rules: [ALLOW] };
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "Edit"));
+    const dialog = document.querySelector("dialog") as HTMLElement;
+    await typeInto(inputOf(dialog, "Only datasets (any of)"), "");
+    await typeInto(inputOf(dialog, "Never datasets"), "");
+    await click(button(document.body, "Save rule"));
+    await flush();
+    const sent = callsOf("rules_set")[0]?.input as { rule: { narrowing: Record<string, unknown> } };
+    assert.deepEqual(sent.rule.narrowing, { memoryTags: { anyOf: ["work"] } });
+    await m.unmount();
+    OUTPUTS.rules_list = { ...(saved as object), rules: [RULE] };
+    const m2 = await mount(h(rules.RulesPage));
+    await click(button(m2.host, "Edit"));
+    const d2 = document.querySelector("dialog") as HTMLElement;
+    assert.ok(![...d2.querySelectorAll("label")].some((l) => /datasets/i.test(l.textContent ?? "")), "narrowing fields only for an allow rule");
+    assert.ok(inputOf(d2, "Tools"), "tools is a match field of every rule");
+    await m2.unmount();
+    OUTPUTS.rules_list = saved;
+  });
+});

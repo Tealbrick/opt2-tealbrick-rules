@@ -4,6 +4,7 @@
 import { performance } from "node:perf_hooks";
 import { hookResponseProblem } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
+import { isDynamicOp } from "./catalog.ts";
 import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict } from "./engine.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
@@ -56,6 +57,31 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
   };
 }
 
+/**
+ * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
+ * carry it yet (the pin bump follows the spec release), so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
+ */
+export function toolOf(req: HookRequest): string | undefined {
+  const t = (req.call.target as { tool?: unknown }).tool;
+  return typeof t === "string" && t.length > 0 && t.length <= 128 ? t : undefined;
+}
+
+/**
+ * The tool facts of a call: `tool` (when sent) and `dynamic` (from the local app catalog, a cached table: no network). A
+ * `tools` rule needs both to fail closed on a dynamic op that arrives without a tool (see engine.ts); `dynamic` is absent when
+ * the catalog cannot place the op, which counts as dynamic there. Never throws: a catalog read that fails leaves `dynamic` unknown.
+ */
+export function toolFacts(req: HookRequest, db: Db): { tool?: string; dynamic?: boolean } {
+  const tool = toolOf(req);
+  let dynamic: boolean | undefined;
+  try {
+    dynamic = isDynamicOp(db, req.call.target.product, req.call.target.op);
+  } catch {
+    dynamic = undefined;
+  }
+  return { ...(tool !== undefined ? { tool } : {}), ...(dynamic !== undefined ? { dynamic } : {}) };
+}
+
 /** Facts for one hook call: caller (and its teams), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
@@ -66,7 +92,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const callerKey = req.call.caller.type === "agent" ? `agent:${req.call.caller.id}` : null;
   return {
     caller: { type: req.call.caller.type, id: req.call.caller.id, mode: req.call.caller.mode ?? null },
-    target: { product: req.call.target.product, op: req.call.target.op, effect: req.call.target.effect },
+    target: { product: req.call.target.product, op: req.call.target.op, effect: req.call.target.effect, ...toolFacts(req, db) },
     claim,
     claimVerified: verified,
     ...claimFleetFacts(fx, claim, live),
@@ -142,7 +168,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
       if (recorded(facts, v))
-        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet ? { detail: { fleetUnavailable: true } } : {}), durationUs: elapsedUs(t0) });
+        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet || v.toolUnknown ? { detail: { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) } } : {}), durationUs: elapsedUs(t0) });
       return answer;
     } catch (e) {
       ctx.log.warn("rules_gate refused (fail closed)", { error: e instanceof Error ? e.message : "unknown", call: req.call.id });
@@ -158,10 +184,19 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     if (v.rule) add[`${product}.matched`] = { v: 1, ruleId: v.rule.id, rev: v.rule.rev, decision: v.decision };
     if (facts.claim) add[`${product}.onBehalfOf`] = { claim: { ...facts.claim }, verified: facts.claimVerified, teams: [...facts.claimTeams] };
     const narrowingRuleId = v.narrowingRuleId;
-    if (v.decision === "allow" && v.narrowing?.memoryTags && narrowingRuleId) {
+    if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
       const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : "Governance data unavailable: the narrowing of an allow rule applies";
-      add[`${product}.narrowing`] = { v: 1, ruleId: narrowingRuleId, reason: clamp(reason), memoryTags: v.narrowing.memoryTags as Json };
+      // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
+      // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
+      // answering unfiltered, so deepDatasets is never put under v 1.
+      add[`${product}.narrowing`] = {
+        v: v.narrowing.deepDatasets ? 2 : 1,
+        ruleId: narrowingRuleId,
+        reason: clamp(reason),
+        ...(v.narrowing.memoryTags ? { memoryTags: v.narrowing.memoryTags as Json } : {}),
+        ...(v.narrowing.deepDatasets ? { deepDatasets: v.narrowing.deepDatasets as Json } : {}),
+      };
       recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown> }, durationUs: elapsedUs(t0) });
     }
     if (clock() - t0 > budget) throw new Error("context budget exceeded");
