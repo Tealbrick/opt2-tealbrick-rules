@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
-import { type AllowPlan, allowPlan, readAllowQuery } from "./hold-allow.ts";
+import { type AllowPlan, allowPlan, readAllowQuery, replanAllow } from "./hold-allow.ts";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
@@ -44,7 +44,8 @@ function Editor({
   onRestore,
   seed,
   onUse,
-  fromHold,
+  fromHold: fromHold0,
+  rules = [],
 }: {
   initial: RuleRow | null;
   prefill?: RuleSpec;
@@ -56,6 +57,8 @@ function Editor({
   onUse?: (spec: RuleSpec) => void;
   /** D12: the rule was prepared by "Allow always" on a hold card (its priority and why; Save waits for the one tool of a dynamic operation) */
   fromHold?: AllowPlan;
+  /** the owner's live rules (S4: the prefilled rule is placed again when its match changes) */
+  rules?: readonly RuleRow[];
 }) {
   // a stored legacy value with a control or invisible character opens WRITTEN OUT (⟨U+202E⟩), so the owner reads it and saves a clean rule
   const [s, setS] = useState<RuleSpec>(() => {
@@ -64,7 +67,26 @@ function Editor({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // S4 + D-4: the "Allow always" plan follows the edits. Match or tool changes place the rule again; a priority the owner typed stays.
+  const [fromHold, setPlan] = useState<AllowPlan | undefined>(fromHold0);
+  const [typedPriority, setTypedPriority] = useState(false);
+  const [acked, setAcked] = useState(false);
+  const [savedNote, setSavedNote] = useState("");
   const m = s.match;
+  const matchKey = JSON.stringify(s.match);
+  const lastKey = useRef(matchKey);
+  const skippedKey = JSON.stringify(fromHold?.skipped ?? []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a change of the match places the rule again
+  useEffect(() => {
+    if (!fromHold0 || lastKey.current === matchKey) return;
+    lastKey.current = matchKey;
+    const next = replanAllow(s, rules, fromHold0, typedPriority);
+    setPlan(next);
+    if (!typedPriority) setS((cur) => ({ ...cur, priority: next.spec.priority }));
+  }, [matchKey]);
+  // a changed list of skipped holds needs a new tick
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on the list only
+  useEffect(() => setAcked(false), [skippedKey]);
   const setMatch = (patch: Partial<RuleSpec["match"]>) => setS({ ...s, match: { ...m, ...patch } });
   const obo = m.onBehalfOf ?? {};
   const setObo = (patch: Partial<NonNullable<RuleSpec["match"]["onBehalfOf"]>>) => {
@@ -93,8 +115,10 @@ function Editor({
   const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
   // D12: an allow rule for a dynamic operation (many tools) must name ONE tool before it can be saved; never "any tool"
   const needTool = !!fromHold?.needTool && !m.tools?.length;
+  // D-4: an allow rule that skips other hold rules needs the owner's tick
+  const needAck = !!fromHold?.needsAck && !acked;
   const save = async () => {
-    if (busy || needTool || fromHold?.blocked) return;
+    if (busy || needTool || needAck || fromHold?.blocked) return;
     if (onUse) {
       onUse(s);
       return;
@@ -102,8 +126,10 @@ function Editor({
     setBusy(true);
     setError("");
     try {
-      await run("rules_set", { ...(initial ? { id: initial.id, expectedRev: initial.rev } : {}), rule: s });
-      onDone(true);
+      const out = await run("rules_set", { ...(initial ? { id: initial.id, expectedRev: initial.rev } : {}), rule: s });
+      // S4: the rule is saved; a non-blocking note says when it runs ahead of a refuse or hold rule (the dialog stays until the owner has read it)
+      if (out.placementWarning) setSavedNote(out.placementWarning);
+      else onDone(true);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -119,19 +145,30 @@ function Editor({
       busy={busy}
       size="lg"
       footer={
-        <>
-          <Button onClick={() => onDone(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" disabled={busy || needTool || !!fromHold?.blocked || !s.title || !s.outcome.reason} onClick={() => void save()}>
-            {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
-          </Button>
-        </>
+        savedNote ? (
+            <Button variant="primary" onClick={() => onDone(true)}>
+              Close
+            </Button>
+        ) : (
+            <>
+              <Button onClick={() => onDone(false)} disabled={busy}>
+                Cancel
+              </Button>
+              <Button variant="primary" disabled={busy || needTool || needAck || !!fromHold?.blocked || !s.title || !s.outcome.reason} onClick={() => void save()}>
+                {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
+              </Button>
+            </>
+          )
       }
     >
       {error ? (
         <Notice tone="needs-you" role="alert">
           {error}
+        </Notice>
+      ) : null}
+      {savedNote ? (
+        <Notice tone="needs-you" role="alert">
+          <strong>The rule is saved.</strong> {savedNote}
         </Notice>
       ) : null}
       <DirectoryErrors dir={dir} />
@@ -151,6 +188,12 @@ function Editor({
               {w}
             </Notice>
           ))}
+          {fromHold.needsAck ? (
+            <label className="tb-row rules-ack">
+              <input type="checkbox" checked={acked} onChange={(e) => setAcked(e.target.checked)} />
+              <span>I know this skips these holds: {fromHold.skipped.map((h) => `“${safeText(h.title)}” (priority ${h.priority})`).join(", ")}.</span>
+            </label>
+          ) : null}
           {needTool ? (
             <Notice tone="needs-you" role="alert">
               This app runs many tools; choose the one tool to always allow. Type its name in Tools below. Save stays off until you do.
@@ -163,7 +206,18 @@ function Editor({
           <TextInput value={s.title} maxLength={120} onChange={(e) => setS({ ...s, title: e.target.value })} />
         </Field>
         <Field label="Priority" hint="Lower runs first. The first matching rule decides.">
-          <TextInput type="number" min={0} max={1000} value={s.priority} onChange={(e) => setS({ ...s, priority: Number(e.target.value) })} />
+          <TextInput
+            type="number"
+            min={0}
+            max={1000}
+            value={s.priority}
+            onChange={(e) => {
+              const next = { ...s, priority: Number(e.target.value) };
+              setS(next);
+              setTypedPriority(true);
+              if (fromHold0) setPlan(replanAllow(next, rules, fromHold0, true));
+            }}
+          />
         </Field>
         <Field label="Decision">
           <Select
@@ -688,6 +742,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         <Editor
           initial={editing === "new" ? null : editing}
           prefill={editing === "new" ? prefill : undefined}
+          rules={data?.rules.filter((r) => !r.deleted) ?? []}
           fromHold={editing === "new" ? fromHold : undefined}
           dir={dir}
           products={data?.catalog.productIds ?? []}

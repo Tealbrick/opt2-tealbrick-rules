@@ -285,6 +285,82 @@ describe("D12: Allow always from a hold card", () => {
   });
 });
 
+describe("Delta D-4 and S4: Allow always skips other holds only with a tick; the plan follows edits; a saved rule can carry a note", () => {
+  const STRANGERS = row("rul_strangers", spec("Strangers wait", "hold", 70, { effects: ["outward"] }));
+  const tick = async (editor: Element) => {
+    const box = editor.querySelector(".rules-ack input") as HTMLInputElement | null;
+    assert.ok(box, "the tick box");
+    await act(async () => box.click());
+    await flush();
+  };
+
+  it("another hold rule that could match is named; Save stays off until the owner ticks 'I know this skips these holds'", async () => {
+    reset(allowQuery({ agent: AGENT }));
+    stub.outputs.rules_list = LIST([HOLD_RULE, STRANGERS]);
+    const m = await mount(h(rules.RulesPage));
+    const editor = dialog("Allow always");
+    assert.equal(inputOf(editor, "Priority").value, "39");
+    assert.match(textOf(editor), /also runs ahead of your hold rule “Strangers wait” \(priority 70\)/);
+    assert.match(textOf(editor), /I know this skips these holds: “Strangers wait” \(priority 70\)/);
+    assert.ok(button(editor, "Save rule").disabled, "no tick, no Save");
+    await click(button(editor, "Save rule"));
+    assert.equal(callsOf("rules_set").length, 0);
+    await tick(editor);
+    assert.ok(!button(editor, "Save rule").disabled);
+    await click(button(editor, "Save rule"));
+    assert.equal(callsOf("rules_set").length, 1);
+    await m.unmount();
+  });
+
+  it("one hold rule only: no tick box", async () => {
+    reset(allowQuery({ agent: AGENT }));
+    const m = await mount(h(rules.RulesPage));
+    const editor = dialog("Allow always");
+    assert.ok(!editor.querySelector(".rules-ack"), "no tick box");
+    assert.ok(!button(editor, "Save rule").disabled);
+    await m.unmount();
+  });
+
+  it("S4: editing the Apps field places the rule again (the priority follows) and a priority typed by the owner stays", async () => {
+    reset(allowQuery({ agent: AGENT }));
+    stub.outputs.rules_list = LIST([HOLD_RULE, row("rul_kn", spec("Knowledge refuse", "deny", 90, { products: ["knowledge"] }))]);
+    const m = await mount(h(rules.RulesPage));
+    const editor = dialog("Allow always");
+    assert.equal(inputOf(editor, "Priority").value, "39");
+    // the owner changes the app to knowledge (the operation stays): the refuse rule at 90 can match now, the connect hold cannot
+    await typeInto(inputOf(editor, "Apps"), "knowledge");
+    await flush();
+    assert.equal(inputOf(editor, "Priority").value, "91", "after the refuse rule that could match now");
+    assert.match(textOf(editor), /Priority 91:/);
+    // a typed priority stays when the match changes again, and the editor says what it runs ahead of
+    await typeInto(inputOf(editor, "Priority"), "5");
+    await flush();
+    assert.match(textOf(editor), /runs ahead of your refuse rule “Knowledge refuse” \(priority 90\)/);
+    await typeInto(inputOf(editor, "Apps"), "knowledge, connect");
+    await flush();
+    assert.equal(inputOf(editor, "Priority").value, "5");
+    await m.unmount();
+  });
+
+  it("S4: a saved rule that runs ahead of a refuse or hold rule shows the note from rules_set and stays open until Close", async () => {
+    reset();
+    stub.outputs.rules_list = LIST([HOLD_RULE]);
+    stub.outputs.rules_set = { rule: HOLD_RULE, placementWarning: "This allow rule (priority 20) runs before your refuse rule “No sends” (priority 50)." };
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "New rule"));
+    const editor = dialog("New rule");
+    await typeInto(inputOf(editor, "Title"), "Allow sends");
+    await typeInto(inputOf(editor, "Reason"), "ok");
+    await click(button(editor, "Save rule"));
+    assert.equal(callsOf("rules_set").length, 1);
+    assert.match(textOf(dialog("New rule")), /The rule is saved\. This allow rule \(priority 20\) runs before your refuse rule “No sends” \(priority 50\)\./);
+    assert.throws(() => button(dialog("New rule"), "Save rule"), "no second Save");
+    await click(button(dialog("New rule"), "Close"));
+    noDialog();
+    await m.unmount();
+  });
+});
+
 describe("D12: allowPlan and readAllowQuery (pure)", () => {
   const q = { product: "connect", op: "buzz_dm", hold: HOLD, agent: AGENT };
   it("a refuse or hold rule that cannot match this call does not move the rule", () => {
