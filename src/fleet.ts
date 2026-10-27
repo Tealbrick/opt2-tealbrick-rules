@@ -141,14 +141,15 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   for (const c of contacts) {
     for (const h of c.handles) {
-      if (normalizeHandle(h) !== h) throw feedInvalid(`a handle is not canonical (normalizeHandle): ${h.slice(0, 40)}`);
+      // S4-3: the error is shown by fleet_status and kept in fleet_sync: it names the contact, never the handle
+      if (normalizeHandle(h) !== h) throw feedInvalid(`a handle of contact ${c.id.slice(0, 64)} is not canonical (normalizeHandle)`);
       if (tick(40)) yield;
     }
   }
   // C373 §3: agents[].handles (only when Rules asked for them; an older Governance never sends them) follow the same rule
   for (const a of agents) {
     for (const h of a.handles ?? []) {
-      if (normalizeHandle(h) !== h) throw feedInvalid(`an agent handle is not canonical (normalizeHandle): ${h.slice(0, 40)}`);
+      if (normalizeHandle(h) !== h) throw feedInvalid(`a handle of agent ${a.id.slice(0, 64)} is not canonical (normalizeHandle)`);
       if (tick(40)) yield;
     }
   }

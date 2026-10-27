@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
 import { modeDetail } from "./mode.ts";
 import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
@@ -61,11 +61,13 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
 
 /**
  * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types
- * (miniapp-sdk 0.1.40, spec 0.1.64) do not carry it yet, so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
+ * (miniapp-sdk 0.1.40, spec 0.1.64) do not carry it yet, so read it structurally. Anything but a catalog tool name (with at most one `__` variant suffix, ≤ 128 chars) = absent (S4-1).
  */
 export function toolOf(req: HookRequest): string | undefined {
   const t = (req.call.target as { tool?: unknown }).tool;
-  return typeof t === "string" && t.length > 0 && t.length <= 128 ? t : undefined;
+  // S4-1: a value that is no catalog tool name (`Gmail_Send`, `gmail_send `) would match no tools rule: it counts as ABSENT, so a
+  // deny or hold tools rule on a dynamic op applies (fail closed) and an allow tools rule does not
+  return typeof t === "string" && t.length > 0 && t.length <= 128 && wellFormedTool(t) ? t : undefined;
 }
 
 /**

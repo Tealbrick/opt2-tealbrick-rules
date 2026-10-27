@@ -383,7 +383,10 @@ function traceDetail(t: TraceInput): string | null {
 
 export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string {
   const id = `dec_${ulid(now)}`;
-  const obo = t.facts.claim ? JSON.stringify({ ...t.facts.claim, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
+  // S4-3 (review 0.5.0, I8): a channel-sender claim id IS a handle, and handles never enter a trace: only the kind is kept for it
+  const c = t.facts.claim;
+  const who = c ? (c.kind === "channel_sender" ? { kind: c.kind, handle: true } : { ...c }) : null;
+  const obo = who ? JSON.stringify({ ...who, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
   db.prepare(
     "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, caller_product, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(

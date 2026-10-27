@@ -41,7 +41,9 @@ test("gate: deny with reason and a trace keyed by callId; ungated read without a
   ]);
   const money = traces.find((t) => t.callId === "cal_money");
   assert.equal(money?.ruleTitle, "Team X: nothing with money");
-  assert.deepEqual(money?.onBehalfOf, { kind: "channel_sender", id: "slack:u777", verified: false, teams: ["tm_x"], trust: ["trusted"] });
+  // S4-3 (review 0.5.0): a channel-sender claim id is a handle; the trace keeps only its kind
+  assert.deepEqual(money?.onBehalfOf, { kind: "channel_sender", handle: true, verified: false, teams: ["tm_x"], trust: ["trusted"] });
+  assert.doesNotMatch(JSON.stringify(traces), /slack:u777/i);
 });
 
 test("gate fails closed: over budget, aborted signal, store failure", async () => {

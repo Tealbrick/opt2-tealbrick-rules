@@ -217,6 +217,12 @@ export function dependsOnClaim(spec: RuleSpec): boolean {
 
 /** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (LOCAL COPY: the pinned manifest 0.1.31 carries spec 0.1.64, without it): no `__`, no trailing `_`, 2 to 48 characters. */
 const CATALOG_TOOL_NAME = /^(?!.*__)[a-z][a-z0-9_]{0,46}[a-z0-9]$/;
+/** S4-1 (review 0.5.0): a `target.tool` the gate reads: a catalog tool name, optionally with ONE `__<variant>` suffix (Connect variants). */
+export function wellFormedTool(t: string): boolean {
+  const at = t.indexOf("__");
+  const base = at < 0 ? t : t.slice(0, at);
+  return CATALOG_TOOL_NAME.test(base) && (at < 0 || /^[a-z0-9][a-z0-9_]{0,124}$/.test(t.slice(at + 2)));
+}
 
 /**
  * A `tools` condition naming `x` matches `target.tool === x` OR `target.tool` starting with `x__` (QA-RULES18-4, C354, BRIDGE v0.1.68):
