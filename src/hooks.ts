@@ -58,8 +58,8 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
 }
 
 /**
- * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
- * carry it yet (the pin bump follows the spec release), so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
+ * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types
+ * (miniapp-sdk 0.1.40, spec 0.1.64) do not carry it yet, so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
  */
 export function toolOf(req: HookRequest): string | undefined {
   const t = (req.call.target as { tool?: unknown }).tool;

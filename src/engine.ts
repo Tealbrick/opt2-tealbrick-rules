@@ -152,7 +152,7 @@ export function dependsOnClaim(spec: RuleSpec): boolean {
   return !!o && ((o.teams?.length ?? 0) > 0 || (o.ids?.length ?? 0) > 0 || (o.kinds?.length ?? 0) > 0 || (o.trust?.length ?? 0) > 0);
 }
 
-/** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (copied until the spec pin moves): no `__`, no trailing `_`, 2 to 48 characters. */
+/** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (LOCAL COPY: the pinned manifest 0.1.31 carries spec 0.1.64, without it): no `__`, no trailing `_`, 2 to 48 characters. */
 const CATALOG_TOOL_NAME = /^(?!.*__)[a-z][a-z0-9_]{0,46}[a-z0-9]$/;
 
 /**
@@ -365,8 +365,9 @@ function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
  * Key present → `ids` must be non-empty (an empty list means "every dataset", rule 4, so it FAILS under `noneOf` as under `anyOf`);
  * then `anyOf` present → every id is in it (`anyOf: []` passes nothing) and `noneOf` present → no id is in it. How the data app
  * restricts a call that names no dataset is its own job (rule 4); there is no lineage (rule 4a).
- * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` from @opt2-tealbrick/manifest (>= 0.1.30; the release that carries the v0.1.68
- * contract is the one to pin). One mechanism (L1): delete this copy and import the helper when that package is released and pinned.
+ * TODO(C336 RQ-2): LOCAL COPY of the shared `datasetsMatch` (spec 0.1.68 contract). The newest released @opt2-tealbrick/manifest
+ * (0.1.31, spec 0.1.64; pinned in 0.5.0) does not export it yet. One mechanism (L1): delete this copy and import the helper when a
+ * released manifest package carries it and Rules pins that release.
  */
 export function datasetsMatch(deepDatasets: Lists | undefined, ids: readonly string[]): boolean {
   if (!deepDatasets) return true;

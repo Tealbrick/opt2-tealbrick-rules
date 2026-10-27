@@ -49,7 +49,7 @@ export function seedCatalog(db: Db, products: readonly string[]): Db {
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 
 export function hookCtx(db: Db, signal: AbortSignal = new AbortController().signal): HookContext {
-  return { db, log: quiet, signal, getKey: async () => null, secrets: { put: async () => {}, get: async () => null, delete: async () => {} } } as HookContext;
+  return { db, log: quiet, signal, getKey: async () => null, modelRole: async () => null, secrets: { put: async () => {}, get: async () => null, delete: async () => {} } } as HookContext;
 }
 
 /** Seeded pseudo-random numbers in [0, 1) (mulberry32): a failing fuzz case reproduces. */
