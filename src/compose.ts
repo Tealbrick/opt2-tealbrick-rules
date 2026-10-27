@@ -32,6 +32,45 @@ export interface ComposeEnv {
   apps: readonly { id: string; names?: readonly string[] }[];
   /** THE writer check ("" = fine): the same function the writers use (schema problems, then `ruleProblem`). Never re-implemented here. */
   problem: (spec: RuleSpec) => string;
+  /** the owner's ACTIVE rules (priority and decision): composed rules are placed around them (C373 S2), never ahead of a refuse/hold by an allow */
+  existing?: readonly { priority: number; decision: Decision }[];
+}
+
+/**
+ * Where composed rules go (C373 S2, safety): refuse and hold BEFORE every existing allow rule (at most STRICT_PRIORITY), allow
+ * AFTER every existing refuse and hold rule (their highest priority + 10, at least ALLOW_PRIORITY), so a composed allow never
+ * skips a rule the owner already has. `allow` null = no room after a refuse/hold rule at priority 1000.
+ */
+export function placement(existing: ComposeEnv["existing"] = []): { strict: number; allow: number | null; strictMax: number | null; allowMin: number | null } {
+  const strictOnes = existing.filter((r) => r.decision !== "allow").map((r) => r.priority);
+  const allowOnes = existing.filter((r) => r.decision === "allow").map((r) => r.priority);
+  const strictMax = strictOnes.length ? Math.max(...strictOnes) : null;
+  const allowMin = allowOnes.length ? Math.min(...allowOnes) : null;
+  const strict = Math.max(0, Math.min(STRICT_PRIORITY, allowMin === null ? STRICT_PRIORITY : allowMin - 1));
+  const after = Math.max(ALLOW_PRIORITY, strict + 1, strictMax === null ? 0 : strictMax + 10);
+  const allow = strictMax !== null && strictMax >= 1000 ? null : Math.min(1000, after);
+  return { strict, allow, strictMax, allowMin };
+}
+
+/** Every drafter's rules get their place from `placement` (a model's own priorities are never kept); an allow with no room goes to unmatched. */
+export function placeProposal(p: Proposal, existing: ComposeEnv["existing"] = []): Proposal {
+  const place = placement(existing);
+  const rules: RuleSpec[] = [];
+  const unmatched = [...p.unmatched];
+  for (const r of p.rules) {
+    if (r.outcome.decision === "allow" && place.allow === null) unmatched.push({ text: r.title, hint: NO_ROOM });
+    else rules.push({ ...r, priority: r.outcome.decision === "allow" ? (place.allow as number) : place.strict });
+  }
+  return { ...p, rules: rules.sort((a, b) => a.priority - b.priority), unmatched };
+}
+const NO_ROOM = "An allow rule must run after your refuse and hold rules, and one of them already has priority 1000 (the last place). Lower its priority first.";
+
+/** Why a composed rule has its priority, for the proposal line. */
+export function priorityWhy(spec: RuleSpec, existing: ComposeEnv["existing"] = []): string {
+  const p = placement(existing);
+  if (spec.outcome.decision === "allow")
+    return p.strictMax === null ? `Priority ${spec.priority}: after the refuse and hold rules of this proposal.` : `Priority ${spec.priority}: after your refuse and hold rules (highest priority ${p.strictMax}), so it never skips them.`;
+  return p.allowMin === null ? `Priority ${spec.priority}: refuse and hold rules run first.` : `Priority ${spec.priority}: before your allow rules (lowest priority ${p.allowMin}), so none of them skips it.`;
 }
 
 export interface Unmatched {
@@ -516,6 +555,13 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
   for (const sentence of sentences) {
     const r = readSentence(sentence, env, agentForms, teamForms, appForms, prev);
     if (r.ok) {
+      const place = placement(env.existing);
+      if (place.allow === null && r.rules.some((x) => x.outcome.decision === "allow")) {
+        out.unmatched.push({ text: sentence, hint: NO_ROOM });
+        prev = null;
+        continue;
+      }
+      for (const x of r.rules) x.priority = x.outcome.decision === "allow" ? (place.allow as number) : place.strict;
       // the writer check per sentence: if one of its rules cannot be saved, none of them is proposed (a partial set would be weaker than the owner said)
       const problems = r.rules.map((x) => env.problem(x)).filter(Boolean);
       if (problems.length) {
@@ -535,7 +581,7 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
   // refuse and hold rules first, then allow (stable: the owner's order within each)
   out.rules.sort((a, b) => a.priority - b.priority);
   if (out.rules.some((r) => r.outcome.decision === "allow"))
-    out.notes.push(`An allow rule decides first for the calls it matches (priority ${ALLOW_PRIORITY}), so your rules with a higher priority number no longer apply to those calls. Check the order before you approve.`);
+    out.notes.push("An allow rule decides for the calls it matches, so rules after it no longer apply to those calls. Rules puts it after all your refuse and hold rules.");
   if (out.rules.some((r) => r.match.onBehalfOf)) out.notes.push("Who asked is a claim. A rule about who asked can only make a decision stricter, never wider.");
   return vetProposal(out, env.problem);
 }

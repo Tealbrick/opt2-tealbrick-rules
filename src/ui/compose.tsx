@@ -41,7 +41,8 @@ export function Composer({
     setError("");
     setSaved(false);
     try {
-      const proposal = await run("rule_compose", { text: text.trim() });
+      // the agent names this page read (tb.agents_list), so names resolve also right after a restart
+      const proposal = await run("rule_compose", { text: text.trim(), ...(dir.agents.length ? { agents: dir.agents.slice(0, 500).map((a) => ({ id: a.id, name: (a.name || a.id).slice(0, 120) })) } : {}) });
       setShown({ text: text.trim(), proposal });
       setRules(proposal.rules);
       setChanged(new Set());

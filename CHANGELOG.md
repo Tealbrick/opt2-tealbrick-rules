@@ -10,6 +10,7 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`
 - `src/directory.ts`: agent names from `events.agentsChanged`, in memory only.
 - Optional model drafter (`src/model-drafter.ts`, C373 Q-A, SDK 0.1.40 `modelRole`): when the parser could not read everything, the bridge has cap `model_roles` and the owner bound the optional role `utility` (else `reasoning`), the owner's model drafts the text as JSON (OpenAI-compatible or Anthropic API). Its rules pass the same writer checks plus a known-names check (`namesProblem`); it is used only when it keeps at least as many rules; any failure falls back to the parser with a note. The manifest declares both roles as optional (`settings.modelRoles`, `usedBy` app, `required` false) in a separate commit; without the declaration the parser drafts alone.
 - Tests: `test/model-drafter.test.ts`.
+- Placement (S2): composed refuse/hold rules run before the owner's existing allow rules, composed allow rules after every existing refuse/hold (highest + 10); each line says the priority and why. `rule_compose` takes optional `agents` (names the page read from `tb.agents_list`). Declaring the optional model roles leaves readiness `ok` (SDK 0.1.40 reports only required roles).
 - Drafts page: an owner draft says "written by you in Rules"; `drafts_list` / `draft_decide` outputs allow `source.kind` `owner` (no migration: `drafts.source` is JSON).
 - Tests: `test/compose.test.ts`, `test/compose-app.test.ts`, `test/ui-compose.test.ts`.
 

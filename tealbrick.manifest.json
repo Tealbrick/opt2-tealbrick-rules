@@ -3709,7 +3709,7 @@
       "idempotency": "none",
       "id": "rule_compose",
       "title": "Read a rule in plain English",
-      "description": "Turn the owner's plain English into PROPOSED structured rules (no model, no state). Nothing applies: save the proposal for approval with rule_compose_save.",
+      "description": "Turn the owner's plain English into PROPOSED structured rules (no state). Optional `agents`: the names the owner page read from tb.agents_list. Nothing applies: save the proposal for approval with rule_compose_save.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3721,6 +3721,31 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 2000
+          },
+          "agents": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 5,
+                  "maxLength": 64,
+                  "pattern": "^(agt|ins)_[A-Za-z0-9]+$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              }
+            }
           }
         }
       },

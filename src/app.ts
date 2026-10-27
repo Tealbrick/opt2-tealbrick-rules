@@ -40,7 +40,7 @@ import {
   type RulesSetOutput,
 } from "#kit";
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
-import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, vetProposal } from "./compose.ts";
+import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
@@ -143,13 +143,19 @@ const writerProblem =
   };
 
 /** Names the owner can use in an English rule: agents (directory), Governance teams (Fleet copy), apps (catalog). */
-function composeEnv(ctx: OpContext): ComposeEnv {
+function composeEnv(ctx: OpContext, shown: readonly { id: string; name: string }[] = []): ComposeEnv {
   const cat = catalogOf(ctx.db);
+  // agentsChanged list first; the owner page adds what it read from the SDK's tb.agents_list (same slice) for the gap after a restart
+  const agents = [...knownAgents(ctx.db)];
+  for (const a of shown) if (!agents.some((x) => x.id === a.id)) agents.push({ id: a.id, name: a.name });
   return {
-    agents: knownAgents(ctx.db),
+    agents,
     teams: fleetTeams(ctx.db).map((t) => ({ id: t.id, name: t.name })),
     apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
     problem: writerProblem(ctx.db),
+    existing: liveRules(ctx.db)
+      .filter((r) => r.spec.active)
+      .map((r) => ({ priority: r.spec.priority, decision: r.spec.outcome.decision })),
   };
 }
 
@@ -163,8 +169,7 @@ export const MODEL_FEWER_NOTE = "Your model’s draft had fewer rules Rules can 
  * whole text; its proposal is vetted exactly like the parser's (writer checks plus known names) and is used only when it keeps
  * at least as many rules. Any model failure falls back to the parser with a note. Never used by a hook.
  */
-async function draftRules(ctx: OpContext, text: string): Promise<{ drafter: DrafterId; proposal: Proposal }> {
-  const env = composeEnv(ctx);
+async function draftRules(ctx: OpContext, text: string, env: ComposeEnv): Promise<{ drafter: DrafterId; proposal: Proposal }> {
   const vet = async (p: Proposal): Promise<Proposal> => {
     await catalogFor(ctx, p.rules.filter((r) => !!r && typeof r === "object" && !!r.match && typeof r.match === "object"));
     return vetProposal(p, env.problem, env);
@@ -174,7 +179,7 @@ async function draftRules(ctx: OpContext, text: string): Promise<{ drafter: Draf
   const binding = await draftBinding(ctx as ModelSource, (msg, data) => ctx.log.warn(msg, data));
   if (!binding) return { drafter: parserDrafter.id, proposal: parsed };
   try {
-    const drafted = await vet(await modelDrafter(binding, { signal: ctx.signal }).draft(text, env));
+    const drafted = placeProposal(await vet(await modelDrafter(binding, { signal: ctx.signal }).draft(text, env)), env.existing);
     if (drafted.rules.length >= parsed.rules.length) return { drafter: "model", proposal: { ...drafted, notes: [MODEL_DRAFT_NOTE, ...drafted.notes] } };
     return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FEWER_NOTE] } };
   } catch (e) {
@@ -359,10 +364,11 @@ export const handlers = {
     async run(input, ctx) {
       person(ctx);
       await freshFleet(ctx);
-      const { drafter, proposal: p } = await draftRules(ctx, input.text);
-      const agentName = (id: string) => knownAgents(ctx.db).find((a) => a.id === id)?.name ?? id;
+      const env = composeEnv(ctx, input.agents ?? []);
+      const { drafter, proposal: p } = await draftRules(ctx, input.text, env);
+      const agentName = (id: string) => env.agents.find((a) => a.id === id)?.name ?? id;
       const teamName = (id: string) => fleetTeams(ctx.db).find((t) => t.id === id)?.name ?? id;
-      return { drafter, rules: p.rules, lines: p.rules.map((r) => describeRule(r, agentName, teamName)), notes: p.notes.slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
+      return { drafter, rules: p.rules, lines: p.rules.map((r) => `${describeRule(r, agentName, teamName)} ${priorityWhy(r, env.existing)}`), notes: p.notes.slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
     },
   }),
   [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({

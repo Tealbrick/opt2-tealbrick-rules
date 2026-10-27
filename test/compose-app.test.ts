@@ -95,14 +95,31 @@ test("rule_compose: the owner's English → proposed rules with readable lines; 
     ],
   );
   assert.deepEqual(out.lines, [
-    "Refuse: calls by CEO on behalf of team Team X with effect money.",
-    "Hold for my review: calls by Hermes with effect outward.",
-    "Allow: calls by CEO on behalf of team Team X, only memories tagged work.",
+    "Refuse: calls by CEO on behalf of team Team X with effect money. Priority 10: refuse and hold rules run first.",
+    "Hold for my review: calls by Hermes with effect outward. Priority 10: refuse and hold rules run first.",
+    "Allow: calls by CEO on behalf of team Team X, only memories tagged work. Priority 20: after the refuse and hold rules of this proposal.",
   ]);
   assert.deepEqual(out.unmatched, []);
   assert.deepEqual(liveRules(db), [], "a proposal applies nothing");
   assert.deepEqual(listDrafts(db, undefined, 10), [], "a proposal stores nothing");
   await assert.rejects(run(OP.ruleCompose)({ text: "Block money for all agents" }, opCtx(db, { type: "agent", id: AGENT_A })), { code: "forbidden" });
+});
+
+test("rule_compose: names the owner page read (tb.agents_list) resolve after a restart; each line says the priority and why", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, callApp as never);
+  const owner = opCtx(db, { type: "person", id: OWNER }, callApp);
+  await run(OP.rulesSet)({ rule: { title: "no sends", active: true, priority: 100, match: { effects: ["outward"] }, outcome: { decision: "deny", reason: "r" } } }, owner);
+  assert.deepEqual(knownAgents(db), [], "no agentsChanged since this start");
+  const text = "When someone from team X tags the CEO agent: only work-tagged memories, no money";
+  assert.match((await run(OP.ruleCompose)({ text }, owner)).unmatched[0]?.hint ?? "", /No agent named “CEO”/);
+  const out = await run(OP.ruleCompose)({ text, agents: [{ id: AGENT_B, name: "CEO" }] }, owner);
+  assert.deepEqual(out.unmatched, []);
+  assert.deepEqual(
+    out.rules.map((r: { priority: number }) => r.priority),
+    [10, 110],
+  );
+  assert.match(out.lines[1], /Priority 110: after your refuse and hold rules \(highest priority 100\), so it never skips them\.$/);
 });
 
 test("rule_compose: apps come from the catalog; a rule the writers refuse is unmatched, never proposed", async () => {

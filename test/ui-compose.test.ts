@@ -134,7 +134,7 @@ describe("English rule box", () => {
     assert.ok(button(b, "Show rules").disabled, "nothing typed: nothing to show");
     await typeInto(b.querySelector("textarea") as HTMLTextAreaElement, TEXT);
     await click(button(b, "Show rules"));
-    assert.deepEqual(callsOf("rule_compose").map((c) => c.input), [{ text: TEXT }]);
+    assert.deepEqual(callsOf("rule_compose").map((c) => c.input), [{ text: TEXT, agents: [{ id: "agt_ceo", name: "CEO" }] }], "the names this page read go along");
     const text = b.textContent ?? "";
     assert.match(text, /Refuse: calls by CEO on behalf of team Team X with effect money\./);
     assert.match(text, /Allow: calls by CEO on behalf of team Team X, only memories tagged work\./);
