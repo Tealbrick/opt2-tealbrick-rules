@@ -305,7 +305,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
   const id = `dec_${ulid(now)}`;
   const obo = t.facts.claim ? JSON.stringify({ ...t.facts.claim, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
   db.prepare(
-    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, caller_product, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     id,
     t.callId,
@@ -314,6 +314,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.facts.caller.type,
     t.facts.caller.id,
     t.facts.caller.mode,
+    t.facts.callerProduct,
     t.facts.target.product,
     t.facts.target.op,
     t.facts.target.effect,
@@ -342,7 +343,8 @@ export interface DecisionView {
   callId: string | null;
   phase: TraceInput["phase"];
   at: string;
-  caller: { type: string; id: string; mode: string | null };
+  /** `product`: the VERIFIED product of an app caller at decision time; null for an agent, an unverified app, and rows recorded before 0.5.0 */
+  caller: { type: string; id: string; mode: string | null; product: string | null };
   target: { product: string; op: string; effect: string; tool?: string };
   decision: Decision;
   answered: Answered;
@@ -363,7 +365,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
     callId: r.call_id == null ? null : String(r.call_id),
     phase: String(r.phase) as DecisionView["phase"],
     at: iso(Number(r.at)) as string,
-    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode) },
+    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode), product: r.caller_product == null ? null : String(r.caller_product) },
     target: { product: String(r.product), op: String(r.op), effect: String(r.effect), ...(tool !== undefined ? { tool } : {}) },
     decision: String(r.decision) as Decision,
     answered: String(r.answered) as Answered,
@@ -377,7 +379,15 @@ function decisionView(r: Record<string, unknown>): DecisionView {
   };
 }
 
-export function listDecisions(db: Db, q: { callId?: string; caller?: string; decision?: Decision; product?: string; cursor?: string; limit: number }): { items: DecisionView[]; nextCursor: string | null } {
+/**
+ * `appCaller`: an APP reads its own decisions by its VERIFIED product (any instance of it, so a reinstall keeps its history),
+ * and rows recorded without a product (before 0.3.2, or an unverified app) by its instance id. An app with no verified product
+ * passes `product: null` and reads by instance id only.
+ */
+export function listDecisions(
+  db: Db,
+  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; cursor?: string; limit: number },
+): { items: DecisionView[]; nextCursor: string | null } {
   const where: string[] = [];
   const args: unknown[] = [];
   const add = (sql: string, value: unknown) => {
@@ -387,6 +397,16 @@ export function listDecisions(db: Db, q: { callId?: string; caller?: string; dec
   };
   add("call_id = ?", q.callId);
   add("caller_id = ?", q.caller);
+  if (q.appCaller) {
+    const { product, instance } = q.appCaller;
+    if (product) {
+      where.push("caller_type = 'app' AND (caller_product = ? OR (caller_product IS NULL AND caller_id = ?))");
+      args.push(product, instance);
+    } else {
+      where.push("caller_type = 'app' AND caller_id = ?");
+      args.push(instance);
+    }
+  }
   add("decision = ?", q.decision);
   add("product = ?", q.product);
   add("id < ?", q.cursor);

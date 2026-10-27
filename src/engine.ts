@@ -24,6 +24,11 @@
 //   never matches a `tools` rule. A DYNAMIC op (or one the catalog cannot place) fails CLOSED like the Fleet facts do: a DENY or HOLD
 //   rule with `tools` applies (the tool is unknown, an older bridge or a bridge bug must not switch it off), an ALLOW rule with
 //   `tools` does not. With `target.tool` the match is exact. The verdict says so in `toolUnknown`.
+// - Calls from product X (`callerProducts`, 0.3.2): only an APP caller whose VERIFIED product (the bridge's signed
+//   `caller.product`, never a name, input or context) is listed matches. An AGENT never matches a rule that names it
+//   (an agent is not a product), whatever the decision. An app caller with no valid product is handled like unavailable
+//   Fleet facts: a deny or hold rule APPLIES (its own flag, `closedOnProduct`) and an allow rule does NOT (its narrowing still
+//   applies). Both gaps share the closed/skipped machinery and the severity order below.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 
@@ -33,6 +38,12 @@ export type Effect = "read" | "write" | "outward" | "destructive" | "money";
 
 /** Effects Rules always gates and records, even when no rule names the call (brief C81: outward/destructive/money). */
 export const GATED_EFFECTS: ReadonlySet<string> = new Set(["outward", "destructive", "money"]);
+/** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
+const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
+export function validProduct(p: unknown): p is string {
+  return typeof p === "string" && p.length <= 40 && PRODUCT_ID.test(p);
+}
+
 /** Strictness order: a later entry wins when two evaluations disagree. */
 const SEVERITY: Record<Decision, number> = { allow: 0, hold: 1, deny: 2 };
 export const NO_MATCH_REASON = "No rule matched; the default is allow.";
@@ -90,6 +101,11 @@ export interface CallFacts {
   claimTrustActive: boolean;
   /** false = the Fleet read model cannot be relied on (never read, refused, too old): see the header */
   fleetAvailable: boolean;
+  /**
+   * The VERIFIED product of an APP caller (bridge `caller.product`, spec 0.1.45, a valid product id), else null: an agent, an
+   * app the bridge could not map (or a bridge older than 0.2.2), or a value that is no product id. Null for an app = unavailable (fail closed).
+   */
+  callerProduct: string | null;
 }
 
 export interface Narrowing {
@@ -108,6 +124,8 @@ export interface Verdict {
   viaClaim: boolean;
   /** true when the decisive deny/hold rule applied only because the Fleet facts it names were unavailable */
   closedOnFleet: boolean;
+  /** true when the decisive deny/hold rule applied only because the calling app's verified product was unavailable */
+  closedOnProduct: boolean;
   /** true when the decisive deny/hold rule applied only because the call of a dynamic op carried no `target.tool` (fail closed) */
   toolUnknown: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
@@ -147,15 +165,32 @@ export function toolListed(tools: readonly string[], tool: string): boolean {
   return tools.some((x) => tool === x || tool.startsWith(`${x}__`));
 }
 
+export function dependsOnProduct(spec: RuleSpec): boolean {
+  return (spec.match.callerProducts?.length ?? 0) > 0;
+}
+
 export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rules do not apply without them)";
+export const NEEDS_PRODUCT = "needs the calling app's verified product, which is unavailable (allow rules do not apply without it)";
+
+export interface Judged {
+  why: string;
+  closed: boolean;
+  skipped: boolean;
+  /** the closed or skipped outcome rests on unavailable Fleet facts */
+  onFleet: boolean;
+  /** the closed or skipped outcome rests on the calling app's unavailable verified product */
+  onProduct: boolean;
+  /** the closed outcome rests on a dynamic call without `target.tool` (deny and hold rules with `tools` only) */
+  onTool: boolean;
+}
 
 /**
- * Why `rule` does not match `facts` ("" = it matches), whether it matches only because the Fleet facts it names are
- * unavailable (`closed`, deny and hold rules only), and whether an ALLOW rule that matches on everything else was skipped
- * because the facts are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
+ * Why `rule` does not match `facts` ("" = it matches), whether it matches only because facts it names are unavailable
+ * (`closed`, deny and hold rules only; `onFleet` / `onProduct` say which), and whether an ALLOW rule that matches on everything
+ * else was skipped because they are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
  */
-export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why: string; closed: boolean; fleetClosed: boolean; toolClosed: boolean; skipped: boolean } {
-  const no = (why: string) => ({ why, closed: false, fleetClosed: false, toolClosed: false, skipped: false });
+export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged {
+  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
   if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
@@ -176,13 +211,28 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
     else return no(facts.target.dynamic === false ? "call has no tool name (static operation)" : "call has no tool name");
   }
   let skipped = false;
-  // A Fleet criterion: met, not met, or (copy unavailable) met for a deny/hold rule and never met for an allow rule.
-  const fleet = (met: boolean, why: string): string => {
-    if (facts.fleetAvailable) return met ? "" : why;
+  let onFleet = false;
+  let onProduct = false;
+  // A fact that may be unavailable: met for a deny/hold rule and never met for an allow rule.
+  const gap = (): void => {
     if (strict) closed = true;
     else skipped = true;
+  };
+  // A Fleet criterion: met, not met, or (copy unavailable) a gap.
+  const fleet = (met: boolean, why: string): string => {
+    if (facts.fleetAvailable) return met ? "" : why;
+    gap();
+    onFleet = true;
     return "";
   };
+  if (m.callerProducts?.length) {
+    // Only an app has a product; an agent never matches (it is not a product). An app without a valid one is a gap (fail closed).
+    if (facts.caller.type !== "app") return no("caller is not an app");
+    if (facts.callerProduct === null) {
+      gap();
+      onProduct = true;
+    } else if (!m.callerProducts.includes(facts.callerProduct)) return no("calling app is not listed");
+  }
   if (m.callerTeams?.length) {
     const have = strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
@@ -209,8 +259,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
       if (why) return no(why);
     }
   }
-  if (skipped) return { why: NEEDS_FLEET, closed: false, fleetClosed: false, toolClosed: false, skipped: true };
-  return { why: "", closed: closed || toolClosed, fleetClosed: closed, toolClosed, skipped: false };
+  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false };
+  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed };
 }
 
 export function mismatch(spec: RuleSpec, facts: CallFacts, useClaim = true): string {
@@ -225,25 +275,31 @@ export function order(rules: readonly Rule[]): Rule[] {
 interface Hit {
   rule: Rule | null;
   closed: boolean;
-  /** why the decisive rule is closed: the Fleet facts, and/or an unknown tool */
-  fleetClosed: boolean;
-  toolClosed: boolean;
-  /** merged narrowing of the allow rules skipped for unavailable Fleet facts that precede the decisive rule */
+  /** what the closed decisive rule rests on: the Fleet facts, the calling app's product and/or an unknown tool */
+  onFleet: boolean;
+  onProduct: boolean;
+  onTool: boolean;
+  /** merged narrowing of the allow rules skipped for unavailable facts (Fleet or product) that precede the decisive rule */
   skippedNarrowing: Narrowing | null;
   skippedRuleId: string | null;
+  /** which unavailable facts the skipped allow rules that contributed that narrowing rest on */
+  skipFleet: boolean;
+  skipProduct: boolean;
 }
 
 /**
- * The deciding rule. With the facts: the first rule that matches. WITHOUT them (unavailable): the HIGHEST severity
- * (deny > hold > allow) among the closed deny/hold rules that precede the first rule that matches without any Fleet
- * fact, together with that rule; ties go to the earlier rule. A later deny therefore always beats an earlier closed hold,
- * so the result is never less strict than with the facts.
+ * The deciding rule. With the facts: the first rule that matches. WITHOUT them (unavailable Fleet facts or an unverified app
+ * product): the HIGHEST severity (deny > hold > allow) among the closed deny/hold rules that precede the first rule that
+ * matches without any unavailable fact, together with that rule; ties go to the earlier rule. A later deny therefore always
+ * beats an earlier closed hold, so the result is never less strict than with the facts.
  */
 function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolean): Hit {
   let skippedNarrowing: Narrowing | null = null;
   let skippedRuleId: string | null = null;
+  let skipFleet = false;
+  let skipProduct = false;
   let worst: Rule | null = null;
-  let worstWhy = { fleetClosed: false, toolClosed: false };
+  let worstJ: Judged | null = null;
   for (const r of ordered) {
     const j = judge(r.spec, facts, useClaim);
     if (j.skipped) {
@@ -251,26 +307,28 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
       if (n) {
         skippedNarrowing = mergeNarrowing(skippedNarrowing, n);
         skippedRuleId ??= r.id;
+        skipFleet ||= j.onFleet;
+        skipProduct ||= j.onProduct;
       }
     }
     if (j.why !== "") continue;
     if (j.closed) {
       if (!worst || SEVERITY[r.spec.outcome.decision] > SEVERITY[worst.spec.outcome.decision]) {
         worst = r;
-        worstWhy = { fleetClosed: j.fleetClosed, toolClosed: j.toolClosed };
+        worstJ = j;
       }
       continue;
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
     const closed = decisive === worst;
-    return { rule: decisive, closed, fleetClosed: closed && worstWhy.fleetClosed, toolClosed: closed && worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
+    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, skippedNarrowing, skippedRuleId, skipFleet, skipProduct };
   }
-  return { rule: worst, closed: worst !== null, fleetClosed: worstWhy.fleetClosed, toolClosed: worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
+  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, skippedNarrowing, skippedRuleId, skipFleet, skipProduct };
 }
 
 function verdictOf(hit: Hit): Verdict {
   const rule = hit.rule;
-  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skippedNarrowing !== null, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
+  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -279,8 +337,9 @@ function verdictOf(hit: Hit): Verdict {
     rule: { id: rule.id, rev: rule.rev, title: rule.spec.title },
     narrowing: allow ? mergeNarrowing(own, hit.skippedNarrowing) : null,
     viaClaim: dependsOnClaim(rule.spec),
-    closedOnFleet: hit.fleetClosed || (allow && hit.skippedNarrowing !== null),
-    toolUnknown: hit.toolClosed,
+    closedOnFleet: (hit.closed && hit.onFleet) || (allow && hit.skipFleet),
+    closedOnProduct: (hit.closed && hit.onProduct) || (allow && hit.skipProduct),
+    toolUnknown: hit.closed && hit.onTool,
     narrowingRuleId: allow ? (own ? rule.id : hit.skippedRuleId) : null,
   };
 }
@@ -354,17 +413,16 @@ export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
   const base = verdictOf(firstMatch(ordered, facts, false));
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
-  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet };
+  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct };
 }
 
-const closedWhy = (j: { fleetClosed: boolean; toolClosed: boolean }): string =>
-  j.fleetClosed && j.toolClosed
-    ? "matches: Fleet facts are unavailable and the call names no tool, so this rule applies (fail closed)"
-    : j.toolClosed
-      ? "matches: the call names no tool, so this rule applies (fail closed)"
-      : j.fleetClosed
-        ? "matches: Fleet facts are unavailable, so this rule applies (fail closed)"
-        : "matches";
+/** "matches", or what a closed match rests on: unavailable Fleet facts or app product, and/or a call that names no tool. */
+function closedWhy(j: Judged): string {
+  if (!j.closed) return "matches";
+  const names = [j.onFleet && "Fleet facts", j.onProduct && "the calling app's verified product"].filter(Boolean).join(" and ");
+  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool"].filter(Boolean).join(" and ");
+  return `matches: ${gaps}, so this rule applies (fail closed)`;
+}
 
 /** Per-rule explanation for the dry run. */
 export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
@@ -376,7 +434,7 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
 
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.toolUnknown;
+  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown;
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */
@@ -469,12 +527,23 @@ export function specProblem(spec: RuleSpec): string {
   // QA-C354-3 (spec 0.1.74 DYNAMIC_CATALOG_NAME_RE): a tools entry is a catalog tool name, so a rule never names something no catalog can list.
   const malformed = m.tools?.find((t) => !CATALOG_TOOL_NAME.test(t));
   if (malformed !== undefined) return `tools entry “${malformed}” is not a catalog tool name: lower case letters, digits and single “_”, 2 to 48 characters, starting with a letter and not ending in “_”`;
+  const cp = m.callerProducts ?? [];
+  if (cp.length) {
+    const bad = cp.find((p) => !validProduct(p));
+    if (bad !== undefined) return `callerProducts has “${String(bad).slice(0, 40)}”, which is not a product id (lower-case letters, digits, - and _; at most 40 characters)`;
+    const twice = cp.find((p, i) => cp.indexOf(p) !== i);
+    if (twice !== undefined) return `callerProducts lists “${twice}” twice`;
+    // Agent-only criteria: an app call has an instance id (ins_…), no mode and no teams, so the rule could never match one.
+    if (m.agents?.length && m.agents.every((a) => a.startsWith("agt_"))) return "callerProducts names apps, but agents lists only agents (agt_…), so the rule would never match an app call (an app is listed by its instance id, ins_…)";
+    if (m.modes?.length) return "callerProducts names apps, but modes (free, bound) apply to agents only, so the rule would never match an app call";
+    if (m.callerTeams?.length) return "callerProducts names apps, but callerTeams are teams of agents (an app is in none), so the rule would never match an app call";
+  }
   return "";
 }
 
 /**
  * The strictest narrowing that could apply to a call: every active allow rule that has a narrowing and matches on the
- * criteria that need no Fleet fact (caller, mode, product, operation, effect, and for claim rules: a claim of a listed kind and id), merged (and, for a rule that names tools, a call that carries one of them). Used when the verdict pinned by the
+ * criteria that need no Fleet fact (caller, mode, product, operation, effect, the calling app's product when it is verified, and for claim rules: a claim of a listed kind and id), merged (and, for a rule that names tools, a call that carries one of them). Used when the verdict pinned by the
  * before phase is missing (fail closed). `null` = no allow rule could narrow it.
  */
 export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): Narrowing | null {
@@ -485,6 +554,8 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     const m = sp.match;
     if (!anyOf(m.agents, facts.caller.id) || !anyOf(m.modes, facts.caller.mode) || !anyOf(m.products, facts.target.product) || !anyOf(m.operations, facts.target.op) || !anyOf(m.effects, facts.target.effect)) continue;
     if (m.tools?.length && !(facts.target.tool !== undefined && toolListed(m.tools, facts.target.tool))) continue;
+    // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
+    if (m.callerProducts?.length && (facts.caller.type !== "app" || (facts.callerProduct !== null && !m.callerProducts.includes(facts.callerProduct)))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)
       const c = facts.claim;
