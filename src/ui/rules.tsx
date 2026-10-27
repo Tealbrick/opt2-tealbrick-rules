@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
+import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery } from "./hold-allow.ts";
@@ -645,6 +645,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
+                {!r.deleted && emptyLists(r.spec.match).length ? <> <Tag status="needs-you">empty list</Tag></> : null}
                 {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
@@ -652,6 +653,12 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 {narrowingText(r.spec.narrowing)}
               </p>
               {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}
+              {!r.deleted && emptyLists(r.spec.match).length ? (
+                <p>
+                  Old rule: {emptyLists(r.spec.match).map((x) => `match.${x}`).join(", ")} {emptyLists(r.spec.match).length === 1 ? "is an empty list" : "are empty lists"}. An empty list means “any”, so this rule matches more than it seems to. It still works as before. Edit it to name
+                  what you mean; Rules does not save a new rule like this.
+                </p>
+              ) : null}
               {!r.deleted && cutsOffGovernance(r.spec) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
               <span className="meta">
                 revision {r.rev} · {day(r.updatedAt)}

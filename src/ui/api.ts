@@ -81,6 +81,22 @@ export function emptySpec(): RuleSpec {
   return { title: "", active: true, priority: 100, match: {}, outcome: { decision: "deny", reason: "" } };
 }
 
+/**
+ * The match lists of a stored rule that are EMPTY (`agents`, `onBehalfOf.teams`, …). Rules reads an empty list as "any", so an old
+ * rule with one keeps working, but writers refuse a new one (review 0.5.0 D-3); the Rules page badges such a rule. Same reading as
+ * `emptyLists` in src/engine.ts (the UI build serves only src/ui, so it cannot import it).
+ */
+export function emptyLists(m: unknown): string[] {
+  const out: string[] = [];
+  if (!m || typeof m !== "object") return out;
+  for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) out.push(k);
+    } else if (v && typeof v === "object") for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (Array.isArray(v2) && v2.length === 0) out.push(`${k}.${k2}`);
+  }
+  return out;
+}
+
 /** One line that says what a rule matches, for lists. */
 export function matchText(s: RuleSpec, teamName: (id: string) => string, agentName: (id: string) => string, titles?: Record<string, string>): string {
   const m = s.match;

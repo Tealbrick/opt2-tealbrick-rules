@@ -48,7 +48,7 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
-import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
+import { type CallFacts, evaluate, explain, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
@@ -231,7 +231,7 @@ export function modelErrorKind(e: unknown): string {
   return m ? `http_${m[1]}` : "error";
 }
 
-export const MODEL_EMPTY_ALLOW = "The model proposed an allow rule for every call of every agent. Rules never proposes that from a model; write it in the editor if you mean it.";
+export const MODEL_EMPTY_ALLOW = "The model proposed an allow rule that names nothing (no agent, app, operation or effect), so it would allow every call of every agent. Rules never proposes that from a model; write it in the editor if you mean it.";
 
 /**
  * S3-4: the parser's rules (all kept) plus the model's rules that add something: not a repeat of a parser rule, not an allow with an
@@ -245,7 +245,7 @@ export function mergeModelDraft(parsed: Proposal, drafted: Proposal, existing: C
   const extra: RuleSpec[] = [];
   for (const r of drafted.rules) {
     if (have.has(key(r))) continue;
-    if (r.outcome.decision === "allow" && Object.keys(r.match).length === 0) {
+    if (r.outcome.decision === "allow" && matchesEverything(r.match)) {
       refused.push({ text: typeof r.title === "string" ? r.title.slice(0, 200) : "a rule", hint: MODEL_EMPTY_ALLOW });
       continue;
     }

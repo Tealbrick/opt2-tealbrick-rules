@@ -4,7 +4,7 @@
 import { ulid } from "@opt2-tealbrick/manifest";
 import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { CATALOG_MISSING, catalogOf, catalogProblem } from "./catalog.ts";
-import { type CallFacts, type Decision, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
+import { type CallFacts, type Decision, emptyListProblem, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
 import { placeDraft } from "./placement.ts";
 import { controlProblem, escapeControls, textProblem } from "./text-guard.ts";
 
@@ -120,7 +120,7 @@ export function ruleProblem(db: Db, spec: RuleSpec): string {
  * never flagged "never matches"; it is shown escaped and cannot be saved again until the owner removes the character.
  */
 export function writerProblem(db: Db, spec: RuleSpec): string {
-  return textProblem(spec) || ruleProblem(db, spec);
+  return textProblem(spec) || emptyListProblem(spec) || ruleProblem(db, spec);
 }
 
 /** Writer strict (L24): refuse a spec with a problem. `label` prefixes the message (drafts name the rule). */

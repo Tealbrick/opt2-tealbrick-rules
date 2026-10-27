@@ -277,6 +277,21 @@ describe("Rules page", () => {
   });
 });
 
+describe("D-3: an old rule with an empty match list", () => {
+  it("is badged, explained, and still listed without 'never matches' (the rule keeps working)", async () => {
+    reset();
+    const old = { ...RULE, spec: { ...spec("Old allow", "allow"), match: { agents: [], onBehalfOf: { teams: [] } } } };
+    OUTPUTS.rules_list = { ...(OUTPUTS.rules_list as object), rules: [old] };
+    const m = await mount(h(rules.RulesPage));
+    const tags = [...m.host.querySelectorAll(".item h3 .tb-tag.needs-you")].map((t) => t.textContent ?? "");
+    assert.deepEqual(tags, ["empty list"]);
+    assert.match(m.host.querySelector(".item")?.textContent ?? "", /match\.agents, match\.onBehalfOf\.teams are empty lists\. An empty list means “any”/);
+    assert.doesNotMatch(m.host.textContent ?? "", /never match/);
+    await m.unmount();
+    OUTPUTS.rules_list = { ...(OUTPUTS.rules_list as object), rules: [RULE] };
+  });
+});
+
 describe("Teams and Decisions pages", () => {
   it("RUL-14: a failed load is an error, not “No teams” or “No decisions”", async () => {
     reset();

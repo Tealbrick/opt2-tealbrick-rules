@@ -668,6 +668,46 @@ export function claimKey(c: Claim): string | null {
   return c.kind === "person" ? `contact:${c.id}` : `agent:${c.id}`;
 }
 
+/**
+ * The match lists that are EMPTY, as paths (`agents`, `onBehalfOf.teams`, `recipients.trust`, …). The engine reads an empty list as
+ * "any" (an old rule keeps working), so a WRITER refuses one (review 0.5.0 D-3): `agents: []` looks like "no agent" and means every agent.
+ */
+export function emptyLists(match: unknown): string[] {
+  const out: string[] = [];
+  if (!match || typeof match !== "object") return out;
+  for (const [k, v] of Object.entries(match as Record<string, unknown>)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) out.push(k);
+    } else if (v && typeof v === "object") {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (Array.isArray(v2) && v2.length === 0) out.push(`${k}.${k2}`);
+    }
+  }
+  return out;
+}
+
+/** What a WRITER refuses about empty match lists (D-3). "" = fine. Readers never call this: a stored legacy rule with `[]` keeps working. */
+export function emptyListProblem(spec: Pick<RuleSpec, "match">): string {
+  const e = emptyLists(spec.match);
+  if (e.length === 0) return "";
+  const names = e.map((x) => `match.${x}`).join(", ");
+  return `${names} ${e.length === 1 ? "is an empty list" : "are empty lists"}. An empty list does not mean “none”: it means “any”, so the rule would match every call. Name at least one value, or remove the field.`;
+}
+
+/**
+ * True when a match restricts nothing: no field, only empty lists, every effect, or both modes. A model draft of an ALLOW like this
+ * would allow every call of every agent (review 0.5.0 D-3).
+ */
+export function matchesEverything(match: unknown): boolean {
+  if (!match || typeof match !== "object") return true;
+  const m = match as Record<string, unknown>;
+  const real = (v: unknown, all: number): boolean => {
+    if (Array.isArray(v)) return v.length > 0 && new Set(v).size < all;
+    if (v && typeof v === "object") return Object.values(v as Record<string, unknown>).some((x) => (Array.isArray(x) ? x.length > 0 : x !== undefined));
+    return v !== undefined && v !== null;
+  };
+  return !Object.entries(m).some(([k, v]) => real(v, k === "effects" ? 5 : k === "modes" ? 2 : Number.POSITIVE_INFINITY));
+}
+
 /** Problems a JSON schema cannot express. "" = fine. */
 export function specProblem(spec: RuleSpec): string {
   if (spec.narrowing && spec.outcome.decision !== "allow") return "narrowing applies only to rules that allow";
