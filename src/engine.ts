@@ -516,7 +516,7 @@ function keepLists(t: Lists | undefined): Lists | null {
   return { ...(t.anyOf ? { anyOf: [...t.anyOf] } : {}), ...(t.noneOf?.length ? { noneOf: [...t.noneOf] } : {}) };
 }
 
-function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
+export function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
   const tags = keepLists(n?.memoryTags);
   const sets = keepLists(n?.deepDatasets);
   if (!tags && !sets) return null;
