@@ -75,8 +75,10 @@ import {
   ruleProblem,
   type Submitter,
   saveRule,
+  writerProblem as storedWriterProblem,
   submitDraft,
 } from "./store.ts";
+import { escapeControls } from "./text-guard.ts";
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];
 export const migrationsDir = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -163,7 +165,7 @@ const writerProblem =
   (spec: RuleSpec): string => {
     const v = validateAgainstSchema(RULE_SCHEMA, spec as unknown as Json);
     if (!v.ok) return `the rule does not fit the rule schema: ${v.errors.slice(0, 2).map((e) => `${e.path || "/"} ${e.message}`).join("; ")}`;
-    return ruleProblem(db, spec);
+    return storedWriterProblem(db, spec);
   };
 
 /** Names the owner can use in an English rule: agents (directory), Governance teams (Fleet copy), apps (catalog). */
@@ -284,7 +286,7 @@ export const handlers = {
       await freshFleet(ctx);
       if (input.candidate) {
         await catalogFor(ctx, [input.candidate]);
-        const p = ruleProblem(ctx.db, input.candidate);
+        const p = storedWriterProblem(ctx.db, input.candidate);
         if (p) throw new TbError("input_invalid", p, 400);
       }
       const rules: Rule[] = order([...liveRules(ctx.db), ...(input.candidate ? [{ id: "candidate", rev: 0, spec: input.candidate, updatedAt: Date.now() }] : [])]);
@@ -340,7 +342,7 @@ export const handlers = {
     async run(input, ctx) {
       person(ctx);
       await catalogFor(ctx, [input.rule]);
-      const p = ruleProblem(ctx.db, input.rule);
+      const p = storedWriterProblem(ctx.db, input.rule);
       if (p) throw new TbError("input_invalid", p, 400);
       return previewRecent(ctx.db, { candidate: input.rule, replaces: input.ruleId, limit: input.limit }, currentMode(ctx.db)) as RulesPreviewRecentOutput;
     },
@@ -434,7 +436,7 @@ export const handlers = {
   }),
   [OP.ruleDraftSubmit]: op<RuleDraftSubmitInput, RuleDraftSubmitOutput>({
     // Creates a DRAFT only; the owner approves it in the UI (C84). Rules never calls a model to decide; a model may only help draft.
-    redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
+    redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${escapeControls(input.text.slice(0, 200), true)}`,
     async run(input, ctx) {
       await catalogFor(ctx, input.rules);
       const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: identity(ctx) });
@@ -457,7 +459,7 @@ export const handlers = {
   }),
   [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({
     // The owner's own English rule as a pending DRAFT (source owner). It applies only through draft_decide (C84).
-    redact: (input) => `owner rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
+    redact: (input) => `owner rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${escapeControls(input.text.slice(0, 200), true)}`,
     async run(input, ctx) {
       const actor = person(ctx);
       await catalogFor(ctx, input.rules);

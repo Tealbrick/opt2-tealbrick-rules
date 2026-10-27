@@ -9,6 +9,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Window } from "happy-dom";
 import type { ReactElement } from "react";
+import { escapeControls } from "../src/text-guard.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test-c373-dev5");
@@ -134,8 +135,14 @@ const reset = (query = "") => {
 const allowQuery = (extra: Record<string, string>) => `?${new URLSearchParams({ new: "allow", product: "connect", op: "buzz_dm", hold: HOLD, ...extra }).toString()}`;
 
 type Rules = typeof import("../src/ui/rules.tsx");
+type Api = typeof import("../src/ui/api.ts");
+type Drafts = typeof import("../src/ui/drafts.tsx");
+type Decisions = typeof import("../src/ui/decisions.tsx");
 type HoldAllow = typeof import("../src/ui/hold-allow.ts");
 let rules: Rules;
+let api: Api;
+let drafts: Drafts;
+let decisions: Decisions;
 let holdAllow: HoldAllow;
 before(() => {
   const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
@@ -143,6 +150,9 @@ before(() => {
 });
 before(async () => {
   rules = (await import(pathToFileURL(join(outDir, "ui", "rules.js")).href)) as Rules;
+  api = (await import(pathToFileURL(join(outDir, "ui", "api.js")).href)) as Api;
+  drafts = (await import(pathToFileURL(join(outDir, "ui", "drafts.js")).href)) as Drafts;
+  decisions = (await import(pathToFileURL(join(outDir, "ui", "decisions.js")).href)) as Decisions;
   holdAllow = (await import(pathToFileURL(join(outDir, "ui", "hold-allow.js")).href)) as HoldAllow;
 });
 after(() => rmSync(outDir, { recursive: true, force: true }));
@@ -371,6 +381,98 @@ describe("D11: Check against recent calls", () => {
     const editor = await openEditor(m);
     await click(button(editor, "Check against recent calls"));
     assert.match(textOf(editor), /does not declare operation/);
+    await m.unmount();
+  });
+});
+
+describe("RU-1: a stored value with control or invisible characters is shown written out", () => {
+  const RLO = String.fromCodePoint(0x202e);
+  const ZWJ = String.fromCodePoint(0x200d);
+  const BEL = String.fromCodePoint(0x07);
+  const noRaw = (el: Element) => assert.ok(!/[\p{Cc}\p{Cf}]/u.test((el.textContent ?? "").replace(/[\n\t]/g, "")), `no raw control character in ${(el.textContent ?? "").slice(0, 80)}`);
+
+  it("safeText (browser) and escapeControls (server) give the same answer", () => {
+    for (const t of [`a${RLO}b`, `x${ZWJ}y${BEL}`, `tab\there\nline`, "plain café 日本語", `${String.fromCodePoint(0xfeff)}start`, ""]) {
+      assert.equal(api.safeText(t), escapeControls(t), JSON.stringify(t));
+      assert.equal(api.safeText(t, true), escapeControls(t, true), `${JSON.stringify(t)} multiline`);
+    }
+    assert.equal(api.safeText(`a${RLO}b`), "a⟨U+202E⟩b");
+  });
+
+  it("the rule list, its Edit label and the editor fields show the legacy title and reason escaped", async () => {
+    reset();
+    const legacy = row("rul_legacy", { ...spec(`Pay${RLO}ments wait`, "deny", 10), outcome: { decision: "deny", reason: `nope${ZWJ}` } });
+    stub.outputs.rules_list = LIST([legacy]);
+    const m = await mount(h(rules.RulesPage));
+    const item = m.host.querySelector(".item") as Element;
+    assert.match(textOf(item), /Pay⟨U\+202E⟩ments wait/);
+    assert.match(textOf(item), /nope⟨U\+200D⟩/);
+    noRaw(item);
+    assert.ok(item.querySelector('button[aria-label="Edit Pay⟨U+202E⟩ments wait"]'));
+    await click(button(item, "Edit"));
+    const editor = dialog("Edit rule (revision 1)");
+    assert.equal(inputOf(editor, "Title").value, "Pay⟨U+202E⟩ments wait");
+    assert.equal(inputOf(editor, "Reason").value, "nope⟨U+200D⟩");
+    await m.unmount();
+  });
+
+  it("Drafts and Decisions escape text, note, titles, reasons and rule titles", async () => {
+    reset();
+    stub.outputs.drafts_list = {
+      drafts: [
+        {
+          id: "drf_1",
+          status: "pending",
+          text: `hold${RLO}sends\nsecond line`,
+          note: `n${BEL}`,
+          rules: [spec(`T${ZWJ}itle`, "hold", 10)],
+          submittedBy: { type: "agent", id: AGENT, name: `Bot${RLO}` },
+          source: { kind: "agent" },
+          submittedAt: "2026-10-27T09:00:00.000Z",
+          decidedAt: null,
+          decidedBy: null,
+          ruleIds: [],
+          problems: [null],
+          opTitles: {},
+        },
+      ],
+    };
+    stub.outputs.decisions_list = {
+      items: [
+        {
+          id: "dec_1",
+          callId: null,
+          phase: "before",
+          at: "2026-10-27T09:00:00.000Z",
+          caller: { type: "agent", id: AGENT, mode: null, product: null },
+          target: { product: "connect", op: "buzz_dm", effect: "outward" },
+          decision: "deny",
+          answered: "deny",
+          reason: `Rules: no${RLO}way`,
+          ruleId: "rul_1",
+          ruleRev: 1,
+          ruleTitle: `Ev${ZWJ}il`,
+          onBehalfOf: null,
+          detail: null,
+          durationUs: 100,
+        },
+      ],
+      nextCursor: null,
+    };
+    let m = await mount(h(drafts.DraftsPage, { onChange: () => undefined }));
+    const draft = m.host.querySelector("article") as Element;
+    assert.match(textOf(draft), /hold⟨U\+202E⟩sends/);
+    assert.match(textOf(draft), /second line/, "a line break stays in the draft text");
+    assert.match(textOf(draft), /n⟨U\+0007⟩/);
+    assert.match(textOf(draft), /T⟨U\+200D⟩itle/);
+    assert.match(textOf(draft), /from Bot⟨U\+202E⟩/);
+    noRaw(draft);
+    await m.unmount();
+    m = await mount(h(decisions.DecisionsPage));
+    const item = m.host.querySelector(".item") as Element;
+    assert.match(textOf(item), /no⟨U\+202E⟩way/);
+    assert.match(textOf(item), /rule “Ev⟨U\+200D⟩il”/);
+    noRaw(item);
     await m.unmount();
   });
 });

@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery } from "./hold-allow.ts";
@@ -57,7 +57,11 @@ function Editor({
   /** D12: the rule was prepared by "Allow always" on a hold card (its priority and why; Save waits for the one tool of a dynamic operation) */
   fromHold?: AllowPlan;
 }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec()));
+  // a stored legacy value with a control or invisible character opens WRITTEN OUT (⟨U+202E⟩), so the owner reads it and saves a clean rule
+  const [s, setS] = useState<RuleSpec>(() => {
+    const spec = structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec());
+    return { ...spec, title: safeText(spec.title), ...(spec.description === undefined ? {} : { description: safeText(spec.description, true) }), outcome: { ...spec.outcome, reason: safeText(spec.outcome.reason) } };
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -296,7 +300,7 @@ function RecentCalls({ result, dir }: { result: Out<"rules_preview_recent">; dir
           {shown.map((r) => (
             <li key={r.id}>
               <span className="tb-hint">{when(r.at)}</span> · {r.caller.type === "agent" ? dir.agentName(r.caller.id) : (r.caller.product ?? "an app whose product can’t be verified")} · {r.target.product}.{r.target.op}
-              {r.target.tool ? ` (${r.target.tool})` : ""} · <strong>{r.before.decision}</strong> ({r.before.by}) → <strong>{r.after.decision}</strong> ({r.after.by}){r.changed ? "" : ", no change"}
+              {r.target.tool ? ` (${r.target.tool})` : ""} · <strong>{r.before.decision}</strong> ({safeText(r.before.by)}) → <strong>{r.after.decision}</strong> ({safeText(r.after.by)}){r.changed ? "" : ", no change"}
             </li>
           ))}
         </ol>
@@ -446,8 +450,8 @@ function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: st
         <div className="tb-stack" role="status">
           <div className="tb-row">
             <DecisionTag decision={result.answered} />
-            <span>{result.reason}</span>
-            {result.ruleTitle ? <span className="tb-hint">by “{result.ruleTitle}”</span> : null}
+            <span>{safeText(result.reason)}</span>
+            {result.ruleTitle ? <span className="tb-hint">by “{safeText(result.ruleTitle)}”</span> : null}
           </div>
           {result.modeNote ? <p className="tb-soft">{result.modeNote}</p> : null}
           {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
@@ -474,7 +478,7 @@ function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: st
           <ol className="rules-trace tb-list">
             {result.steps.map((st) => (
               <li key={st.ruleId}>
-                <strong>{st.title}</strong>: {st.why}
+                <strong>{safeText(st.title)}</strong>: {st.why}
               </li>
             ))}
           </ol>
@@ -525,7 +529,7 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
         </Notice>
       ) : null}
       <p>
-        The rule “{rule.spec.title}” stops applying at once. Its history stays.
+        The rule “{safeText(rule.spec.title)}” stops applying at once. Its history stays.
       </p>
     </Dialog>
   );
@@ -625,30 +629,30 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
             <div className="item" key={r.id}>
               <Swatch group="control" />
               <h3>
-                {r.spec.title} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
+                {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
                 {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
-                {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
+                {matchText(r.spec, dir.teamName, dir.agentName)} → {safeText(r.spec.outcome.reason)}
                 {narrowingText(r.spec.narrowing)}
               </p>
-              {r.problem ? <p>Never matches: {r.problem}</p> : null}
+              {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}
               <span className="meta">
                 revision {r.rev} · {day(r.updatedAt)}
               </span>
               <div className="side">
                 {r.deleted ? (
-                  <Button size="sm" aria-label={`History of ${r.spec.title}`} onClick={() => setHistory(r)}>
+                  <Button size="sm" aria-label={`History of ${safeText(r.spec.title)}`} onClick={() => setHistory(r)}>
                     History
                   </Button>
                 ) : (
                   <>
-                    <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
+                    <Button size="sm" aria-label={`Edit ${safeText(r.spec.title)}`} onClick={() => setEditing(r)}>
                       Edit
                     </Button>
-                    <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
+                    <Button size="sm" variant="danger" aria-label={`Delete ${safeText(r.spec.title)}`} onClick={() => setDeleting(r)}>
                       Delete
                     </Button>
                   </>
@@ -692,7 +696,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
       ) : null}
       {history ? (
         <HistoryDialog
-          rule={{ id: history.id, title: history.spec.title }}
+          rule={{ id: history.id, title: safeText(history.spec.title) }}
           dir={dir}
           onClose={() => setHistory(null)}
           onRestore={(t) => {

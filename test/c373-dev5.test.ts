@@ -115,3 +115,82 @@ test("D11: person only; a rule the writers refuse is refused", async () => {
   await assert.rejects(run("rules_preview_recent")({ rule: spec({}) }, opCtx(db, { type: "agent", id: AGENT_A })), { code: "forbidden" });
   await assert.rejects(preview(db, { rule: spec({ match: { products: ["nosuchapp"] } }) }), { code: "input_invalid" });
 });
+
+// ── RU-1: control and invisible characters in writer text ────────────────────
+const CP = (n: number) => String.fromCodePoint(n);
+const RLO = CP(0x202e);
+const ZWJ = CP(0x200d);
+const BEL = CP(0x07);
+const BOM = CP(0xfeff);
+const TAB = CP(9);
+const LF = CP(10);
+const BAD = [RLO, ZWJ, BEL, BOM, CP(0x0000), CP(0x7f), CP(0x85), CP(0x200b), CP(0x2066)];
+const agent = (db: Db) => opCtx(db, { type: "agent", id: AGENT_A });
+
+test("RU-1: rules_set refuses Cc and Cf characters in title, reason and description, naming the field; clean text passes", async () => {
+  const db = migratedDb().db;
+  for (const bad of BAD) {
+    await assert.rejects(run("rules_set")({ rule: spec({ title: `Hold${bad}sends` }) }, owner(db)), { code: "input_invalid", message: /^The title contains a control or invisible character \(U\+[0-9A-F]{4}\) at position 5\./ }, `title ${bad.codePointAt(0)}`);
+    await assert.rejects(run("rules_set")({ rule: spec({ reason: `no${bad}way` }) }, owner(db)), { code: "input_invalid", message: /^The reason contains a control or invisible character/ });
+    await assert.rejects(run("rules_set")({ rule: spec({ description: `why${bad}` }) }, owner(db)), { code: "input_invalid", message: /^The description contains/ });
+  }
+  // a TAB or LF is not a single-line character
+  await assert.rejects(run("rules_set")({ rule: spec({ title: `a${TAB}b` }) }, owner(db)), { code: "input_invalid", message: /^The title contains .*\(U\+0009\)/ });
+  await assert.rejects(run("rules_set")({ rule: spec({ reason: `a${LF}b` }) }, owner(db)), { code: "input_invalid", message: /^The reason contains .*\(U\+000A\)/ });
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM rules").get()?.n), 0, "nothing was saved");
+  // quiet on good: accents, CJK, emoji (no joiner), a description with line breaks and tabs
+  const ok = await run("rules_set")({ rule: spec({ title: "Café – 日本語 ✅", reason: "Nur für mich", description: `line one${LF}${TAB}line two` }) }, owner(db));
+  assert.equal(ok.rule.rev, 1);
+  // an update is checked like a create
+  await assert.rejects(run("rules_set")({ id: ok.rule.id, expectedRev: 1, rule: spec({ title: `x${RLO}y` }) }, owner(db)), { code: "input_invalid" });
+  // the previews refuse the same candidate
+  await assert.rejects(run("rules_preview")({ call: { caller: { type: "agent", id: AGENT_A }, target: { product: "connect", op: "buzz_dm", effect: "outward" } }, candidate: spec({ title: `x${RLO}y` }) }, owner(db)), { code: "input_invalid" });
+  await assert.rejects(run("rules_preview_recent")({ rule: spec({ reason: `x${BEL}y` }) }, owner(db)), { code: "input_invalid" });
+});
+
+test("RU-1: drafts (agent submit and owner compose_save) refuse the characters in text, note and rule text; line breaks stay allowed in text and note", async () => {
+  const db = migratedDb().db;
+  const draft = (over: Record<string, unknown>) => ({ text: "hold sends", rules: [spec({})], ...over });
+  for (const [run1, ctx] of [[run("rule_draft_submit"), agent(db)], [run("rule_compose_save"), owner(db)]] as const) {
+    await assert.rejects(run1(draft({ text: `hold${RLO}sends` }), ctx), { code: "input_invalid", message: /^The draft text contains .*\(U\+202E\) at position 5/ });
+    await assert.rejects(run1(draft({ note: `n${BEL}` }), ctx), { code: "input_invalid", message: /^The note contains/ });
+    await assert.rejects(run1(draft({ note: `n${ZWJ}` }), ctx), { code: "input_invalid", message: /^The note contains/ });
+    await assert.rejects(run1(draft({ rules: [spec({ title: `Evil${RLO}title` })] }), ctx), (e: Error) => /^rule 1 \(“Evil⟨U\+202E⟩title”\): The title contains/.test(e.message) && !e.message.includes(RLO));
+    await assert.rejects(run1(draft({ rules: [spec({ reason: `r${BOM}` })] }), ctx), { code: "input_invalid", message: /The reason contains/ });
+    const ok = await run1(draft({ text: `line one${LF}${TAB}line two`, note: `a${LF}b` }), ctx);
+    assert.equal(ok.status, "pending");
+  }
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM drafts").get()?.n), 2, "only the two clean drafts exist");
+});
+
+test("RU-1: a stored legacy rule stays visible and matching (never flagged \"never matches\"); restoring or approving a value with the characters is refused", async () => {
+  const db = migratedDb().db;
+  const evil = spec({ title: `Legacy${RLO}rule`, reason: `old${ZWJ}reason`, match: { agents: [AGENT_A] } });
+  // as an older release stored it: straight into the tables
+  const text = JSON.stringify(evil);
+  db.prepare("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES ('rul_legacy', 1, ?, 100, 1, 0, 'owner', 1, 1)").run(text);
+  db.prepare("INSERT INTO rule_revisions (rule_id, rev, change, spec, actor, at) VALUES ('rul_legacy', 1, 'created', ?, 'x', 1)").run(text);
+  const list = await run("rules_list")({}, owner(db));
+  assert.equal(list.rules[0].problem, null, "it still matches, so it is not flagged");
+  assert.equal(list.rules[0].spec.title, `Legacy${RLO}rule`, "the stored value is returned as it is; the UI writes it out");
+  // saving it again, or restoring that revision, is refused until the character is removed
+  await assert.rejects(run("rules_set")({ id: "rul_legacy", expectedRev: 1, rule: evil }, owner(db)), { code: "input_invalid" });
+  await run("rules_set")({ id: "rul_legacy", expectedRev: 1, rule: spec({ title: "Legacy rule", match: { agents: [AGENT_A] } }) }, owner(db));
+  await assert.rejects(run("rule_restore")({ ruleId: "rul_legacy", rev: 1, expectedRev: 2 }, owner(db)), { code: "input_invalid", message: /revision 1 can’t be restored: The title contains/ });
+  // a pending draft stored before the check cannot be approved
+  db.prepare("INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at) VALUES ('drf_legacy', 'pending', 't', '', ?, 'agent', ?, 'a', 1)").run(JSON.stringify([evil]), AGENT_A);
+  await assert.rejects(run("draft_decide")({ id: "drf_legacy", decision: "approve" }, owner(db)), (e: Error) => /Legacy⟨U\+202E⟩rule/.test(e.message) && !e.message.includes(RLO));
+  // the owner can still reject it
+  assert.equal((await run("draft_decide")({ id: "drf_legacy", decision: "reject" }, owner(db))).draft.status, "rejected");
+});
+
+test("RU-1: escapeControls writes the characters out and keeps tab and line break only in multi-line text", async () => {
+  const { escapeControls, controlProblem } = await import("../src/text-guard.ts");
+  assert.equal(escapeControls(`a${RLO}b${ZWJ}c${BEL}d${BOM}`), "a⟨U+202E⟩b⟨U+200D⟩c⟨U+0007⟩d⟨U+FEFF⟩");
+  assert.equal(escapeControls(`a${TAB}b${LF}c`), "a⟨U+0009⟩b⟨U+000A⟩c");
+  assert.equal(escapeControls(`a${TAB}b${LF}c`, true), `a${TAB}b${LF}c`);
+  assert.equal(escapeControls("Café 日本語 ✅ 👨"), "Café 日本語 ✅ 👨");
+  assert.equal(controlProblem("The note", "", true), "");
+  // the position counts the characters before it (an astral character is one position in the sentence's eyes: UTF-16 units, documented)
+  assert.match(controlProblem("The title", `👨${RLO}`), /at position 3\./);
+});

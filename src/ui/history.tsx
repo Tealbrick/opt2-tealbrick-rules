@@ -2,7 +2,7 @@
 // own dialog and then calls rule_restore, which writes the old spec as a NEW revision (same checks as Save rule).
 import { Button, Dialog, Notice, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { DECISION_LABEL, errorText, matchText, type Out, run, shortId, when } from "./api.ts";
+import { DECISION_LABEL, errorText, matchText, type Out, run, safeText, shortId, when } from "./api.ts";
 import { type Directory, LoadError, Loading, useLoaded } from "./shared.tsx";
 
 export type Revision = Out<"rules_get">["revisions"][number];
@@ -43,7 +43,7 @@ export function RuleHistory({ ruleId, dir, onRestore }: { ruleId: string; dir: D
                   <span title={r.actor}>{shortId(r.actor)}</span> · {when(r.at)}
                 </span>
                 <span className="tb-soft">
-                  {r.spec.title} · {DECISION_LABEL[r.spec.outcome.decision]} · {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
+                  {safeText(r.spec.title)} · {DECISION_LABEL[r.spec.outcome.decision]} · {matchText(r.spec, dir.teamName, dir.agentName)} → {safeText(r.spec.outcome.reason)}
                   {r.spec.active ? "" : " · inactive"}
                 </span>
                 {current && !data.deleted ? null : (
@@ -51,7 +51,7 @@ export function RuleHistory({ ruleId, dir, onRestore }: { ruleId: string; dir: D
                     <Button
                       size="sm"
                       aria-label={`Restore revision ${r.rev}`}
-                      onClick={() => onRestore({ ruleId, title: data.rule.spec.title, currentRev: data.rule.rev, deleted: data.deleted, revision: r })}
+                      onClick={() => onRestore({ ruleId, title: safeText(data.rule.spec.title), currentRev: data.rule.rev, deleted: data.deleted, revision: r })}
                     >
                       Restore this version
                     </Button>
@@ -127,7 +127,7 @@ export function RestoreDialog({ target, onDone }: { target: RestoreTarget; onDon
         {target.deleted ? (target.revision.spec.active ? " The rule is deleted now; restoring it makes it apply again at once." : " The rule is deleted now; it comes back inactive.") : ""}
       </p>
       <p className="tb-soft">
-        {target.revision.spec.title} · {DECISION_LABEL[target.revision.spec.outcome.decision]} → {target.revision.spec.outcome.reason}
+        {safeText(target.revision.spec.title)} · {DECISION_LABEL[target.revision.spec.outcome.decision]} → {safeText(target.revision.spec.outcome.reason)}
       </p>
     </Dialog>
   );
