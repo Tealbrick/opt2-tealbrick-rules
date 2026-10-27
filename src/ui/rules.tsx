@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
+import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
@@ -125,6 +125,7 @@ function Editor({
         </Notice>
       ) : null}
       <DirectoryErrors dir={dir} />
+      {cutsOffGovernance(s) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
       <div className="rules-form">
         <Field label="Title">
           <TextInput value={s.title} maxLength={120} onChange={(e) => setS({ ...s, title: e.target.value })} />
@@ -514,6 +515,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 {narrowingText(r.spec.narrowing)}
               </p>
               {r.problem ? <p>Never matches: {r.problem}</p> : null}
+              {!r.deleted && cutsOffGovernance(r.spec) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
               <span className="meta">
                 revision {r.rev} · {day(r.updatedAt)}
               </span>

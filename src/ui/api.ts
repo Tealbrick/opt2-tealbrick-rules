@@ -94,6 +94,23 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   return parts.length ? parts.join("; ") : "every call";
 }
 
+/** S2-2 (review 0.5.0): the warning on a refuse/hold rule that can stop Rules' own Governance read (fleet `directory_feed`). */
+export const CUTS_OFF_GOVERNANCE = "This rule cuts Rules off from Governance: it can refuse or hold Rules’ own read of teams and trust, and then every rule that names teams or trust works without them (refuse and hold apply, allow does not).";
+/**
+ * True for a refuse/hold rule that NAMES the feed read (target app `fleet` or calls from app `rules`) and is not ruled out by its
+ * effects, operations or callers. Only such an explicit rule can stop that read; the gate keeps every other rule away from it.
+ */
+export function cutsOffGovernance(s: RuleSpec): boolean {
+  const m = s.match;
+  if (s.outcome.decision === "allow" || !(m.products?.includes("fleet") || m.callerProducts?.includes("rules"))) return false;
+  if (m.products?.length && !m.products.includes("fleet")) return false;
+  if (m.callerProducts?.length && !m.callerProducts.includes("rules")) return false;
+  if (m.effects?.length && !m.effects.includes("read")) return false;
+  if (m.operations?.length && !m.operations.includes("directory_feed")) return false;
+  if (m.modes?.length || m.callerTeams?.length || m.callerTrust?.length || m.callerWorkflows?.length || m.recipients || m.tools?.length) return false;
+  return !(m.agents?.length && m.agents.every((a) => a.startsWith("agt_")));
+}
+
 /** What a rule narrows, as readable parts: ["memories: {...}", "datasets: {...}"]. */
 export function narrowingParts(n: { memoryTags?: unknown; deepDatasets?: unknown } | null | undefined): string[] {
   return [n?.memoryTags ? `memories: ${JSON.stringify(n.memoryTags)}` : "", n?.deepDatasets ? `datasets: ${JSON.stringify(n.deepDatasets)}` : ""].filter(Boolean);

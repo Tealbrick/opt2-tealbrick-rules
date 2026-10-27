@@ -15,6 +15,9 @@
 //   never gets a wider result than it would with the facts.
 // - Two membership sets (C236 review): deny/hold rules see EVERY member of a team, including blocked, departed and removed
 //   ones (`*Any` fields); allow rules see only the members that count (`callerTeams`, `claimTeams`).
+// - Caller teams are AGENT facts: an app caller never matches a `callerTeams` rule, known facts or not (review 0.5.0 S2-2). Rules'
+//   own Governance read (exemption `rules-governance-feed`) is never refused or held by a rule that applies to it only because
+//   the Governance facts are missing (else they could never come back).
 // - A requester the directory does not know has trust `unreviewed`.
 // - Dataset narrowing (spec 0.1.66, C336 RQ-2): `narrowing.deepDatasets {anyOf, noneOf}` limits the datasets a data app (Knowledge
 //   deep knowledge) may read for the call. It merges like `memoryTags` (per key: anyOf intersects, noneOf unites, disjoint anyOf
@@ -49,7 +52,7 @@
 //   and an allow rule never matches. A call from another verified product without a workflow never matches.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
-import { type DefaultMode, type ExemptionId, modeVerdict } from "./mode.ts";
+import { type DefaultMode, type ExemptionId, exemptionOf, modeVerdict } from "./mode.ts";
 
 export type RuleSpec = RulesSetInputRuleSpec;
 export type Decision = RuleSpec["outcome"]["decision"];
@@ -336,6 +339,9 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
     }
   }
   if (m.callerTeams?.length) {
+    // teams are AGENT facts (an app is in no team): an app caller never matches, known facts or not (S2-2 review 0.5.0: else a
+    // deny/hold by team refused Rules' own Governance read while the facts were missing, so they never came back)
+    if (facts.caller.type !== "agent") return no("caller is not an agent");
     const have = strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
     if (why) return no(why);
@@ -433,8 +439,12 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
   let skipWorkflow = false;
   let worst: Rule | null = null;
   let worstJ: Judged | null = null;
+  // Rules' own Governance read (exemption `rules-governance-feed`): a rule that matches it ONLY because the Governance facts are
+  // missing never applies to it, else the read that brings them back is refused and they never come back (S2-2, defence in depth)
+  const ownFeedRead = exemptionOf(facts) === "rules-governance-feed";
   for (const r of ordered) {
     const j = judge(r.spec, facts, useClaim);
+    if (ownFeedRead && j.why === "" && j.closed && j.onFleet && !j.onProduct && !j.onTool && !j.onRecipients && !j.onWorkflow) continue;
     if (j.skipped) {
       const n = normNarrowing(r.spec.narrowing);
       if (n) {
@@ -738,6 +748,8 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
     // a callerTrust rule can apply to an agent only (its trust is a Fleet fact: could apply)
     if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
+    // a callerTeams rule can apply to an agent only (an app is in no team)
+    if (m.callerTeams?.length && facts.caller.type !== "agent") continue;
     // a recipients rule cannot apply to a call known to name no recipient; unknown recipients and their facts could apply
     if (m.recipients && facts.recipients?.length === 0) continue;
     // a workflow rule applies to an app only; a verified workflow must be listed; without one it could apply only on the strict path
