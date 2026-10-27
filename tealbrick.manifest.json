@@ -301,6 +301,20 @@
                       "maxLength": 64
                     }
                   },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
                   "callerProducts": {
                     "type": "array",
                     "maxItems": 50,
@@ -668,6 +682,20 @@
                       "maxLength": 64
                     }
                   },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
                   "callerProducts": {
                     "type": "array",
                     "maxItems": 50,
@@ -946,6 +974,20 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
                   },
                   "callerProducts": {
                     "type": "array",
@@ -1241,6 +1283,20 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
                   },
                   "callerProducts": {
                     "type": "array",
@@ -1727,6 +1783,20 @@
                       "maxLength": 64
                     }
                   },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
                   "callerProducts": {
                     "type": "array",
                     "maxItems": 50,
@@ -1887,7 +1957,8 @@
           "trust",
           "fleetAvailable",
           "callerProductUnavailable",
-          "steps"
+          "steps",
+          "callerTrust"
         ],
         "properties": {
           "decision": {
@@ -1991,6 +2062,21 @@
             }
           },
           "trust": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unreviewed",
+                  "trusted",
+                  "limited",
+                  "blocked"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "callerTrust": {
             "anyOf": [
               {
                 "enum": [
@@ -2551,6 +2637,20 @@
                       "maxLength": 64
                     }
                   },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
                   "callerProducts": {
                     "type": "array",
                     "maxItems": 50,
@@ -2976,6 +3076,20 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
                   },
                   "callerProducts": {
                     "type": "array",
@@ -3464,6 +3578,20 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
                   },
                   "callerProducts": {
                     "type": "array",

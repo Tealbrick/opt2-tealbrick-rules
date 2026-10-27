@@ -37,7 +37,7 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
-import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
+import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
 import {
   type DraftView,
   decideDraft,
@@ -184,6 +184,7 @@ export const handlers = {
         ...claimFleetFacts(fx, claim),
         callerTeams: input.call.caller.type === "agent" ? (fx.teams.get(`agent:${input.call.caller.id}`) ?? []) : [],
         callerTeamsAny: input.call.caller.type === "agent" ? (fx.teamsAny.get(`agent:${input.call.caller.id}`) ?? []) : [],
+        ...callerTrustFacts(fx, input.call.caller),
         fleetAvailable: fx.available,
         // the dry run's product is typed in by the owner; it passes the same validity rule as a bridge-sent one
         callerProduct: input.call.caller.type === "app" && validProduct(input.call.caller.product) ? input.call.caller.product : null,
@@ -199,6 +200,7 @@ export const handlers = {
         teams: [...new Set([...facts.claimTeams, ...facts.claimTeamsAny])],
         callerTeams: [...new Set([...facts.callerTeams, ...facts.callerTeamsAny])],
         trust: facts.claimTrusts.length ? facts.claimTrusts.reduce(strictest) : null,
+        callerTrust: facts.callerTrusts?.length ? facts.callerTrusts.reduce(strictest) : null,
         fleetAvailable: facts.fleetAvailable,
         callerProductUnavailable: v.closedOnProduct,
         steps: explain(rules, facts),

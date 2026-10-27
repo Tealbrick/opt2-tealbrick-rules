@@ -29,6 +29,10 @@
 //   (an agent is not a product), whatever the decision. An app caller with no valid product is handled like unavailable
 //   Fleet facts: a deny or hold rule APPLIES (its own flag, `closedOnProduct`) and an allow rule does NOT (its narrowing still
 //   applies). Both gaps share the closed/skipped machinery and the severity order below.
+// - Calling agent's trust (`callerTrust`, 0.5.0, C373 D4b): the trust of the CALLING agent from the Fleet read model (feed
+//   agents[].trust, key `agent:<id>`). A Fleet fact like `callerTeams`: unavailable → deny/hold apply, allow does not. An allow
+//   needs the agent active (not blocked, not removed). An agent the directory does not know is `unreviewed` (and not known to be
+//   gone). An APP caller has no agent trust: a rule with `callerTrust` never matches an app, whatever the decision.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 
@@ -92,6 +96,13 @@ export interface CallFacts {
   /** team ids of the CALLER agent, every membership (deny and hold rules) */
   callerTeamsAny: readonly string[];
   /**
+   * The trust of the CALLING agent (feed agents[].trust, key `agent:<id>`), as a set. Absent = an agent the directory does not
+   * know (`unreviewed`); ignored for an app caller (a `callerTrust` rule never matches an app) and while the Fleet facts are unavailable.
+   */
+  callerTrusts?: readonly Trust[];
+  /** false when the calling agent is blocked or removed (an allow rule by `callerTrust` never matches it); absent = active */
+  callerTrustActive?: boolean;
+  /**
    * The raw trust values of everyone who holds the claimed requester's key (contact id, canonical handle or agent id), as a
    * set. `[]` = no claim or facts unavailable. A requester the directory does not know is `["unreviewed"]`.
    * Deny/hold rules match when ANY holder's trust is listed; allow rules need EVERY holder active and listed.
@@ -144,7 +155,7 @@ const anyOf = (list: readonly string[] | undefined, value: string | null | undef
 /** Fleet facts a rule names: caller teams, claimed requester's teams or trust. */
 export function dependsOnFleet(spec: RuleSpec): boolean {
   const m = spec.match;
-  return (m.callerTeams?.length ?? 0) > 0 || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
+  return (m.callerTeams?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
 }
 
 export function dependsOnClaim(spec: RuleSpec): boolean {
@@ -236,6 +247,15 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
   if (m.callerTeams?.length) {
     const have = strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
+    if (why) return no(why);
+  }
+  if (m.callerTrust?.length) {
+    // the CALLING agent's trust (C373 D4b): an app has none, so it never matches; unknown agent = unreviewed
+    if (facts.caller.type !== "agent") return no("caller is not an agent");
+    const list = m.callerTrust;
+    const trusts = facts.callerTrusts ?? ["unreviewed"];
+    const met = strict ? trusts.some((t) => list.includes(t)) : facts.callerTrustActive !== false && trusts.length > 0 && trusts.every((t) => list.includes(t));
+    const why = fleet(met, "caller's trust is not listed");
     if (why) return no(why);
   }
   if (dependsOnClaim(spec)) {
@@ -538,6 +558,15 @@ export function specProblem(spec: RuleSpec): string {
     if (m.agents?.length && m.agents.every((a) => a.startsWith("agt_"))) return "callerProducts names apps, but agents lists only agents (agt_…), so the rule would never match an app call (an app is listed by its instance id, ins_…)";
     if (m.modes?.length) return "callerProducts names apps, but modes (free, bound) apply to agents only, so the rule would never match an app call";
     if (m.callerTeams?.length) return "callerProducts names apps, but callerTeams are teams of agents (an app is in none), so the rule would never match an app call";
+    if (m.callerTrust?.length) return "callerProducts names apps, but callerTrust is the trust of a calling agent (an app has none), so the rule would never match";
+  }
+  const ct = m.callerTrust ?? [];
+  if (ct.length) {
+    const twice = ct.find((t, i) => ct.indexOf(t) !== i);
+    if (twice !== undefined) return `callerTrust lists “${twice}” twice`;
+    if (ct.some((t) => !(TRUSTS as readonly string[]).includes(t))) return "callerTrust values are unreviewed, trusted, limited or blocked";
+    // an app caller has no agent trust: agents that lists only app instances (ins_…) could never match
+    if (m.agents?.length && m.agents.every((a) => a.startsWith("ins_"))) return "callerTrust is the trust of a calling agent, but agents lists only apps (ins_…), so the rule would never match";
   }
   return "";
 }
@@ -556,6 +585,8 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     if (!anyOf(m.agents, facts.caller.id) || !anyOf(m.modes, facts.caller.mode) || !anyOf(m.products, facts.target.product) || !anyOf(m.operations, facts.target.op) || !anyOf(m.effects, facts.target.effect)) continue;
     if (m.tools?.length && !(facts.target.tool !== undefined && toolListed(m.tools, facts.target.tool))) continue;
     // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
+    // a callerTrust rule can apply to an agent only (its trust is a Fleet fact: could apply)
+    if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
     if (m.callerProducts?.length && (facts.caller.type !== "app" || (facts.callerProduct !== null && !m.callerProducts.includes(facts.callerProduct)))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)

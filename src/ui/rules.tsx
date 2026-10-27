@@ -131,6 +131,13 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
           onChange={(v) => setMatch({ callerTeams: v })}
         />
         <ChipChoice
+          label="Calling agent’s trust (from Governance)"
+          hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed, and an app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={TRUSTS.map((t) => ({ value: t, label: t }))}
+          value={m.callerTrust}
+          onChange={(v) => setMatch({ callerTrust: v })}
+        />
+        <ChipChoice
           label="Calls from apps"
           hint="none = any caller. An app is identified by its verified product, never by its name; an agent never matches. If the product can’t be verified, a refuse or hold rule with this applies and an allow rule with this does not."
           options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
@@ -278,7 +285,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           {result.fleetAvailable ? (
             <p className="tb-hint">
               Caller teams: {result.callerTeams.length ? result.callerTeams.map(dir.teamName).join(", ") : "none"} · requester teams: {result.teams.length ? result.teams.map(dir.teamName).join(", ") : "none"} ·
-              requester trust: {result.trust ?? "unknown"}
+              requester trust: {result.trust ?? "unknown"} · caller trust: {result.callerTrust ?? "none (an app)"}
             </p>
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>

@@ -75,6 +75,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.tools?.length) parts.push(`tools ${m.tools.join(", ")}`);
   if (m.effects?.length) parts.push(`effects ${m.effects.join(", ")}`);
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
+  if (m.callerTrust?.length) parts.push(`calling agent's trust ${m.callerTrust.join(", ")}`);
   if (m.callerProducts?.length) parts.push(`calls from app ${m.callerProducts.join(", ")}`);
   const o = m.onBehalfOf;
   if (o?.teams?.length) parts.push(`on behalf of team ${o.teams.map(teamName).join(", ")}`);

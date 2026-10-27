@@ -101,7 +101,18 @@ export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnPr
   return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) };
 }
 
-/** Facts for one hook call: caller (and its teams and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
+/**
+ * The CALLING agent's trust (C373 D4b) from the Fleet read model (key `agent:<id>`, feed agents[].trust): the trust set and
+ * whether it is active (not blocked, not removed). An agent the directory does not know is `unreviewed` and active. An app
+ * caller has no agent trust ([]; a `callerTrust` rule never matches it). While the facts are unavailable: [] (the engine fails closed).
+ */
+export function callerTrustFacts(fx: FleetFacts, caller: { type: string; id: string }): Pick<CallFacts, "callerTrusts" | "callerTrustActive"> {
+  if (caller.type !== "agent" || !fx.available) return { callerTrusts: [], callerTrustActive: true };
+  const entry = fx.trust.get(`agent:${caller.id}`);
+  return { callerTrusts: entry?.trusts ?? ["unreviewed"], callerTrustActive: entry?.allActive ?? true };
+}
+
+/** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
   const { claim, verified } = claimOf(ctx);
@@ -117,6 +128,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     ...claimFleetFacts(fx, claim, live),
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
+    ...callerTrustFacts(fx, req.call.caller),
     fleetAvailable: fx.available,
     callerProduct: callerProductOf(req.call.caller),
   };
