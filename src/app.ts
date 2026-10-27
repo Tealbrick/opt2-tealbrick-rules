@@ -196,8 +196,10 @@ export const MODEL_FEWER_NOTE = "Your model’s draft had fewer rules Rules can 
 /**
  * The English box's drafters (C373 Q-A). The deterministic parser always runs first. Only when it could not read everything AND
  * the owner bound the optional model role (`utility`, else `reasoning`; bridge cap `model_roles`) does the model draft the
- * whole text; its proposal is vetted exactly like the parser's (writer checks plus known names) and is used only when it keeps
- * at least as many rules. Any model failure falls back to the parser with a note. Never used by a hook.
+ * whole text; its proposal is vetted exactly like the parser's (writer checks plus known names). Review 0.5.0 S3-4: the model only
+ * ADDS rules. Every rule the parser read stays (its refuse and hold rules above all); a model rule that repeats one is dropped, and
+ * a model ALLOW with an empty match (every call of every agent) is refused. Any model failure falls back to the parser with a note.
+ * Never used by a hook.
  */
 async function draftRules(ctx: OpContext, text: string, env: ComposeEnv): Promise<{ drafter: DrafterId; proposal: Proposal }> {
   const vet = async (p: Proposal): Promise<Proposal> => {
@@ -209,14 +211,51 @@ async function draftRules(ctx: OpContext, text: string, env: ComposeEnv): Promis
   const binding = await draftBinding(ctx as ModelSource, (msg, data) => ctx.log.warn(msg, data));
   if (!binding) return { drafter: parserDrafter.id, proposal: parsed };
   try {
-    const drafted = placeProposal(await vet(await modelDrafter(binding, { signal: ctx.signal }).draft(text, env)), env.existing);
-    if (drafted.rules.length >= parsed.rules.length) return { drafter: "model", proposal: { ...drafted, notes: [MODEL_DRAFT_NOTE, ...drafted.notes] } };
-    return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FEWER_NOTE] } };
+    const drafted = await vet(await modelDrafter(binding, { signal: ctx.signal }).draft(text, env));
+    const merged = mergeModelDraft(parsed, drafted, env.existing);
+    if (merged.added === 0) return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FEWER_NOTE], unmatched: [...parsed.unmatched, ...merged.refused] } };
+    return { drafter: "model", proposal: { ...merged.proposal, notes: [MODEL_DRAFT_NOTE, ...merged.proposal.notes] } };
   } catch (e) {
-    // the reason only (an HTTP status, a parse error); never the binding or its key
-    ctx.log.warn("model draft failed", { error: (e instanceof Error ? e.message : "unknown").slice(0, 200) });
+    // a fixed text only: an error message can carry the provider URL (and a credential in it), so it is never logged (S4-4)
+    ctx.log.warn("model draft failed", { error: modelErrorKind(e) });
     return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FAILED_NOTE] } };
   }
+}
+
+/** A model failure as a fixed word (never its message: S4-4). */
+export function modelErrorKind(e: unknown): string {
+  const name = e instanceof Error ? e.name : "";
+  if (name === "AbortError" || name === "TimeoutError") return "timeout";
+  if (name === "SyntaxError") return "answer_not_json";
+  const m = e instanceof Error ? /^the model answered HTTP (\d{3})$/.exec(e.message) : null;
+  return m ? `http_${m[1]}` : "error";
+}
+
+export const MODEL_EMPTY_ALLOW = "The model proposed an allow rule for every call of every agent. Rules never proposes that from a model; write it in the editor if you mean it.";
+
+/**
+ * S3-4: the parser's rules (all kept) plus the model's rules that add something: not a repeat of a parser rule, not an allow with an
+ * empty match. Both placed with the same `placeProposal`, at most MAX_COMPOSED_RULES (vetProposal). `added` = model rules kept.
+ */
+export function mergeModelDraft(parsed: Proposal, drafted: Proposal, existing: ComposeEnv["existing"]): { proposal: Proposal; added: number; refused: Proposal["unmatched"] } {
+  const key = (r: RuleSpec) => JSON.stringify([r.outcome.decision, r.match, r.narrowing ?? null]);
+  const have = new Set(parsed.rules.map(key));
+  const unmatched = [...parsed.unmatched];
+  const refused: Proposal["unmatched"] = [];
+  const extra: RuleSpec[] = [];
+  for (const r of drafted.rules) {
+    if (have.has(key(r))) continue;
+    if (r.outcome.decision === "allow" && Object.keys(r.match).length === 0) {
+      refused.push({ text: typeof r.title === "string" ? r.title.slice(0, 200) : "a rule", hint: MODEL_EMPTY_ALLOW });
+      continue;
+    }
+    have.add(key(r));
+    extra.push(r);
+  }
+  for (const u of drafted.unmatched) if (!unmatched.some((x) => x.text === u.text)) unmatched.push(u);
+  const placed = placeProposal({ rules: [...parsed.rules, ...extra], notes: [...parsed.notes, ...drafted.notes], unmatched: [...unmatched, ...refused] }, existing);
+  const vetted = vetProposal(placed, () => "");
+  return { proposal: vetted, added: vetted.rules.length - Math.min(parsed.rules.length, vetted.rules.length), refused };
 }
 
 /** `product.op` of every dynamic operation the catalog lists (the "Allow always" link asks for one tool on these). */

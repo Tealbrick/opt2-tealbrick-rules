@@ -54,7 +54,7 @@ test("modelDrafter talks to an OpenAI-compatible or the Anthropic API and parses
   const a = await modelDrafter(OPENAI, { fetch: fetchFn }).draft("Hold Hermez's sends", env);
   assert.equal(seen[0]?.url, "https://api.openai.com/v1/chat/completions");
   assert.equal(seen[0]?.headers.authorization, `Bearer ${OPENAI.key}`);
-  assert.match(seen[0]?.body ?? "", /Hermes: agt_/, "the prompt lists the names with their ids");
+  assert.match(seen[0]?.body ?? "", /\\"id\\":\\"agt_01J0000000000000000000000A\\",\\"name\\":\\"Hermes\\"/, "the prompt lists the names with their ids as quoted JSON data (S3-4)");
   assert.equal(JSON.parse(seen[0]?.body ?? "{}").messages[1].content, "Hold Hermez's sends");
   assert.deepEqual(a, { rules: [rule()], notes: [], unmatched: [{ text: "x", hint: "y" }] });
   const b = await modelDrafter({ ...OPENAI, provider: "anthropic", baseUrl: "https://claude.test/" }, { fetch: fetchFn }).draft("t", env);
