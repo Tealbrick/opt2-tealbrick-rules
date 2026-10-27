@@ -32,6 +32,7 @@ const facts = (o: Partial<CallFacts> & { claimTrust?: Trust | null } = {}): Call
   fleetAvailable: true,
   ...o,
   ...trustFacts(o),
+  callerProduct: o.callerProduct ?? null,
 });
 const shape = (v: ReturnType<typeof evaluate>) => ({ decision: v.decision, rule: v.rule?.id ?? null, narrowing: v.narrowing, closedOnFleet: v.closedOnFleet });
 const WORK: Narrowing = { memoryTags: { anyOf: ["work"] } };
@@ -353,11 +354,11 @@ test("markFleetStale while a sync is in flight → one more sync (a full read); 
   };
   const plain = await run(false);
   assert.equal(plain.inputs.length, 1);
-  assert.deepEqual(plain.inputs[0], { sinceRevision: 7 });
+  assert.deepEqual(plain.inputs[0], { accept: ["agent_handles"], sinceRevision: 7 });
   assert.equal(plain.stale, false);
   const marked = await run(true);
   assert.equal(marked.inputs.length, 2, "the mark made during the read triggers one more");
-  assert.deepEqual(marked.inputs[1], {}, "and it is a full read");
+  assert.deepEqual(marked.inputs[1], { accept: ["agent_handles"] }, "and it is a full read");
   assert.equal(marked.stale, false);
 });
 

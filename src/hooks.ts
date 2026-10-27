@@ -2,10 +2,12 @@
 // (manifest `match`); the SDK route checks the hook proof and the timeout. Each handler decides from Rules' own
 // cached tables only: no app call (G3), no model call, no network. Every error refuses (fail closed).
 import { performance } from "node:perf_hooks";
-import { hookResponseProblem } from "@opt2-tealbrick/manifest";
+import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
+import { modeDetail } from "./mode.ts";
+import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
 /** Rules' own answer budget, far below the bridge's 2 s hook limit: slower → refuse. */
@@ -58,12 +60,14 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
 }
 
 /**
- * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
- * carry it yet (the pin bump follows the spec release), so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
+ * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types
+ * (miniapp-sdk 0.1.40, spec 0.1.64) do not carry it yet, so read it structurally. Anything but a catalog tool name (with at most one `__` variant suffix, ≤ 128 chars) = absent (S4-1).
  */
 export function toolOf(req: HookRequest): string | undefined {
   const t = (req.call.target as { tool?: unknown }).tool;
-  return typeof t === "string" && t.length > 0 && t.length <= 128 ? t : undefined;
+  // S4-1: a value that is no catalog tool name (`Gmail_Send`, `gmail_send `) would match no tools rule: it counts as ABSENT, so a
+  // deny or hold tools rule on a dynamic op applies (fail closed) and an allow tools rule does not
+  return typeof t === "string" && t.length > 0 && t.length <= 128 && wellFormedTool(t) ? t : undefined;
 }
 
 /**
@@ -82,7 +86,104 @@ export function toolFacts(req: HookRequest, db: Db): { tool?: string; dynamic?: 
   return { ...(tool !== undefined ? { tool } : {}), ...(dynamic !== undefined ? { dynamic } : {}) };
 }
 
-/** Facts for one hook call: caller (and its teams), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
+/**
+ * The VERIFIED product of the caller (spec 0.1.45 `HookCallInfo.caller.product`: the calling instance's product from the bridge's
+ * signed config), for an APP caller only. Never read from input, context or a name. Absent (an agent, a bridge older than 0.2.2, a
+ * caller the bridge cannot map) or not a product id: null, which callerProducts rules treat as unverified (fail closed).
+ */
+export function callerProductOf(caller: HookRequest["call"]["caller"]): string | null {
+  return caller.type === "app" && validProduct(caller.product) ? caller.product : null;
+}
+
+/** The reason of a narrowing that comes from another (skipped or earlier) allow rule: with the unavailable facts when there are some, neutral when there are none. */
+export function otherRuleNarrowing(gaps: string): string {
+  return gaps ? `${gaps.charAt(0).toUpperCase()}${gaps.slice(1)}: the narrowing of an allow rule applies` : "The narrowing of an allow rule applies";
+}
+
+/** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows), and a dynamic call without a tool name. */
+export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown" | "recipientsUnknown" | "closedOnWorkflow">): Record<string, boolean> {
+  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}), ...(v.recipientsUnknown ? { recipientsUnknown: true } : {}), ...(v.closedOnWorkflow ? { workflowUnavailable: true } : {}) };
+}
+
+/**
+ * The CALLING agent's trust (C373 D4b) from the Fleet read model (key `agent:<id>`, feed agents[].trust): the trust set and
+ * whether it is active (not blocked, not removed). An agent the directory does not know is `unreviewed` and active. An app
+ * caller has no agent trust ([]; a `callerTrust` rule never matches it). While the facts are unavailable: [] (the engine fails closed).
+ */
+export function callerTrustFacts(fx: FleetFacts, caller: { type: string; id: string }): Pick<CallFacts, "callerTrusts" | "callerTrustActive"> {
+  if (caller.type !== "agent" || !fx.available) return { callerTrusts: [], callerTrustActive: true };
+  const entry = fx.trust.get(`agent:${caller.id}`);
+  return { callerTrusts: entry?.trusts ?? ["unreviewed"], callerTrustActive: entry?.allActive ?? true };
+}
+
+/**
+ * C373 D2c (Evolution P1): the VERIFIED workflow id of an APP caller (`HookCallInfo.caller.workflow` = the grant's `wfl`), or null.
+ * The pinned SDK types (spec 0.1.64) do not carry it yet, so it is read structurally (TODO(C373 D2c): use the typed field when the
+ * spec pin has P1). An agent, an absent value or one that is not a workflow id: null.
+ */
+export function workflowOf(caller: HookRequest["call"]["caller"]): string | null {
+  const w = (caller as { workflow?: unknown }).workflow;
+  return caller.type === "app" && typeof w === "string" && WORKFLOW_ID.test(w) ? w : null;
+}
+
+/**
+ * The bridge capabilities (`ctx.bridgeCaps()`, SDK 0.1.37+: the CURRENT verified slice's `bridge.caps`). The SDK hands it to the
+ * start, event, job and op contexts but NOT to the hook context (SDK 0.1.40), so `onStart` registers it per database here and
+ * the hooks read it from memory (no network). Never registered (before the claim, a test, an older SDK) or a throwing reader =
+ * no caps: the strict path.
+ */
+const capsReaders = new WeakMap<Db, () => readonly string[]>();
+export function registerBridgeCaps(db: Db, read: (() => readonly string[]) | undefined): void {
+  if (typeof read === "function") capsReaders.set(db, read);
+}
+export function bridgeCapsOf(db: Db): readonly string[] {
+  try {
+    const caps = capsReaders.get(db)?.();
+    return Array.isArray(caps) ? caps : [];
+  } catch {
+    return [];
+  }
+}
+/** Whether the bridge cap `app_workflow_grants` is visible (C373 D2c): then a call without a workflow is not a workflow call. */
+export const workflowCapVisible = (db: Db): boolean => bridgeCapsOf(db).includes(WORKFLOW_CAP);
+
+/** At most this many recipients per call (CONTRACT-RECIPIENTS: the bridge caps `target.recipients` at 64 and sets `recipientsIncomplete` above). */
+export const MAX_RECIPIENTS = 64;
+
+/**
+ * C373 D5 (CONTRACT-RECIPIENTS, spec 0.1.81, bridge cap `hook_recipients`): the canonical recipient handles of the call, or null =
+ * UNKNOWN. The pinned SDK types (spec 0.1.64) do not carry `target.recipients` / `target.recipientsIncomplete` yet, so they are read
+ * structurally (TODO(C373 D5): use the typed fields when Rules pins the spec release that has them). Unknown: absent, not an array,
+ * `recipientsIncomplete: true`, more than 64, or any value that is not a string with `normalizeHandle(h) === h` (the bridge sends
+ * canonical handles only; anything else means the list cannot be trusted to be complete).
+ */
+export function recipientsOf(target: unknown): string[] | null {
+  const t = (isObj(target) ? target : {}) as { recipients?: unknown; recipientsIncomplete?: unknown };
+  if (t.recipientsIncomplete === true || !Array.isArray(t.recipients) || t.recipients.length > MAX_RECIPIENTS) return null;
+  const out = new Set<string>();
+  for (const h of t.recipients) {
+    if (typeof h !== "string" || normalizeHandle(h) !== h) return null;
+    out.add(h);
+  }
+  return [...out];
+}
+
+/**
+ * The Fleet facts of each recipient handle (`handle:<h>` and its holders); never the handle itself. Unknown stays null. A copy read
+ * WITHOUT agent handles (S3-1: older Governance, the window after a 400 to `accept`, a restart) may miss an agent holder of any
+ * handle, so a call that names recipients has UNKNOWN recipients then (deny/hold recipient rules apply, allow ones do not).
+ */
+export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null): RecipientFact[] | null {
+  if (handles === null) return null;
+  if (fx.available && !fx.agentHandles && handles.length > 0) return null;
+  return handles.map((h) => {
+    const key = `handle:${h}`;
+    const entry = fx.trust.get(key);
+    return { teams: fx.teams.get(key) ?? [], teamsAny: fx.teamsAny.get(key) ?? [], trusts: entry?.trusts ?? ["unreviewed"], allActive: entry?.allActive ?? true, known: entry !== undefined };
+  });
+}
+
+/** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
   const { claim, verified } = claimOf(ctx);
@@ -98,7 +199,12 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     ...claimFleetFacts(fx, claim, live),
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
+    ...callerTrustFacts(fx, req.call.caller),
+    recipients: recipientFacts(fx, recipientsOf(req.call.target)),
+    callerWorkflow: workflowOf(req.call.caller),
+    workflowCapVisible: workflowCapVisible(db),
     fleetAvailable: fx.available,
+    callerProduct: callerProductOf(req.call.caller),
   };
 }
 
@@ -162,13 +268,16 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const t0 = clock();
     try {
       const facts = factsOf(req, ctx.db);
-      const v = evaluate(liveRules(ctx.db), facts);
+      // the default mode decides a call no rule matches (C373c); cached like the rules, no query per call
+      const v = evaluate(liveRules(ctx.db), facts, currentMode(ctx.db));
       const { answer, answered } = gateAnswer(v, opts.holdSupported ?? HOLD_SUPPORTED);
       if (ctx.signal.aborted || clock() - t0 > budget) throw new Error("gate budget exceeded");
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
-      if (recorded(facts, v))
-        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet || v.toolUnknown ? { detail: { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) } } : {}), durationUs: elapsedUs(t0) });
+      if (recorded(facts, v)) {
+        const unavailable = { ...unavailableDetail(v), ...modeDetail(v) };
+        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
+      }
       return answer;
     } catch (e) {
       ctx.log.warn("rules_gate refused (fail closed)", { error: e instanceof Error ? e.message : "unknown", call: req.call.id });
@@ -179,6 +288,8 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
   async function rules_context(req: HookRequest, ctx: HookContext): Promise<{ add: Record<string, Json> }> {
     const t0 = clock();
     const facts = factsOf(req, ctx.db);
+    // No default mode here (C373c): a call reaches this phase only when the gate allowed it or the owner approved its hold,
+    // and it must carry the same narrowing it would carry in Permissive mode (skipped allow rules' narrowing included).
     const v = evaluate(liveRules(ctx.db), facts);
     const add: Record<string, Json> = {};
     if (v.rule) add[`${product}.matched`] = { v: 1, ruleId: v.rule.id, rev: v.rule.rev, decision: v.decision };
@@ -186,7 +297,8 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const narrowingRuleId = v.narrowingRuleId;
     if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
-      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : "Governance data unavailable: the narrowing of an allow rule applies";
+      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified", v.recipientsUnknown && "the recipients are unknown", v.closedOnWorkflow && "the calling workflow is unconfirmed"].filter(Boolean).join("; ");
+      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : otherRuleNarrowing(gaps);
       // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
       // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
       // answering unfiltered, so deepDatasets is never put under v 1.
@@ -197,7 +309,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
         ...(v.narrowing.memoryTags ? { memoryTags: v.narrowing.memoryTags as Json } : {}),
         ...(v.narrowing.deepDatasets ? { deepDatasets: v.narrowing.deepDatasets as Json } : {}),
       };
-      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown> }, durationUs: elapsedUs(t0) });
+      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown>, ...unavailableDetail(v) }, durationUs: elapsedUs(t0) });
     }
     if (clock() - t0 > budget) throw new Error("context budget exceeded");
     return { add };

@@ -4,7 +4,8 @@
 // Semantics (harvested from the v1 policy engine, new structure):
 // - A rule matches when every criterion it names matches (an absent or empty list = any).
 // - Rules are ordered by priority (lower first), then newest update, then id. The FIRST matching rule decides.
-// - No matching rule = allow (C84). Free/Bound caps and held families stay the floor in the target app.
+// - No matching rule = the workspace default mode decides (C373c, src/mode.ts): Permissive allow (C84, the default),
+//   Verification hold, Closed refuse. Free/Bound caps and held families stay the floor in the target app.
 // - An `onBehalfOf` claim that is not verified may only NARROW (C82): the decision is the stricter of the
 //   evaluation with the claim and the evaluation without any claim-dependent rule; narrowing lists are merged.
 // - Fleet facts (teams of the caller or of the claimed requester, trust of the claimed requester) come from the local
@@ -14,6 +15,9 @@
 //   never gets a wider result than it would with the facts.
 // - Two membership sets (C236 review): deny/hold rules see EVERY member of a team, including blocked, departed and removed
 //   ones (`*Any` fields); allow rules see only the members that count (`callerTeams`, `claimTeams`).
+// - Caller teams are AGENT facts: an app caller never matches a `callerTeams` rule, known facts or not (review 0.5.0 S2-2). Rules'
+//   own Governance read (exemption `rules-governance-feed`) is never refused or held by a rule that applies to it only because
+//   the Governance facts are missing (else they could never come back).
 // - A requester the directory does not know has trust `unreviewed`.
 // - Dataset narrowing (spec 0.1.66, C336 RQ-2): `narrowing.deepDatasets {anyOf, noneOf}` limits the datasets a data app (Knowledge
 //   deep knowledge) may read for the call. It merges like `memoryTags` (per key: anyOf intersects, noneOf unites, disjoint anyOf
@@ -24,15 +28,48 @@
 //   never matches a `tools` rule. A DYNAMIC op (or one the catalog cannot place) fails CLOSED like the Fleet facts do: a DENY or HOLD
 //   rule with `tools` applies (the tool is unknown, an older bridge or a bridge bug must not switch it off), an ALLOW rule with
 //   `tools` does not. With `target.tool` the match is exact. The verdict says so in `toolUnknown`.
+// - Calls from product X (`callerProducts`, 0.5.0): only an APP caller whose VERIFIED product (the bridge's signed
+//   `caller.product`, never a name, input or context) is listed matches. An AGENT never matches a rule that names it
+//   (an agent is not a product), whatever the decision. An app caller with no valid product is handled like unavailable
+//   Fleet facts: a deny or hold rule APPLIES (its own flag, `closedOnProduct`) and an allow rule does NOT (its narrowing still
+//   applies). Both gaps share the closed/skipped machinery and the severity order below.
+// - Calling agent's trust (`callerTrust`, 0.5.0, C373 D4b): the trust of the CALLING agent from the Fleet read model (feed
+//   agents[].trust, key `agent:<id>`). A Fleet fact like `callerTeams`: unavailable → deny/hold apply, allow does not. An allow
+//   needs the agent active (not blocked, not removed). An agent the directory does not know is `unreviewed` (and not known to be
+//   gone). An APP caller has no agent trust: a rule with `callerTrust` never matches an app, whatever the decision.
+// - Recipients ("who may talk to whom", 0.5.0, C373 D5, CONTRACT-RECIPIENTS): `match.recipients {teams?, trust?, known?}` matches
+//   the recipients of an outward call (bridge `target.recipients`, canonical handles). Each handle maps to its HOLDERS in the Fleet
+//   read model (contacts by handle, agents by handle): their teams, their trust set, known = at least one holder. Deny/hold:
+//   ANY recipient matches ALL the given sub-criteria. Allow: at least one recipient, and EVERY recipient matches them with every
+//   holder active. Unknown recipients (absent, or `recipientsIncomplete`) fail CLOSED: deny/hold apply (`recipientsUnknown`),
+//   allow never. `[]` (known: no recipients) matches no recipient rule. The facts are Fleet facts (C236 strict path). Handles never
+//   enter CallFacts: only the per-recipient facts do, so a decision or trace can hold the COUNT and never a handle.
+// - Calls from workflows (`callerWorkflows`, 0.5.0, C373 D2c, Evolution P1): the VERIFIED workflow id of an APP caller (bridge
+//   `caller.workflow` = the grant's `wfl`). Agents never match. A rule needs `callerProducts` with `evolution` (the writer refuses it
+//   otherwise; only Evolving Workflows runs workflows), so an unverified product is the product gap above. A call WITHOUT a workflow
+//   (agreed with Evolution): when the bridge cap `app_workflow_grants` is visible, it is not a workflow call (no match); when it is
+//   not visible (caps never read count as not visible), a deny or hold rule APPLIES to an `evolution` caller (`closedOnWorkflow`)
+//   and an allow rule never matches. A call from another verified product without a workflow never matches.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
+import { type DefaultMode, type ExemptionId, exemptionOf, modeVerdict } from "./mode.ts";
 
 export type RuleSpec = RulesSetInputRuleSpec;
 export type Decision = RuleSpec["outcome"]["decision"];
 export type Effect = "read" | "write" | "outward" | "destructive" | "money";
 
-/** Effects Rules always gates and records, even when no rule names the call (brief C81: outward/destructive/money). */
-export const GATED_EFFECTS: ReadonlySet<string> = new Set(["outward", "destructive", "money"]);
+/** Evolution P1 workflow id (`wfl` claim, `caller.workflow`): `^[a-z][a-z0-9-]{2,39}$`. */
+export const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
+/** The product that runs workflows (Evolving Workflows); a `callerWorkflows` rule must name it in `callerProducts`. */
+export const WORKFLOW_PRODUCT = "evolution";
+/** The bridge capability that carries verified workflow ids (Evolution P1). */
+export const WORKFLOW_CAP = "app_workflow_grants";
+/** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
+const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
+export function validProduct(p: unknown): p is string {
+  return typeof p === "string" && p.length <= 40 && PRODUCT_ID.test(p);
+}
+
 /** Strictness order: a later entry wins when two evaluations disagree. */
 const SEVERITY: Record<Decision, number> = { allow: 0, hold: 1, deny: 2 };
 export const NO_MATCH_REASON = "No rule matched; the default is allow.";
@@ -48,6 +85,20 @@ export interface Rule {
 /** Trust states of a contact (contract fleet.directory_feed/1). */
 export const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
 export type Trust = (typeof TRUSTS)[number];
+
+/** What the Fleet read model says about ONE recipient handle (`handle:<canonical>` key); never the handle itself. */
+export interface RecipientFact {
+  /** team ids where EVERY holder is an active member (allow rules) */
+  teams: readonly string[];
+  /** team ids where ANY holder is a member, incl. blocked, departed, removed (deny and hold rules) */
+  teamsAny: readonly string[];
+  /** the holders' raw trust set; a handle with no holder is `["unreviewed"]` */
+  trusts: readonly Trust[];
+  /** false when any holder is blocked, departed or removed */
+  allActive: boolean;
+  /** at least one holder (a contact or an agent) has this handle */
+  known: boolean;
+}
 
 export interface Claim {
   kind: "person" | "agent" | "channel_sender";
@@ -81,6 +132,23 @@ export interface CallFacts {
   /** team ids of the CALLER agent, every membership (deny and hold rules) */
   callerTeamsAny: readonly string[];
   /**
+   * The trust of the CALLING agent (feed agents[].trust, key `agent:<id>`), as a set. Absent = an agent the directory does not
+   * know (`unreviewed`); ignored for an app caller (a `callerTrust` rule never matches an app) and while the Fleet facts are unavailable.
+   */
+  callerTrusts?: readonly Trust[];
+  /** false when the calling agent is blocked or removed (an allow rule by `callerTrust` never matches it); absent = active */
+  callerTrustActive?: boolean;
+  /**
+   * The recipients of the call (C373 D5), one fact per canonical handle of `target.recipients`. `null` or absent = UNKNOWN (the
+   * bridge sent none: no cap `hook_recipients`, a read, an op that declares none; or `recipientsIncomplete`; or a value that is not
+   * canonical): deny/hold recipient rules apply, allow rules do not. `[]` = known: the call names no recipient.
+   */
+  recipients?: readonly RecipientFact[] | null;
+  /** The VERIFIED workflow id of an APP caller (bridge `caller.workflow`, Evolution P1, a valid id), else null/absent. */
+  callerWorkflow?: string | null;
+  /** The bridge cap `app_workflow_grants` is visible to Rules (slice `bridge.caps`); absent or false = not visible (the strict path). */
+  workflowCapVisible?: boolean;
+  /**
    * The raw trust values of everyone who holds the claimed requester's key (contact id, canonical handle or agent id), as a
    * set. `[]` = no claim or facts unavailable. A requester the directory does not know is `["unreviewed"]`.
    * Deny/hold rules match when ANY holder's trust is listed; allow rules need EVERY holder active and listed.
@@ -90,6 +158,11 @@ export interface CallFacts {
   claimTrustActive: boolean;
   /** false = the Fleet read model cannot be relied on (never read, refused, too old): see the header */
   fleetAvailable: boolean;
+  /**
+   * The VERIFIED product of an APP caller (bridge `caller.product`, spec 0.1.45, a valid product id), else null: an agent, an
+   * app the bridge could not map (or a bridge older than 0.2.2), or a value that is no product id. Null for an app = unavailable (fail closed).
+   */
+  callerProduct: string | null;
 }
 
 export interface Narrowing {
@@ -108,10 +181,18 @@ export interface Verdict {
   viaClaim: boolean;
   /** true when the decisive deny/hold rule applied only because the Fleet facts it names were unavailable */
   closedOnFleet: boolean;
+  /** true when the decisive deny/hold rule applied only because the calling app's verified product was unavailable */
+  closedOnProduct: boolean;
   /** true when the decisive deny/hold rule applied only because the call of a dynamic op carried no `target.tool` (fail closed) */
   toolUnknown: boolean;
+  /** true when the decisive deny/hold rule applied only because the call's recipients were unknown (or an allow rule that narrows was skipped for it) */
+  recipientsUnknown: boolean;
+  /** true when the decisive deny/hold rule applied only because the bridge cannot confirm the calling workflow (or an allow rule that narrows was skipped for it) */
+  closedOnWorkflow: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
   narrowingRuleId: string | null;
+  /** C373c: set when NO rule matched: the default mode that decided, or the built-in exemption that kept the mode out (src/mode.ts) */
+  byMode?: { mode: DefaultMode; exemption: ExemptionId | null };
 }
 
 export interface Step {
@@ -123,10 +204,10 @@ export interface Step {
 
 const anyOf = (list: readonly string[] | undefined, value: string | null | undefined): boolean => !list || list.length === 0 || (value != null && list.includes(value));
 
-/** Fleet facts a rule names: caller teams, claimed requester's teams or trust. */
+/** Fleet facts a rule names: caller teams or trust, claimed requester's teams or trust, recipients (their holders). */
 export function dependsOnFleet(spec: RuleSpec): boolean {
   const m = spec.match;
-  return (m.callerTeams?.length ?? 0) > 0 || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
+  return (m.callerTeams?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || m.recipients !== undefined || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
 }
 
 export function dependsOnClaim(spec: RuleSpec): boolean {
@@ -134,8 +215,14 @@ export function dependsOnClaim(spec: RuleSpec): boolean {
   return !!o && ((o.teams?.length ?? 0) > 0 || (o.ids?.length ?? 0) > 0 || (o.kinds?.length ?? 0) > 0 || (o.trust?.length ?? 0) > 0);
 }
 
-/** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (copied until the spec pin moves): no `__`, no trailing `_`, 2 to 48 characters. */
+/** Spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE` (LOCAL COPY: the pinned manifest 0.1.31 carries spec 0.1.64, without it): no `__`, no trailing `_`, 2 to 48 characters. */
 const CATALOG_TOOL_NAME = /^(?!.*__)[a-z][a-z0-9_]{0,46}[a-z0-9]$/;
+/** S4-1 (review 0.5.0): a `target.tool` the gate reads: a catalog tool name, optionally with ONE `__<variant>` suffix (Connect variants). */
+export function wellFormedTool(t: string): boolean {
+  const at = t.indexOf("__");
+  const base = at < 0 ? t : t.slice(0, at);
+  return CATALOG_TOOL_NAME.test(base) && (at < 0 || /^[a-z0-9][a-z0-9_]{0,124}$/.test(t.slice(at + 2)));
+}
 
 /**
  * A `tools` condition naming `x` matches `target.tool === x` OR `target.tool` starting with `x__` (QA-RULES18-4, C354, BRIDGE v0.1.68):
@@ -147,15 +234,56 @@ export function toolListed(tools: readonly string[], tool: string): boolean {
   return tools.some((x) => tool === x || tool.startsWith(`${x}__`));
 }
 
+export function dependsOnProduct(spec: RuleSpec): boolean {
+  return (spec.match.callerProducts?.length ?? 0) > 0;
+}
+
 export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rules do not apply without them)";
+export const NEEDS_PRODUCT = "needs the calling app's verified product, which is unavailable (allow rules do not apply without it)";
+export const NEEDS_RECIPIENTS = "needs the call's recipients, which are unknown (allow rules do not apply without them)";
+export const NEEDS_WORKFLOW = "needs the calling workflow, which this bridge cannot confirm (allow rules do not apply without it)";
+
+export function dependsOnWorkflow(spec: RuleSpec): boolean {
+  return (spec.match.callerWorkflows?.length ?? 0) > 0;
+}
+
+/** One recipient against the sub-criteria: deny/hold see every membership and ANY holder's trust; allow needs every holder active and listed. */
+function recipientMatches(c: NonNullable<RuleSpec["match"]["recipients"]>, r: RecipientFact, strict: boolean): boolean {
+  if (c.known !== undefined && r.known !== c.known) return false;
+  if (strict) {
+    if (c.teams?.length && !c.teams.some((t) => r.teamsAny.includes(t))) return false;
+    if (c.trust?.length && !r.trusts.some((t) => (c.trust as readonly string[]).includes(t))) return false;
+    return true;
+  }
+  if (!r.allActive) return false;
+  if (c.teams?.length && !c.teams.some((t) => r.teams.includes(t))) return false;
+  if (c.trust?.length && !(r.trusts.length > 0 && r.trusts.every((t) => (c.trust as readonly string[]).includes(t)))) return false;
+  return true;
+}
+
+export interface Judged {
+  why: string;
+  closed: boolean;
+  skipped: boolean;
+  /** the closed or skipped outcome rests on unavailable Fleet facts */
+  onFleet: boolean;
+  /** the closed or skipped outcome rests on the calling app's unavailable verified product */
+  onProduct: boolean;
+  /** the closed outcome rests on a dynamic call without `target.tool` (deny and hold rules with `tools` only) */
+  onTool: boolean;
+  /** the closed or skipped outcome rests on unknown recipients */
+  onRecipients: boolean;
+  /** the closed or skipped outcome rests on a workflow the bridge cannot confirm */
+  onWorkflow: boolean;
+}
 
 /**
- * Why `rule` does not match `facts` ("" = it matches), whether it matches only because the Fleet facts it names are
- * unavailable (`closed`, deny and hold rules only), and whether an ALLOW rule that matches on everything else was skipped
- * because the facts are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
+ * Why `rule` does not match `facts` ("" = it matches), whether it matches only because facts it names are unavailable
+ * (`closed`, deny and hold rules only; `onFleet` / `onProduct` say which), and whether an ALLOW rule that matches on everything
+ * else was skipped because they are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
  */
-export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why: string; closed: boolean; fleetClosed: boolean; toolClosed: boolean; skipped: boolean } {
-  const no = (why: string) => ({ why, closed: false, fleetClosed: false, toolClosed: false, skipped: false });
+export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged {
+  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false, onRecipients: false, onWorkflow: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
   if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
@@ -176,17 +304,74 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
     else return no(facts.target.dynamic === false ? "call has no tool name (static operation)" : "call has no tool name");
   }
   let skipped = false;
-  // A Fleet criterion: met, not met, or (copy unavailable) met for a deny/hold rule and never met for an allow rule.
-  const fleet = (met: boolean, why: string): string => {
-    if (facts.fleetAvailable) return met ? "" : why;
+  let onFleet = false;
+  let onProduct = false;
+  let onRecipients = false;
+  let onWorkflow = false;
+  // A fact that may be unavailable: met for a deny/hold rule and never met for an allow rule.
+  const gap = (): void => {
     if (strict) closed = true;
     else skipped = true;
+  };
+  // A Fleet criterion: met, not met, or (copy unavailable) a gap.
+  const fleet = (met: boolean, why: string): string => {
+    if (facts.fleetAvailable) return met ? "" : why;
+    gap();
+    onFleet = true;
     return "";
   };
+  if (m.callerProducts?.length) {
+    // Only an app has a product; an agent never matches (it is not a product). An app without a valid one is a gap (fail closed).
+    if (facts.caller.type !== "app") return no("caller is not an app");
+    if (facts.callerProduct === null) {
+      gap();
+      onProduct = true;
+    } else if (!m.callerProducts.includes(facts.callerProduct)) return no("calling app is not listed");
+  }
+  if (m.callerWorkflows?.length) {
+    // C373 D2c: a workflow is an APP caller's verified id; an agent never matches
+    if (facts.caller.type !== "app") return no("caller is not an app");
+    const w = facts.callerWorkflow ?? null;
+    if (w !== null) {
+      if (!m.callerWorkflows.includes(w)) return no("calling workflow is not listed");
+    } else if (facts.workflowCapVisible === true) return no("not a workflow call");
+    else if (facts.callerProduct !== null && facts.callerProduct !== WORKFLOW_PRODUCT) return no("not a workflow call");
+    else {
+      // no cap: Evolution (or an app whose product is unverified, a gap above) may be calling from a workflow the bridge cannot name
+      gap();
+      onWorkflow = true;
+    }
+  }
   if (m.callerTeams?.length) {
+    // teams are AGENT facts (an app is in no team): an app caller never matches, known facts or not (S2-2 review 0.5.0: else a
+    // deny/hold by team refused Rules' own Governance read while the facts were missing, so they never came back)
+    if (facts.caller.type !== "agent") return no("caller is not an agent");
     const have = strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
     if (why) return no(why);
+  }
+  if (m.callerTrust?.length) {
+    // the CALLING agent's trust (C373 D4b): an app has none, so it never matches; unknown agent = unreviewed
+    if (facts.caller.type !== "agent") return no("caller is not an agent");
+    const list = m.callerTrust;
+    const trusts = facts.callerTrusts ?? ["unreviewed"];
+    const met = strict ? trusts.some((t) => list.includes(t)) : facts.callerTrustActive !== false && trusts.length > 0 && trusts.every((t) => list.includes(t));
+    const why = fleet(met, "caller's trust is not listed");
+    if (why) return no(why);
+  }
+  if (m.recipients) {
+    // C373 D5: unknown recipients fail closed; [] = known none; else ANY (deny/hold) or EVERY (allow) recipient, a Fleet fact
+    const c = m.recipients;
+    const list = facts.recipients;
+    if (list == null) {
+      gap();
+      onRecipients = true;
+    } else if (list.length === 0) return no("call has no recipients");
+    else {
+      const met = strict ? list.some((r) => recipientMatches(c, r, true)) : list.every((r) => recipientMatches(c, r, false));
+      const why = fleet(met, strict ? "no recipient matches" : "not every recipient matches");
+      if (why) return no(why);
+    }
   }
   if (dependsOnClaim(spec)) {
     const obo = m.onBehalfOf as NonNullable<RuleSpec["match"]["onBehalfOf"]>;
@@ -209,8 +394,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): { why:
       if (why) return no(why);
     }
   }
-  if (skipped) return { why: NEEDS_FLEET, closed: false, fleetClosed: false, toolClosed: false, skipped: true };
-  return { why: "", closed: closed || toolClosed, fleetClosed: closed, toolClosed, skipped: false };
+  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT, onRecipients && NEEDS_RECIPIENTS, onWorkflow && NEEDS_WORKFLOW].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false, onRecipients, onWorkflow };
+  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed, onRecipients, onWorkflow };
 }
 
 export function mismatch(spec: RuleSpec, facts: CallFacts, useClaim = true): string {
@@ -225,52 +410,87 @@ export function order(rules: readonly Rule[]): Rule[] {
 interface Hit {
   rule: Rule | null;
   closed: boolean;
-  /** why the decisive rule is closed: the Fleet facts, and/or an unknown tool */
-  fleetClosed: boolean;
-  toolClosed: boolean;
-  /** merged narrowing of the allow rules skipped for unavailable Fleet facts that precede the decisive rule */
+  /** what the closed decisive rule rests on: the Fleet facts, the calling app's product and/or an unknown tool */
+  onFleet: boolean;
+  onProduct: boolean;
+  onTool: boolean;
+  onRecipients: boolean;
+  onWorkflow: boolean;
+  /** merged narrowing of the allow rules skipped for unavailable facts (Fleet or product) that precede the decisive rule */
   skippedNarrowing: Narrowing | null;
   skippedRuleId: string | null;
+  /** which unavailable facts the skipped allow rules that contributed that narrowing rest on */
+  skipFleet: boolean;
+  skipProduct: boolean;
+  skipRecipients: boolean;
+  skipWorkflow: boolean;
+  /** the scan ended without a rule that matches on known facts: what follows the closed rules is the no-match path (the mode) */
+  exhausted: boolean;
 }
 
 /**
- * The deciding rule. With the facts: the first rule that matches. WITHOUT them (unavailable): the HIGHEST severity
- * (deny > hold > allow) among the closed deny/hold rules that precede the first rule that matches without any Fleet
- * fact, together with that rule; ties go to the earlier rule. A later deny therefore always beats an earlier closed hold,
- * so the result is never less strict than with the facts.
+ * The deciding rule. With the facts: the first rule that matches. WITHOUT them (unavailable Fleet facts or an unverified app
+ * product): the HIGHEST severity (deny > hold > allow) among the closed deny/hold rules that precede the first rule that
+ * matches without any unavailable fact, together with that rule; ties go to the earlier rule. A later deny therefore always
+ * beats an earlier closed hold, so the result is never less strict than with the facts.
  */
 function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolean): Hit {
   let skippedNarrowing: Narrowing | null = null;
   let skippedRuleId: string | null = null;
+  let skipFleet = false;
+  let skipProduct = false;
+  let skipRecipients = false;
+  let skipWorkflow = false;
   let worst: Rule | null = null;
-  let worstWhy = { fleetClosed: false, toolClosed: false };
+  let worstJ: Judged | null = null;
+  // Rules' own Governance read (exemption `rules-governance-feed`): a rule that matches it ONLY because the Governance facts are
+  // missing never applies to it, else the read that brings them back is refused and they never come back (S2-2, defence in depth)
+  const ownFeedRead = exemptionOf(facts) === "rules-governance-feed";
   for (const r of ordered) {
     const j = judge(r.spec, facts, useClaim);
+    if (ownFeedRead && j.why === "" && j.closed && j.onFleet && !j.onProduct && !j.onTool && !j.onRecipients && !j.onWorkflow) continue;
     if (j.skipped) {
       const n = normNarrowing(r.spec.narrowing);
       if (n) {
         skippedNarrowing = mergeNarrowing(skippedNarrowing, n);
         skippedRuleId ??= r.id;
+        skipFleet ||= j.onFleet;
+        skipProduct ||= j.onProduct;
+        skipRecipients ||= j.onRecipients;
+        skipWorkflow ||= j.onWorkflow;
       }
     }
     if (j.why !== "") continue;
     if (j.closed) {
       if (!worst || SEVERITY[r.spec.outcome.decision] > SEVERITY[worst.spec.outcome.decision]) {
         worst = r;
-        worstWhy = { fleetClosed: j.fleetClosed, toolClosed: j.toolClosed };
+        worstJ = j;
       }
       continue;
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
     const closed = decisive === worst;
-    return { rule: decisive, closed, fleetClosed: closed && worstWhy.fleetClosed, toolClosed: closed && worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
+    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, onWorkflow: closed && !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow, exhausted: false };
   }
-  return { rule: worst, closed: worst !== null, fleetClosed: worstWhy.fleetClosed, toolClosed: worstWhy.toolClosed, skippedNarrowing, skippedRuleId };
+  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, onWorkflow: !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow, exhausted: true };
 }
 
-function verdictOf(hit: Hit): Verdict {
+function verdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
+  const v = ruleVerdictOf(hit, facts, mode);
+  // C236 with the default mode (C373c): closed rules that only apply because facts are missing, and NO rule that matches on known
+  // facts after them. With the facts those rules might not match, and then the MODE decides; so the stricter of the closed rule
+  // and the mode decides (ties: the rule). Without this, Closed mode would answer a hold where the known facts get a refusal.
+  if (hit.rule && hit.closed && hit.exhausted && mode !== "permissive") {
+    const m = ruleVerdictOf({ ...hit, rule: null }, facts, mode);
+    if (SEVERITY[m.decision] > SEVERITY[v.decision]) return m;
+  }
+  return v;
+}
+
+function ruleVerdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
   const rule = hit.rule;
-  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skippedNarrowing !== null, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
+  // No rule matched: the workspace default mode decides (C373c, src/mode.ts); Permissive keeps this allow.
+  if (!rule) return modeVerdict({ decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, recipientsUnknown: hit.skipRecipients, closedOnWorkflow: hit.skipWorkflow, narrowingRuleId: hit.skippedRuleId }, facts, mode);
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -279,8 +499,11 @@ function verdictOf(hit: Hit): Verdict {
     rule: { id: rule.id, rev: rule.rev, title: rule.spec.title },
     narrowing: allow ? mergeNarrowing(own, hit.skippedNarrowing) : null,
     viaClaim: dependsOnClaim(rule.spec),
-    closedOnFleet: hit.fleetClosed || (allow && hit.skippedNarrowing !== null),
-    toolUnknown: hit.toolClosed,
+    closedOnFleet: (hit.closed && hit.onFleet) || (allow && hit.skipFleet),
+    closedOnProduct: (hit.closed && hit.onProduct) || (allow && hit.skipProduct),
+    toolUnknown: hit.closed && hit.onTool,
+    recipientsUnknown: (hit.closed && hit.onRecipients) || (allow && hit.skipRecipients),
+    closedOnWorkflow: (hit.closed && hit.onWorkflow) || (allow && hit.skipWorkflow),
     narrowingRuleId: allow ? (own ? rule.id : hit.skippedRuleId) : null,
   };
 }
@@ -293,7 +516,7 @@ function keepLists(t: Lists | undefined): Lists | null {
   return { ...(t.anyOf ? { anyOf: [...t.anyOf] } : {}), ...(t.noneOf?.length ? { noneOf: [...t.noneOf] } : {}) };
 }
 
-function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
+export function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
   const tags = keepLists(n?.memoryTags);
   const sets = keepLists(n?.deepDatasets);
   if (!tags && !sets) return null;
@@ -306,8 +529,9 @@ function normNarrowing(n: RuleSpec["narrowing"]): Narrowing | null {
  * Key present → `ids` must be non-empty (an empty list means "every dataset", rule 4, so it FAILS under `noneOf` as under `anyOf`);
  * then `anyOf` present → every id is in it (`anyOf: []` passes nothing) and `noneOf` present → no id is in it. How the data app
  * restricts a call that names no dataset is its own job (rule 4); there is no lineage (rule 4a).
- * TODO(C336 RQ-2): LOCAL COPY of `datasetsMatch` from @opt2-tealbrick/manifest (>= 0.1.30; the release that carries the v0.1.68
- * contract is the one to pin). One mechanism (L1): delete this copy and import the helper when that package is released and pinned.
+ * TODO(C336 RQ-2): LOCAL COPY of the shared `datasetsMatch` (spec 0.1.68 contract). The newest released @opt2-tealbrick/manifest
+ * (0.1.31, spec 0.1.64; pinned in 0.5.0) does not export it yet. One mechanism (L1): delete this copy and import the helper when a
+ * released manifest package carries it and Rules pins that release.
  */
 export function datasetsMatch(deepDatasets: Lists | undefined, ids: readonly string[]): boolean {
   if (!deepDatasets) return true;
@@ -344,27 +568,26 @@ export function mergeNarrowing(a: Narrowing | null, b: Narrowing | null): Narrow
   return { ...(tags ? { memoryTags: tags } : {}), ...(sets ? { deepDatasets: sets } : {}) };
 }
 
-/** The decision for one call. `rules` must already be in evaluation order (see `order`). */
-export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
-  const withClaim = verdictOf(firstMatch(ordered, facts, true));
+/** The decision for one call. `rules` must already be in evaluation order (see `order`). `mode` decides a call no rule matches (C373c). */
+export function evaluate(ordered: readonly Rule[], facts: CallFacts, mode: DefaultMode = "permissive"): Verdict {
+  const withClaim = verdictOf(firstMatch(ordered, facts, true), facts, mode);
   if (!facts.claim || facts.claimVerified) return withClaim;
   // Unverified claim: never wider than the decision without claim-dependent rules (C82). Always compare, also when the
   // decisive rule does not name the claim: a claim rule that matches ends the scan early, so an earlier closed hold
   // (Fleet facts unavailable) could decide where the scan without the claim reaches a later deny.
-  const base = verdictOf(firstMatch(ordered, facts, false));
+  const base = verdictOf(firstMatch(ordered, facts, false), facts, mode);
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
-  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet };
+  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct, recipientsUnknown: withClaim.recipientsUnknown || base.recipientsUnknown, closedOnWorkflow: withClaim.closedOnWorkflow || base.closedOnWorkflow };
 }
 
-const closedWhy = (j: { fleetClosed: boolean; toolClosed: boolean }): string =>
-  j.fleetClosed && j.toolClosed
-    ? "matches: Fleet facts are unavailable and the call names no tool, so this rule applies (fail closed)"
-    : j.toolClosed
-      ? "matches: the call names no tool, so this rule applies (fail closed)"
-      : j.fleetClosed
-        ? "matches: Fleet facts are unavailable, so this rule applies (fail closed)"
-        : "matches";
+/** "matches", or what a closed match rests on: unavailable Fleet facts or app product, and/or a call that names no tool. */
+function closedWhy(j: Judged): string {
+  if (!j.closed) return "matches";
+  const names = [j.onFleet && "Fleet facts", j.onProduct && "the calling app's verified product"].filter(Boolean).join(" and ");
+  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool", j.onRecipients && "the call's recipients are unknown", j.onWorkflow && "the bridge cannot confirm the calling workflow"].filter(Boolean).join(" and ");
+  return `matches: ${gaps}, so this rule applies (fail closed)`;
+}
 
 /** Per-rule explanation for the dry run. */
 export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
@@ -374,9 +597,13 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
   });
 }
 
-/** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
+/**
+ * True when Rules must record this call's decision: any call that is not a read (write, outward, destructive, money: QA-C373-RU-2, so
+ * a write that matched no rule is listed with the mode that let it through), or a rule decided it, or a fail-closed gap applied. Reads
+ * that match no rule stay unrecorded (volume).
+ */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.toolUnknown;
+  return facts.target.effect !== "read" || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown || v.closedOnWorkflow || v.decision !== "allow";
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */
@@ -441,6 +668,46 @@ export function claimKey(c: Claim): string | null {
   return c.kind === "person" ? `contact:${c.id}` : `agent:${c.id}`;
 }
 
+/**
+ * The match lists that are EMPTY, as paths (`agents`, `onBehalfOf.teams`, `recipients.trust`, …). The engine reads an empty list as
+ * "any" (an old rule keeps working), so a WRITER refuses one (review 0.5.0 D-3): `agents: []` looks like "no agent" and means every agent.
+ */
+export function emptyLists(match: unknown): string[] {
+  const out: string[] = [];
+  if (!match || typeof match !== "object") return out;
+  for (const [k, v] of Object.entries(match as Record<string, unknown>)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) out.push(k);
+    } else if (v && typeof v === "object") {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (Array.isArray(v2) && v2.length === 0) out.push(`${k}.${k2}`);
+    }
+  }
+  return out;
+}
+
+/** What a WRITER refuses about empty match lists (D-3). "" = fine. Readers never call this: a stored legacy rule with `[]` keeps working. */
+export function emptyListProblem(spec: Pick<RuleSpec, "match">): string {
+  const e = emptyLists(spec.match);
+  if (e.length === 0) return "";
+  const names = e.map((x) => `match.${x}`).join(", ");
+  return `${names} ${e.length === 1 ? "is an empty list" : "are empty lists"}. An empty list does not mean “none”: it means “any”, so the rule would match every call. Name at least one value, or remove the field.`;
+}
+
+/**
+ * True when a match restricts nothing: no field, only empty lists, every effect, or both modes. A model draft of an ALLOW like this
+ * would allow every call of every agent (review 0.5.0 D-3).
+ */
+export function matchesEverything(match: unknown): boolean {
+  if (!match || typeof match !== "object") return true;
+  const m = match as Record<string, unknown>;
+  const real = (v: unknown, all: number): boolean => {
+    if (Array.isArray(v)) return v.length > 0 && new Set(v).size < all;
+    if (v && typeof v === "object") return Object.values(v as Record<string, unknown>).some((x) => (Array.isArray(x) ? x.length > 0 : x !== undefined));
+    return v !== undefined && v !== null;
+  };
+  return !Object.entries(m).some(([k, v]) => real(v, k === "effects" ? 5 : k === "modes" ? 2 : Number.POSITIVE_INFINITY));
+}
+
 /** Problems a JSON schema cannot express. "" = fine. */
 export function specProblem(spec: RuleSpec): string {
   if (spec.narrowing && spec.outcome.decision !== "allow") return "narrowing applies only to rules that allow";
@@ -469,12 +736,53 @@ export function specProblem(spec: RuleSpec): string {
   // QA-C354-3 (spec 0.1.74 DYNAMIC_CATALOG_NAME_RE): a tools entry is a catalog tool name, so a rule never names something no catalog can list.
   const malformed = m.tools?.find((t) => !CATALOG_TOOL_NAME.test(t));
   if (malformed !== undefined) return `tools entry “${malformed}” is not a catalog tool name: lower case letters, digits and single “_”, 2 to 48 characters, starting with a letter and not ending in “_”`;
+  const cp = m.callerProducts ?? [];
+  if (cp.length) {
+    const bad = cp.find((p) => !validProduct(p));
+    if (bad !== undefined) return `callerProducts has “${String(bad).slice(0, 40)}”, which is not a product id (lower-case letters, digits, - and _; at most 40 characters)`;
+    const twice = cp.find((p, i) => cp.indexOf(p) !== i);
+    if (twice !== undefined) return `callerProducts lists “${twice}” twice`;
+    // Agent-only criteria: an app call has an instance id (ins_…), no mode and no teams, so the rule could never match one.
+    if (m.agents?.length && m.agents.every((a) => a.startsWith("agt_"))) return "callerProducts names apps, but agents lists only agents (agt_…), so the rule would never match an app call (an app is listed by its instance id, ins_…)";
+    if (m.modes?.length) return "callerProducts names apps, but modes (free, bound) apply to agents only, so the rule would never match an app call";
+    if (m.callerTeams?.length) return "callerProducts names apps, but callerTeams are teams of agents (an app is in none), so the rule would never match an app call";
+    if (m.callerTrust?.length) return "callerProducts names apps, but callerTrust is the trust of a calling agent (an app has none), so the rule would never match";
+  }
+  const ct = m.callerTrust ?? [];
+  if (ct.length) {
+    const twice = ct.find((t, i) => ct.indexOf(t) !== i);
+    if (twice !== undefined) return `callerTrust lists “${twice}” twice`;
+    if (ct.some((t) => !(TRUSTS as readonly string[]).includes(t))) return "callerTrust values are unreviewed, trusted, limited or blocked";
+    // an app caller has no agent trust: agents that lists only app instances (ins_…) could never match
+    if (m.agents?.length && m.agents.every((a) => a.startsWith("ins_"))) return "callerTrust is the trust of a calling agent, but agents lists only apps (ins_…), so the rule would never match";
+  }
+  const cw = m.callerWorkflows ?? [];
+  if (cw.length) {
+    const bad = cw.find((w) => typeof w !== "string" || !WORKFLOW_ID.test(w));
+    if (bad !== undefined) return `callerWorkflows has “${String(bad).slice(0, 40)}”, which is not a workflow id (a lower-case letter, then 2 to 39 lower-case letters, digits or -)`;
+    const twice = cw.find((w, i) => cw.indexOf(w) !== i);
+    if (twice !== undefined) return `callerWorkflows lists “${twice}” twice`;
+    // only Evolving Workflows runs workflows: say so in callerProducts (the rule is then never read as "any app")
+    if (!m.callerProducts?.includes(WORKFLOW_PRODUCT)) return `callerWorkflows are workflows of Evolving Workflows: add “${WORKFLOW_PRODUCT}” to callerProducts`;
+  }
+  const rc = m.recipients;
+  if (rc !== undefined) {
+    // C373 D5 (S2): recipients exist only on outward calls, and unknown recipients make a deny/hold APPLY. So a recipients rule
+    // must name `effects` EXACTLY ["outward"]: with no effects, products only, or another effect next to outward it would hold or
+    // refuse every read and write (their recipients are always unknown).
+    if (!rc || typeof rc !== "object" || (rc.teams === undefined && rc.trust === undefined && rc.known === undefined)) return "recipients needs teams, trust or known (an empty object would name nobody)";
+    if (rc.teams !== undefined && rc.teams.length === 0) return "recipients.teams needs at least one team";
+    if (rc.trust !== undefined && rc.trust.length === 0) return "recipients.trust needs at least one trust value";
+    if (rc.trust?.some((t) => !(TRUSTS as readonly string[]).includes(t))) return "recipients.trust values are unreviewed, trusted, limited or blocked";
+    if (rc.known !== undefined && typeof rc.known !== "boolean") return "recipients.known is true or false";
+    if (m.effects?.length !== 1 || m.effects[0] !== "outward") return "recipients need effects exactly [outward]: only outward calls have recipients, and any other call’s recipients are unknown, so a refuse or hold rule would apply to every one of them";
+  }
   return "";
 }
 
 /**
  * The strictest narrowing that could apply to a call: every active allow rule that has a narrowing and matches on the
- * criteria that need no Fleet fact (caller, mode, product, operation, effect, and for claim rules: a claim of a listed kind and id), merged (and, for a rule that names tools, a call that carries one of them). Used when the verdict pinned by the
+ * criteria that need no Fleet fact (caller, mode, product, operation, effect, the calling app's product when it is verified, and for claim rules: a claim of a listed kind and id), merged (and, for a rule that names tools, a call that carries one of them). Used when the verdict pinned by the
  * before phase is missing (fail closed). `null` = no allow rule could narrow it.
  */
 export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): Narrowing | null {
@@ -485,6 +793,20 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     const m = sp.match;
     if (!anyOf(m.agents, facts.caller.id) || !anyOf(m.modes, facts.caller.mode) || !anyOf(m.products, facts.target.product) || !anyOf(m.operations, facts.target.op) || !anyOf(m.effects, facts.target.effect)) continue;
     if (m.tools?.length && !(facts.target.tool !== undefined && toolListed(m.tools, facts.target.tool))) continue;
+    // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
+    // a callerTrust rule can apply to an agent only (its trust is a Fleet fact: could apply)
+    if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
+    // a callerTeams rule can apply to an agent only (an app is in no team)
+    if (m.callerTeams?.length && facts.caller.type !== "agent") continue;
+    // a recipients rule cannot apply to a call known to name no recipient; unknown recipients and their facts could apply
+    if (m.recipients && facts.recipients?.length === 0) continue;
+    // a workflow rule applies to an app only; a verified workflow must be listed; without one it could apply only on the strict path
+    if (m.callerWorkflows?.length) {
+      if (facts.caller.type !== "app") continue;
+      const w = facts.callerWorkflow ?? null;
+      if (w !== null ? !m.callerWorkflows.includes(w) : facts.workflowCapVisible === true || (facts.callerProduct !== null && facts.callerProduct !== WORKFLOW_PRODUCT)) continue;
+    }
+    if (m.callerProducts?.length && (facts.caller.type !== "app" || (facts.callerProduct !== null && !m.callerProducts.includes(facts.callerProduct)))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)
       const c = facts.claim;

@@ -135,7 +135,7 @@ test("preview: dry run with an unsaved candidate and per-rule steps", async () =
 
 test("rules_explain: an agent sees only its own calls' decisions", async () => {
   const { db } = migratedDb();
-  const f = (caller: string) => ({ caller: { type: "agent", id: caller, mode: "free" }, target: { product: "connect", op: "buzz_dm", effect: "outward" }, claim: null, claimVerified: false, claimTeams: [], claimTeamsAny: [], callerTeams: [], callerTeamsAny: [], claimTrusts: [], claimTrustActive: true, fleetAvailable: true });
+  const f = (caller: string) => ({ caller: { type: "agent", id: caller, mode: "free" }, target: { product: "connect", op: "buzz_dm", effect: "outward" }, claim: null, claimVerified: false, claimTeams: [], claimTeamsAny: [], callerTeams: [], callerTeamsAny: [], claimTrusts: [], claimTrustActive: true, fleetAvailable: true, callerProduct: null });
   recordDecision(db, { callId: "cal_a", phase: "before", facts: f(AGENT_A), decision: "deny", answered: "deny", reason: "no", rule: { id: "rul_1", rev: 1, title: "t" }, durationUs: 10 });
   recordDecision(db, { callId: "cal_b", phase: "before", facts: f(AGENT_B), decision: "allow", answered: "allow", reason: "ok", rule: null, durationUs: 10 });
   const mine = await run(OP.rulesExplain)({}, opCtx(db, { type: "agent", id: AGENT_A }));
@@ -164,12 +164,12 @@ test("Fleet read model: parse, departed contacts dropped, unchanged keeps, refus
     return { status: "ok" as const, output: answer };
   };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs[0], {}, "first read is a full one");
+  assert.deepEqual(inputs[0], { accept: ["agent_handles"] }, "first read is a full one (with agent handles, C373 §3)");
   assert.deepEqual(fleetTeams(db).map((t) => t.id), ["tm_x", "tm_y"]);
   assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);
   answer = { v: 1, revision: 7, unchanged: true };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs.at(-1), { sinceRevision: 7 });
+  assert.deepEqual(inputs.at(-1), { accept: ["agent_handles"], sinceRevision: 7 });
   assert.equal(fleetTeams(db).length, 2, "unchanged keeps the copy");
   fail = "bridge_unavailable";
   await syncFleet(db, callApp);

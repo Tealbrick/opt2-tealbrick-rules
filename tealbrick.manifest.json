@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.1.17"
@@ -72,7 +72,7 @@
       "idempotency": "none",
       "id": "rules_list",
       "title": "List rules",
-      "description": "List the workspace rules in evaluation order (priority, then newest first).",
+      "description": "List the workspace rules in evaluation order (priority, then newest first), the default mode that decides a call no rule matches, and the built-in system exemptions of that mode (read-only).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -90,7 +90,9 @@
           "rules",
           "holdSupported",
           "defaultDecision",
-          "catalog"
+          "catalog",
+          "mode",
+          "system"
         ],
         "properties": {
           "rules": {
@@ -104,7 +106,11 @@
             "type": "boolean"
           },
           "defaultDecision": {
-            "const": "allow"
+            "enum": [
+              "allow",
+              "deny",
+              "hold"
+            ]
           },
           "catalog": {
             "type": "object",
@@ -113,7 +119,10 @@
               "generatedAt",
               "syncedAt",
               "error",
-              "products"
+              "products",
+              "productIds",
+              "dynamicOps",
+              "skipped"
             ],
             "properties": {
               "generatedAt": {
@@ -138,6 +147,105 @@
               "products": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "productIds": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "dynamicOps": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "string",
+                  "maxLength": 81
+                },
+                "description": "`product.op` of every dynamic operation in the catalog (an operation that runs many tools); the \"Allow always\" link uses it to ask for one tool."
+              },
+              "skipped": {
+                "type": "array",
+                "maxItems": 50,
+                "description": "Releases whose manifest the last good index read could not use (for example a manifest URL that answered 404). The rest of the catalog is unaffected.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product",
+                    "version",
+                    "reason"
+                  ],
+                  "properties": {
+                    "product": {
+                      "type": "string",
+                      "maxLength": 40
+                    },
+                    "version": {
+                      "type": "string",
+                      "maxLength": 40
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 120
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "mode": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "changedAt",
+              "changedBy"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "permissive",
+                  "verification",
+                  "closed"
+                ]
+              },
+              "changedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "changedBy": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "system": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "text"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -180,6 +288,9 @@
                   "null"
                 ],
                 "maxLength": 600
+              },
+              "deleted": {
+                "type": "boolean"
               }
             }
           },
@@ -288,6 +399,80 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -485,7 +670,8 @@
                   "enum": [
                     "created",
                     "updated",
-                    "deleted"
+                    "deleted",
+                    "restored"
                   ]
                 },
                 "spec": {
@@ -496,6 +682,10 @@
                 },
                 "at": {
                   "type": "string"
+                },
+                "from": {
+                  "type": "integer",
+                  "minimum": 1
                 }
               }
             }
@@ -639,6 +829,80 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -838,6 +1102,7 @@
                 "properties": {
                   "agents": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -848,6 +1113,7 @@
                   },
                   "modes": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 2,
                     "items": {
                       "enum": [
@@ -858,6 +1124,7 @@
                   },
                   "products": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -868,6 +1135,7 @@
                   },
                   "operations": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -878,6 +1146,7 @@
                   },
                   "tools": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -888,6 +1157,7 @@
                   },
                   "effects": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 5,
                     "items": {
                       "enum": [
@@ -901,12 +1171,90 @@
                   },
                   "callerTeams": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -915,6 +1263,7 @@
                     "properties": {
                       "teams": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -924,6 +1273,7 @@
                       },
                       "ids": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -933,6 +1283,7 @@
                       },
                       "kinds": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 3,
                         "items": {
                           "enum": [
@@ -944,6 +1295,7 @@
                       },
                       "trust": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 4,
                         "items": {
                           "enum": [
@@ -1051,6 +1403,11 @@
         "properties": {
           "rule": {
             "$ref": "#/$defs/Rule"
+          },
+          "placementWarning": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Non-blocking (delta S4): the rule is saved, and this says when an allow rule runs ahead of a refuse or hold rule that could overlap it. Absent when there is nothing to say."
           }
         },
         "$defs": {
@@ -1191,6 +1548,80 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -1383,13 +1814,68 @@
       "audience": "person",
       "receipt": false,
       "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "rule_restore",
+      "title": "Restore a rule revision",
+      "description": "Make an earlier revision of a rule its current version, as a new revision. A deleted rule comes back. The revision passes the same checks as Save rule.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ruleId",
+          "rev"
+        ],
+        "properties": {
+          "ruleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "rev": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expectedRev": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rev",
+          "restoredFrom"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer"
+          },
+          "restoredFrom": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
         "read"
       ],
       "effect": "read",
       "idempotency": "none",
       "id": "rules_preview",
       "title": "Preview a decision",
-      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not.",
+      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not. For an app caller, pass its product (omit it to try a call whose product cannot be verified: deny and hold rules with callerProducts apply, allow rules with it do not). When no rule matches, the answer says what the default mode would do (pass `mode` to compare the three modes).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1429,6 +1915,18 @@
                       "free",
                       "bound"
                     ]
+                  },
+                  "product": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40,
+                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                  },
+                  "workflow": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 40,
+                    "pattern": "^[a-z][a-z0-9-]{2,39}$"
                   }
                 }
               },
@@ -1458,6 +1956,18 @@
                     "minLength": 2,
                     "maxLength": 63,
                     "pattern": "^[a-z][a-z0-9_]{1,62}$"
+                  },
+                  "recipients": {
+                    "type": "array",
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "recipientsIncomplete": {
+                    "type": "boolean"
                   },
                   "effect": {
                     "enum": [
@@ -1496,6 +2006,14 @@
           },
           "candidate": {
             "$ref": "#/$defs/RuleSpec"
+          },
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ],
+            "description": "Try the call under this default mode instead of the current one (dry run only; nothing changes)."
           }
         },
         "$defs": {
@@ -1535,6 +2053,7 @@
                 "properties": {
                   "agents": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -1545,6 +2064,7 @@
                   },
                   "modes": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 2,
                     "items": {
                       "enum": [
@@ -1555,6 +2075,7 @@
                   },
                   "products": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -1565,6 +2086,7 @@
                   },
                   "operations": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -1575,6 +2097,7 @@
                   },
                   "tools": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -1585,6 +2108,7 @@
                   },
                   "effects": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 5,
                     "items": {
                       "enum": [
@@ -1598,12 +2122,90 @@
                   },
                   "callerTeams": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -1612,6 +2214,7 @@
                     "properties": {
                       "teams": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -1621,6 +2224,7 @@
                       },
                       "ids": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -1630,6 +2234,7 @@
                       },
                       "kinds": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 3,
                         "items": {
                           "enum": [
@@ -1641,6 +2246,7 @@
                       },
                       "trust": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 4,
                         "items": {
                           "enum": [
@@ -1753,7 +2359,15 @@
           "callerTeams",
           "trust",
           "fleetAvailable",
-          "steps"
+          "callerProductUnavailable",
+          "steps",
+          "mode",
+          "decidedBy",
+          "exemption",
+          "modeNote",
+          "callerTrust",
+          "recipientsUnknown",
+          "workflowUnavailable"
         ],
         "properties": {
           "decision": {
@@ -1871,7 +2485,31 @@
               }
             ]
           },
+          "callerTrust": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unreviewed",
+                  "trusted",
+                  "limited",
+                  "blocked"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "fleetAvailable": {
+            "type": "boolean"
+          },
+          "callerProductUnavailable": {
+            "type": "boolean"
+          },
+          "recipientsUnknown": {
+            "type": "boolean"
+          },
+          "workflowUnavailable": {
             "type": "boolean"
           },
           "steps": {
@@ -1898,6 +2536,551 @@
                 },
                 "why": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "decidedBy": {
+            "enum": [
+              "rule",
+              "mode",
+              "exemption"
+            ]
+          },
+          "exemption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modeNote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "rules_preview_recent",
+      "title": "Check a rule against recent calls",
+      "description": "Runs a rule that is not saved yet over the last recorded gate decisions and answers which of those calls it would have matched and how the decision would change (before: what was decided then; after: what the rules, with this one, decide now). It uses only what the decision log keeps: no recipient handles, no Governance facts of that time. A rule that names recipients, the calling agent's teams or its trust cannot be checked and the answer says so. Nothing is stored. Reads that matched no rule are not in the log.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule"
+        ],
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/RuleSpec"
+          },
+          "ruleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "The rule being edited: its stored version is replaced by `rule` in the after column."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "$defs": {
+          "RuleSpec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "active",
+              "priority",
+              "match",
+              "outcome"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "agents": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 5,
+                      "maxLength": 64,
+                      "pattern": "^(agt|ins)_[A-Za-z0-9]+$"
+                    }
+                  },
+                  "modes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "items": {
+                      "enum": [
+                        "free",
+                        "bound"
+                      ]
+                    }
+                  },
+                  "products": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{1,39}$"
+                    }
+                  },
+                  "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9_]{1,39}$"
+                    }
+                  },
+                  "tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
+                    }
+                  },
+                  "effects": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "items": {
+                      "enum": [
+                        "read",
+                        "write",
+                        "outward",
+                        "destructive",
+                        "money"
+                      ]
+                    }
+                  },
+                  "callerTeams": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
+                  },
+                  "onBehalfOf": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "kinds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                          "enum": [
+                            "person",
+                            "agent",
+                            "channel_sender"
+                          ]
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "outcome": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision",
+                  "reason"
+                ],
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "allow",
+                      "deny",
+                      "hold"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 280
+                  }
+                }
+              },
+              "narrowing": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "memoryTags": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checked",
+          "matched",
+          "changed",
+          "cannotCheck",
+          "note",
+          "rows"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "matched": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cannotCheck": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "at",
+                "caller",
+                "target",
+                "before",
+                "after",
+                "changed"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string"
+                },
+                "caller": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "product"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "product": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "target": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product",
+                    "op",
+                    "effect"
+                  ],
+                  "properties": {
+                    "product": {
+                      "type": "string"
+                    },
+                    "op": {
+                      "type": "string"
+                    },
+                    "effect": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "before": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "decision",
+                    "by"
+                  ],
+                  "properties": {
+                    "decision": {
+                      "enum": [
+                        "allow",
+                        "deny",
+                        "hold"
+                      ]
+                    },
+                    "by": {
+                      "type": "string",
+                      "maxLength": 200,
+                      "description": "The rule's title, or the default mode."
+                    }
+                  }
+                },
+                "after": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "decision",
+                    "by"
+                  ],
+                  "properties": {
+                    "decision": {
+                      "enum": [
+                        "allow",
+                        "deny",
+                        "hold"
+                      ]
+                    },
+                    "by": {
+                      "type": "string",
+                      "maxLength": 200,
+                      "description": "The rule's title, or the default mode."
+                    }
+                  }
+                },
+                "changed": {
+                  "type": "boolean"
                 }
               }
             }
@@ -2026,7 +3209,8 @@
                 "required": [
                   "type",
                   "id",
-                  "mode"
+                  "mode",
+                  "product"
                 ],
                 "properties": {
                   "type": {
@@ -2036,6 +3220,12 @@
                     "type": "string"
                   },
                   "mode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "product": {
                     "type": [
                       "string",
                       "null"
@@ -2241,7 +3431,8 @@
                   "kind": {
                     "enum": [
                       "agent",
-                      "app"
+                      "app",
+                      "owner"
                     ]
                   },
                   "product": {
@@ -2298,6 +3489,44 @@
                   "type": "string",
                   "maxLength": 200
                 }
+              },
+              "places": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Pending drafts (review 0.5.0 S3-3): the priority each rule gets if the draft is approved now, placed again against the current rules (active and inactive).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "priority",
+                    "from",
+                    "why"
+                  ],
+                  "properties": {
+                    "priority": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "why": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 600
+                    }
+                  }
+                }
+              },
+              "placeProblem": {
+                "type": "string",
+                "maxLength": 600,
+                "description": "Pending drafts: why the draft cannot be approved now (a rule has no priority left)."
               }
             }
           },
@@ -2406,6 +3635,80 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -2656,7 +3959,8 @@
                   "kind": {
                     "enum": [
                       "agent",
-                      "app"
+                      "app",
+                      "owner"
                     ]
                   },
                   "product": {
@@ -2713,6 +4017,44 @@
                   "type": "string",
                   "maxLength": 200
                 }
+              },
+              "places": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Pending drafts (review 0.5.0 S3-3): the priority each rule gets if the draft is approved now, placed again against the current rules (active and inactive).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "priority",
+                    "from",
+                    "why"
+                  ],
+                  "properties": {
+                    "priority": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "why": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 600
+                    }
+                  }
+                }
+              },
+              "placeProblem": {
+                "type": "string",
+                "maxLength": 600,
+                "description": "Pending drafts: why the draft cannot be approved now (a rule has no priority left)."
               }
             }
           },
@@ -2821,6 +4163,80 @@
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -3049,9 +4465,192 @@
       }
     },
     {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "mode_get",
+      "title": "Default mode and its history",
+      "description": "The default mode for calls that match no rule, who changed it last, its change history (newest first) and the built-in system exemptions.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "changedAt",
+          "changedBy",
+          "history",
+          "system"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "changedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "at",
+                "actor",
+                "from",
+                "to"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "actor": {
+                  "type": "string"
+                },
+                "from": {
+                  "enum": [
+                    "permissive",
+                    "verification",
+                    "closed"
+                  ]
+                },
+                "to": {
+                  "enum": [
+                    "permissive",
+                    "verification",
+                    "closed"
+                  ]
+                }
+              }
+            }
+          },
+          "system": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "text"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "mode_set",
+      "title": "Set the default mode",
+      "description": "Set what happens to a call that matches no rule: permissive (allow), verification (hold for the owner) or closed (refuse). A move to a looser mode (closed, then verification, then permissive) needs confirm: true. Setting the current mode again changes nothing.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "confirm": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "previous",
+          "changed",
+          "changedAt",
+          "changedBy"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "previous": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "changedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "rules_explain",
       "title": "Explain my decisions",
-      "description": "Why Rules allowed, refused or held your calls. Pass the callId of one call, or get your latest decisions.",
+      "description": "Why Rules allowed, refused or held your calls. Pass the callId of one call, or get your latest decisions. `decidedBy` says whether a rule or the workspace default mode (`mode`: permissive, verification or closed) decided.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3092,7 +4691,12 @@
                 "reason",
                 "ruleId",
                 "ruleTitle",
-                "fleetUnavailable"
+                "fleetUnavailable",
+                "callerProductUnavailable",
+                "decidedBy",
+                "mode",
+                "recipientsUnknown",
+                "workflowUnavailable"
               ],
               "properties": {
                 "callId": {
@@ -3143,6 +4747,36 @@
                 },
                 "fleetUnavailable": {
                   "type": "boolean"
+                },
+                "callerProductUnavailable": {
+                  "type": "boolean"
+                },
+                "recipientsUnknown": {
+                  "type": "boolean"
+                },
+                "workflowUnavailable": {
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "enum": [
+                    "rule",
+                    "mode",
+                    "exemption"
+                  ]
+                },
+                "mode": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "permissive",
+                        "verification",
+                        "closed"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -3225,6 +4859,7 @@
                 "properties": {
                   "agents": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -3235,6 +4870,7 @@
                   },
                   "modes": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 2,
                     "items": {
                       "enum": [
@@ -3245,6 +4881,7 @@
                   },
                   "products": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
@@ -3255,6 +4892,7 @@
                   },
                   "operations": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -3265,6 +4903,7 @@
                   },
                   "tools": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 100,
                     "items": {
                       "type": "string",
@@ -3275,6 +4914,7 @@
                   },
                   "effects": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 5,
                     "items": {
                       "enum": [
@@ -3288,12 +4928,90 @@
                   },
                   "callerTeams": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 50,
                     "items": {
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
                     }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -3302,6 +5020,7 @@
                     "properties": {
                       "teams": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -3311,6 +5030,7 @@
                       },
                       "ids": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 50,
                         "items": {
                           "type": "string",
@@ -3320,6 +5040,7 @@
                       },
                       "kinds": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 3,
                         "items": {
                           "enum": [
@@ -3331,6 +5052,7 @@
                       },
                       "trust": {
                         "type": "array",
+                        "minItems": 1,
                         "maxItems": 4,
                         "items": {
                           "enum": [
@@ -3515,6 +5237,819 @@
       "idempotency": "none",
       "receipt": false,
       "audience": "agent"
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "rule_compose",
+      "title": "Read a rule in plain English",
+      "description": "Turn the owner's plain English into PROPOSED structured rules (no state). Optional `agents`: the names the owner page read from tb.agents_list. Nothing applies: save the proposal for approval with rule_compose_save.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "agents": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 5,
+                  "maxLength": 64,
+                  "pattern": "^(agt|ins)_[A-Za-z0-9]+$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "drafter",
+          "rules",
+          "lines",
+          "notes",
+          "unmatched"
+        ],
+        "properties": {
+          "drafter": {
+            "enum": [
+              "parser",
+              "model"
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/$defs/RuleSpec"
+            }
+          },
+          "lines": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "notes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "unmatched": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "text",
+                "hint"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "hint": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              }
+            }
+          }
+        },
+        "$defs": {
+          "RuleSpec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "active",
+              "priority",
+              "match",
+              "outcome"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "agents": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 5,
+                      "maxLength": 64,
+                      "pattern": "^(agt|ins)_[A-Za-z0-9]+$"
+                    }
+                  },
+                  "modes": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                      "enum": [
+                        "free",
+                        "bound"
+                      ]
+                    }
+                  },
+                  "products": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{1,39}$"
+                    }
+                  },
+                  "operations": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9_]{1,39}$"
+                    }
+                  },
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
+                    }
+                  },
+                  "effects": {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {
+                      "enum": [
+                        "read",
+                        "write",
+                        "outward",
+                        "destructive",
+                        "money"
+                      ]
+                    }
+                  },
+                  "callerTeams": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
+                  },
+                  "onBehalfOf": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "ids": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "kinds": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": {
+                          "enum": [
+                            "person",
+                            "agent",
+                            "channel_sender"
+                          ]
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "outcome": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision",
+                  "reason"
+                ],
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "allow",
+                      "deny",
+                      "hold"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 280
+                  }
+                }
+              },
+              "narrowing": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "memoryTags": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "rule_compose_save",
+      "title": "Save my English rule for approval",
+      "description": "Save the owner's English rule and its structured rules as a pending DRAFT (source owner). Nothing applies until the owner approves it with draft_decide.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "rules"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "rules": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/$defs/RuleSpec"
+            }
+          },
+          "note": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 1000
+          }
+        },
+        "$defs": {
+          "RuleSpec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "active",
+              "priority",
+              "match",
+              "outcome"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "agents": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 5,
+                      "maxLength": 64,
+                      "pattern": "^(agt|ins)_[A-Za-z0-9]+$"
+                    }
+                  },
+                  "modes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "items": {
+                      "enum": [
+                        "free",
+                        "bound"
+                      ]
+                    }
+                  },
+                  "products": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{1,39}$"
+                    }
+                  },
+                  "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9_]{1,39}$"
+                    }
+                  },
+                  "tools": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 63,
+                      "pattern": "^[a-z][a-z0-9_]{1,62}$"
+                    }
+                  },
+                  "effects": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "items": {
+                      "enum": [
+                        "read",
+                        "write",
+                        "outward",
+                        "destructive",
+                        "money"
+                      ]
+                    }
+                  },
+                  "callerTeams": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    }
+                  },
+                  "callerTrust": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "unreviewed",
+                        "trusted",
+                        "limited",
+                        "blocked"
+                      ]
+                    },
+                    "description": "C373 D4b: trust of the CALLING agent (Governance feed agents[].trust). Fail closed like callerTeams; never matches an app caller."
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
+                  "recipients": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      },
+                      "known": {
+                        "type": "boolean"
+                      }
+                    },
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
+                  },
+                  "onBehalfOf": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "teams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "kinds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                          "enum": [
+                            "person",
+                            "agent",
+                            "channel_sender"
+                          ]
+                        }
+                      },
+                      "trust": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "items": {
+                          "enum": [
+                            "unreviewed",
+                            "trusted",
+                            "limited",
+                            "blocked"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "outcome": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision",
+                  "reason"
+                ],
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "allow",
+                      "deny",
+                      "hold"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 280
+                  }
+                }
+              },
+              "narrowing": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "memoryTags": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      }
+                    }
+                  },
+                  "deepDatasets": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [],
+                    "properties": {
+                      "anyOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "noneOf": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      }
+                    },
+                    "minProperties": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draftId",
+          "status"
+        ],
+        "properties": {
+          "draftId": {
+            "type": "string"
+          },
+          "status": {
+            "const": "pending"
+          }
+        }
+      }
     }
   ],
   "hooks": [
@@ -3571,6 +6106,27 @@
     }
   ],
   "needsAgentDirectory": true,
+  "settings": {
+    "steps": [],
+    "modelRoles": [
+      {
+        "role": "utility",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Optional. Helps draft rules you type in plain English when Rules' own reader cannot read them. It never decides a call."
+      },
+      {
+        "role": "reasoning",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Optional. Helps draft rules you type in plain English when Rules' own reader cannot read them. It never decides a call."
+      }
+    ]
+  },
   "skills": [
     {
       "id": "use-rules",

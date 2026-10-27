@@ -14,6 +14,15 @@ export function run<K extends keyof PersonOps>(op: K, input: In<K>): Promise<Out
   return callOp<Out<K>>(op, input as never);
 }
 
+/**
+ * Same rule as the gate's `validProduct` (src/engine.ts, which the browser build does not load): a product id is `[a-z0-9][a-z0-9_-]*`,
+ * at most 40 characters, NOT trimmed. The dry run sends a product only when it passes, like the gate treats a bridge-sent one.
+ */
+/** Evolution P1 workflow id (same rule as `WORKFLOW_ID` in src/engine.ts, which the browser build does not load). */
+export const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
+
+export const verifiableProduct = (p: string): boolean => p.length <= 40 && /^[a-z0-9][a-z0-9_-]*$/.test(p);
+
 export const EFFECTS = ["read", "write", "outward", "destructive", "money"] as const;
 /** Status pill of a decision (allow = live, refuse = needs you, hold = busy). */
 export const DECISION_STATUS = { allow: "live", deny: "needs-you", hold: "busy", narrow: "live", redact: "live" } as const;
@@ -23,7 +32,7 @@ export const DECISION_LABEL = { allow: "Allow", deny: "Refuse", hold: "Hold for 
 const SIGNED_OUT = "You’re signed out. Open this app from Portal to sign in again.";
 const GENERIC = "Something went wrong. Try again in a moment.";
 /** The app’s own refusals: their text already says what is wrong and what to do (src/store.ts), so it is shown as it is. */
-const OWN_REFUSALS = new Set(["revision_conflict", "input_invalid", "draft_never_matches", "draft_decided", "too_many_rules", "too_many_drafts", "catalog_unavailable", "not_found", "forbidden"]);
+const OWN_REFUSALS = new Set(["revision_conflict", "input_invalid", "draft_never_matches", "draft_no_room", "draft_decided", "too_many_rules", "too_many_drafts", "catalog_unavailable", "not_found", "forbidden", "confirm_required"]);
 /** Plain sentence for a failed call (RUL-01, RUL-14). Anything that is not the app’s own refusal gets a standard sentence, never raw upstream text. */
 export function errorText(e: unknown): string {
   const err = (e ?? {}) as { code?: unknown; httpStatus?: unknown; message?: unknown };
@@ -44,6 +53,20 @@ export function day(isoTime: string | null): string {
 export function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
+/**
+ * QA-C373-RU-1: a stored value (a legacy rule or draft, or an agent's name) may hold a Unicode control (Cc) or format (Cf)
+ * character, such as U+202E (right-to-left override) or U+200D (zero-width joiner). It is shown WRITTEN OUT as ⟨U+202E⟩, never
+ * drawn. `multiline` keeps tab and line break. Same answer as `escapeControls` in src/text-guard.ts (a test pins them).
+ */
+export function safeText(s: string, multiline = false): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) as number;
+    out += /[\p{Cc}\p{Cf}]/u.test(ch) && !(multiline && (cp === 9 || cp === 10)) ? `⟨U+${cp.toString(16).toUpperCase().padStart(4, "0")}⟩` : ch;
+  }
+  return out;
+}
+
 /** "a, b ,c" → ["a","b","c"]; empty → undefined (= any). */
 export function list(s: string): string[] | undefined {
   const xs = s
@@ -58,6 +81,22 @@ export function emptySpec(): RuleSpec {
   return { title: "", active: true, priority: 100, match: {}, outcome: { decision: "deny", reason: "" } };
 }
 
+/**
+ * The match lists of a stored rule that are EMPTY (`agents`, `onBehalfOf.teams`, …). Rules reads an empty list as "any", so an old
+ * rule with one keeps working, but writers refuse a new one (review 0.5.0 D-3); the Rules page badges such a rule. Same reading as
+ * `emptyLists` in src/engine.ts (the UI build serves only src/ui, so it cannot import it).
+ */
+export function emptyLists(m: unknown): string[] {
+  const out: string[] = [];
+  if (!m || typeof m !== "object") return out;
+  for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) out.push(k);
+    } else if (v && typeof v === "object") for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (Array.isArray(v2) && v2.length === 0) out.push(`${k}.${k2}`);
+  }
+  return out;
+}
+
 /** One line that says what a rule matches, for lists. */
 export function matchText(s: RuleSpec, teamName: (id: string) => string, agentName: (id: string) => string, titles?: Record<string, string>): string {
   const m = s.match;
@@ -69,12 +108,37 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.tools?.length) parts.push(`tools ${m.tools.join(", ")}`);
   if (m.effects?.length) parts.push(`effects ${m.effects.join(", ")}`);
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
+  if (m.callerTrust?.length) parts.push(`calling agent's trust ${m.callerTrust.join(", ")}`);
+  if (m.callerProducts?.length) parts.push(`calls from app ${m.callerProducts.join(", ")}`);
+  if (m.callerWorkflows?.length) parts.push(`from workflow ${m.callerWorkflows.join(", ")}`);
+  const r = m.recipients;
+  if (r) {
+    const sub = [r.teams?.length ? `in team ${r.teams.map(teamName).join(", ")}` : "", r.trust?.length ? `with trust ${r.trust.join(", ")}` : "", r.known === undefined ? "" : r.known ? "known to Governance" : "unknown to Governance"].filter(Boolean);
+    parts.push(`recipients ${sub.join(" and ")}`);
+  }
   const o = m.onBehalfOf;
   if (o?.teams?.length) parts.push(`on behalf of team ${o.teams.map(teamName).join(", ")}`);
   if (o?.ids?.length) parts.push(`on behalf of ${o.ids.join(", ")}`);
   if (o?.kinds?.length) parts.push(`requester kind ${o.kinds.join(", ")}`);
   if (o?.trust?.length) parts.push(`requester trust ${o.trust.join(", ")}`);
-  return parts.length ? parts.join("; ") : "every call";
+  return safeText(parts.length ? parts.join("; ") : "every call");
+}
+
+/** S2-2 (review 0.5.0): the warning on a refuse/hold rule that can stop Rules' own Governance read (fleet `directory_feed`). */
+export const CUTS_OFF_GOVERNANCE = "This rule cuts Rules off from Governance: it can refuse or hold Rules’ own read of teams and trust, and then every rule that names teams or trust works without them (refuse and hold apply, allow does not).";
+/**
+ * True for a refuse/hold rule that NAMES the feed read (target app `fleet` or calls from app `rules`) and is not ruled out by its
+ * effects, operations or callers. Only such an explicit rule can stop that read; the gate keeps every other rule away from it.
+ */
+export function cutsOffGovernance(s: RuleSpec): boolean {
+  const m = s.match;
+  if (s.outcome.decision === "allow" || !(m.products?.includes("fleet") || m.callerProducts?.includes("rules"))) return false;
+  if (m.products?.length && !m.products.includes("fleet")) return false;
+  if (m.callerProducts?.length && !m.callerProducts.includes("rules")) return false;
+  if (m.effects?.length && !m.effects.includes("read")) return false;
+  if (m.operations?.length && !m.operations.includes("directory_feed")) return false;
+  if (m.modes?.length || m.callerTeams?.length || m.callerTrust?.length || m.callerWorkflows?.length || m.recipients || m.tools?.length) return false;
+  return !(m.agents?.length && m.agents.every((a) => a.startsWith("agt_")));
 }
 
 /** What a rule narrows, as readable parts: ["memories: {...}", "datasets: {...}"]. */

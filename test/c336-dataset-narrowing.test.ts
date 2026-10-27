@@ -25,6 +25,7 @@ const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { effect?: str
   callerTeamsAny: o.callerTeamsAny ?? o.callerTeams ?? [],
   ...trustFacts(o),
   fleetAvailable: o.fleetAvailable ?? true,
+  callerProduct: o.callerProduct ?? null,
 });
 
 const hooks = makeHooks("rules");
@@ -255,14 +256,17 @@ test("tools: strictestNarrowing (after-hook without a pin) skips a rule whose to
   assert.equal(strictestNarrowing([r], facts()), null);
 });
 
-test("toolOf: only a non-empty string of at most 128 characters counts as the tool name", () => {
+test("toolOf: only a catalog tool name (with at most one __ variant, at most 128 characters) counts as the tool name", () => {
   const req = (tool: unknown) => ({ call: { target: { tool } } }) as unknown as Parameters<typeof toolOf>[0];
   assert.equal(toolOf(req("gmail_send")), "gmail_send");
   assert.equal(toolOf(req(undefined)), undefined);
   assert.equal(toolOf(req("")), undefined);
   assert.equal(toolOf(req(7)), undefined);
   assert.equal(toolOf(req("x".repeat(129))), undefined);
-  assert.equal(toolOf(req("x".repeat(128))), "x".repeat(128));
+  assert.equal(toolOf(req(`gmail_send__${"x".repeat(116)}`)), `gmail_send__${"x".repeat(116)}`);
+  // S4-1 (review 0.5.0): a value that is no catalog tool name is ABSENT (a dynamic op then fails closed for deny/hold tools rules)
+  for (const bad of ["Gmail_Send", "gmail_send ", "gmail send", "x".repeat(49), "gmail_send__", "a__b__c__D", "_x"]) assert.equal(toolOf(req(bad)), undefined, bad);
+  assert.equal(toolOf(req("gmail_send__first_contact")), "gmail_send__first_contact");
 });
 
 // ── hooks ──────────────────────────────────────────────────────────────────

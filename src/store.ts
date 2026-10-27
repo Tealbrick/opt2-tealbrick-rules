@@ -4,7 +4,9 @@
 import { ulid } from "@opt2-tealbrick/manifest";
 import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { CATALOG_MISSING, catalogOf, catalogProblem } from "./catalog.ts";
-import { type CallFacts, type Decision, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
+import { type CallFacts, type Decision, emptyListProblem, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
+import { placeDraft } from "./placement.ts";
+import { controlProblem, escapeControls, textProblem } from "./text-guard.ts";
 
 /** At most this many live rules (a gate evaluates all of them on every call). */
 export const MAX_RULES = 500;
@@ -33,6 +35,8 @@ interface FleetCacheEntry {
   gone: Set<string>;
   okAt: number | null;
   usable: boolean;
+  /** the copy was read WITH agent handles (feed `accept: ["agent_handles"]`); false after a restart until the next full read (S3-1) */
+  agentHandles: boolean;
 }
 const fleetCache = new WeakMap<Db, FleetCacheEntry>();
 /** Count of markFleetStale calls per database: a sync that sees it move while it ran reads once more (dirty flag). */
@@ -72,18 +76,36 @@ function ruleView(r: Record<string, unknown>): RuleView {
   return { id: String(r.id), rev: Number(r.rev), spec: JSON.parse(String(r.spec)) as RuleSpec, source: String(r.source), createdAt: iso(Number(r.created_at)) as string, updatedAt: iso(Number(r.updated_at)) as string };
 }
 
-export function listRules(db: Db, includeDeleted = false): RuleView[] {
+export function listRules(db: Db, includeDeleted = false): (RuleView & { deleted: boolean })[] {
   const rows = db.prepare(`SELECT * FROM rules ${includeDeleted ? "" : "WHERE deleted = 0"} ORDER BY deleted, priority, updated_at DESC, id`).all();
-  return rows.map(ruleView);
+  return rows.map((r) => ({ ...ruleView(r), deleted: Number(r.deleted) === 1 }));
 }
 
-export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: { rev: number; change: "created" | "updated" | "deleted"; spec: RuleSpec; actor: string; at: string }[] } {
+export type RevisionChange = "created" | "updated" | "deleted" | "restored";
+export interface RevisionView {
+  rev: number;
+  change: RevisionChange;
+  spec: RuleSpec;
+  actor: string;
+  at: string;
+  /** change "restored" only: the revision whose spec this one copied */
+  from?: number;
+}
+
+export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: RevisionView[] } {
   const row = db.prepare("SELECT * FROM rules WHERE id = ?").get(id);
   if (!row) throw new TbError("not_found", "no rule with this id", 404);
   const revisions = db
-    .prepare("SELECT rev, change, spec, actor, at FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
+    .prepare("SELECT rev, change, spec, actor, at, from_rev FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
     .all(id)
-    .map((r) => ({ rev: Number(r.rev), change: String(r.change) as "created" | "updated" | "deleted", spec: JSON.parse(String(r.spec)) as RuleSpec, actor: String(r.actor), at: iso(Number(r.at)) as string }));
+    .map((r) => ({
+      rev: Number(r.rev),
+      change: String(r.change) as RevisionChange,
+      spec: JSON.parse(String(r.spec)) as RuleSpec,
+      actor: String(r.actor),
+      at: iso(Number(r.at)) as string,
+      ...(r.from_rev == null ? {} : { from: Number(r.from_rev) }),
+    }));
   return { rule: ruleView(row), deleted: Number(row.deleted) === 1, revisions };
 }
 
@@ -92,9 +114,18 @@ export function ruleProblem(db: Db, spec: RuleSpec): string {
   return specProblem(spec) || catalogProblem(spec, catalogOf(db));
 }
 
+/**
+ * What a WRITER refuses ("" = fine): the text checks (control and invisible characters, QA-C373-RU-1), then `ruleProblem`. Readers
+ * (`rules_list`, the Rules page flag) use `ruleProblem` alone: a stored legacy rule with such a character still matches, so it is
+ * never flagged "never matches"; it is shown escaped and cannot be saved again until the owner removes the character.
+ */
+export function writerProblem(db: Db, spec: RuleSpec): string {
+  return textProblem(spec) || emptyListProblem(spec) || ruleProblem(db, spec);
+}
+
 /** Writer strict (L24): refuse a spec with a problem. `label` prefixes the message (drafts name the rule). */
 function checkSpec(db: Db, spec: RuleSpec, label = ""): void {
-  const p = ruleProblem(db, spec);
+  const p = writerProblem(db, spec);
   if (p === CATALOG_MISSING) throw new TbError("catalog_unavailable", p, 503);
   if (p) throw new TbError("input_invalid", `${label}${p}`, 400);
 }
@@ -140,6 +171,38 @@ export function deleteRule(db: Db, input: { id: string; expectedRev?: number; ac
   return { id: input.id, rev };
 }
 
+/**
+ * Q-7 (C373): make the spec of an earlier revision the rule's current spec. It is a write like `saveRule`: the same writer
+ * checks (a spec that names an operation the catalog no longer has is refused with the writer's reason), the actor is
+ * recorded, and a NEW revision row (change 'restored', `from_rev` = the copied revision) is added; history is never
+ * rewritten. A deleted rule comes back (counts against MAX_RULES like a new one). Restoring the current revision of a live
+ * rule is refused (nothing would change). `expectedRev` = the current revision the owner saw (stale → revision_conflict).
+ */
+export function restoreRule(db: Db, input: { id: string; rev: number; expectedRev?: number; actor: string }, now = Date.now()): { id: string; rev: number; restoredFrom: number } {
+  const target = db.prepare("SELECT spec FROM rule_revisions WHERE rule_id = ? AND rev = ?").get(input.id, input.rev);
+  if (!db.prepare("SELECT id FROM rules WHERE id = ?").get(input.id)) throw new TbError("not_found", "no rule with this id", 404);
+  if (!target) throw new TbError("not_found", `this rule has no revision ${input.rev}`, 404);
+  const spec = JSON.parse(String(target.spec)) as RuleSpec;
+  checkSpec(db, spec, `revision ${input.rev} can’t be restored: `);
+  const rev = db.transaction(() => {
+    const cur = db.prepare("SELECT rev, deleted FROM rules WHERE id = ?").get(input.id) as Record<string, unknown>;
+    const curRev = Number(cur.rev);
+    const deleted = Number(cur.deleted) === 1;
+    if (input.expectedRev !== undefined && input.expectedRev !== curRev) throw new TbError("revision_conflict", `the rule changed (now revision ${curRev}); reload and try again`, 409);
+    if (!deleted && input.rev === curRev) throw new TbError("input_invalid", `revision ${input.rev} is already the current version`, 400);
+    if (deleted) {
+      const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
+      if (live >= MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules`, 409);
+    }
+    const text = JSON.stringify(spec);
+    db.prepare("UPDATE rules SET rev = ?, spec = ?, priority = ?, active = ?, deleted = 0, updated_at = ? WHERE id = ?").run(curRev + 1, text, spec.priority, spec.active ? 1 : 0, now, input.id);
+    db.prepare("INSERT INTO rule_revisions (rule_id, rev, change, spec, actor, at, from_rev) VALUES (?, ?, 'restored', ?, ?, ?, ?)").run(input.id, curRev + 1, text, input.actor, now, input.rev);
+    return curRev + 1;
+  });
+  invalidateRules(db);
+  return { id: input.id, rev, restoredFrom: input.rev };
+}
+
 // ── drafts ───────────────────────────────────────────────────────────────────
 export interface DraftView {
   id: string;
@@ -157,7 +220,8 @@ export interface DraftView {
 }
 
 export interface DraftSource {
-  kind: "agent" | "app";
+  /** `owner` (C373): the owner typed the English rule in Rules (`rule_compose_save`) */
+  kind: "agent" | "app" | "owner";
   /** product id of the proposing app: the VERIFIED `Caller.product` (SDK 0.1.27); absent on drafts stored before it */
   product?: string;
   name?: string;
@@ -188,6 +252,7 @@ export interface Submitter {
 }
 
 function sourceFor(by: Submitter): DraftSource {
+  if (by.type === "person") return { kind: "owner" };
   if (by.type !== "app") return { kind: "agent" };
   if (by.product) return { kind: "app", product: by.product, name: by.name.slice(0, 80), ...(by.instance ? { instance: by.instance } : {}) };
   return { kind: "app", name: by.name.slice(0, 80), instance: by.id };
@@ -211,8 +276,10 @@ function draftView(r: Record<string, unknown>): DraftView {
 }
 
 export function submitDraft(db: Db, input: { text: string; note?: string; rules: RuleSpec[]; by: Submitter }, now = Date.now()): DraftView {
+  const text = controlProblem("The draft text", input.text, true) || controlProblem("The note", input.note ?? "", true);
+  if (text) throw new TbError("input_invalid", text, 400);
   input.rules.forEach((spec, i) => {
-    checkSpec(db, spec, `rule ${i + 1} (“${spec.title}”): `);
+    checkSpec(db, spec, `rule ${i + 1} (“${escapeControls(spec.title)}”): `);
   });
   // The cap counts per identity AND type. All unverified apps (no verified product, so no identity but an instance id that a
   // reinstall changes) share ONE cap, so a reinstall cannot reset it. A draft stored before 0.3.0 has no `source` and counts there.
@@ -223,7 +290,7 @@ export function submitDraft(db: Db, input: { text: string; note?: string; rules:
       : db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = ? AND submitted_by_id = ?").get(input.by.type, input.by.id)
     )?.n ?? 0,
   );
-  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : "agent"}; ask the owner to review them`, 429);
+  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : input.by.type === "person" ? "owner" : "agent"}; ${input.by.type === "person" ? "approve or reject some on the Drafts page first" : "ask the owner to review them"}`, 429);
   const id = `drf_${ulid(now)}`;
   db.prepare(
     "INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at, source) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -267,13 +334,16 @@ export function decideDraft(db: Db, input: { id: string; decision: "approve" | "
   if (input.decision === "approve") {
     // A draft whose rule could never match is not applied (it would look like protection and protect nothing, L3).
     json<RuleSpec[]>(row.rules, []).forEach((spec, i) => {
-      const p = ruleProblem(db, spec);
+      const p = writerProblem(db, spec);
       if (p === CATALOG_MISSING) throw new TbError("catalog_unavailable", p, 503);
-      if (p) throw new TbError("draft_never_matches", `This draft cannot be applied: rule ${i + 1} (“${spec.title}”): ${p}. Reject it and ask the agent for a corrected draft.`, 409);
+      if (p) throw new TbError("draft_never_matches", `This draft cannot be applied: rule ${i + 1} (“${escapeControls(spec.title)}”): ${p}. Reject it and ask the agent for a corrected draft.`, 409);
     });
     const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
     if (live + json<RuleSpec[]>(row.rules, []).length > MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules; delete some first`, 409);
-    for (const spec of json<RuleSpec[]>(row.rules, [])) ruleIds.push(saveRule(db, { spec, actor: input.actor, source: input.id }, now).id);
+    // S3-3 (review 0.5.0): priorities placed again against the CURRENT rules, active and inactive (src/placement.ts)
+    const plan = placeDraft(json<RuleSpec[]>(row.rules, []), liveRules(db).map((r) => r.spec));
+    if (plan.problem) throw new TbError("draft_no_room", plan.problem, 409);
+    for (const spec of plan.specs) ruleIds.push(saveRule(db, { spec, actor: input.actor, source: input.id }, now).id);
   }
   db.prepare("UPDATE drafts SET status = ?, decided_at = ?, decided_by = ?, rule_ids = ? WHERE id = ? AND status = 'pending'").run(
     input.decision === "approve" ? "approved" : "rejected",
@@ -301,11 +371,24 @@ export interface TraceInput {
 
 let inserts = 0;
 
+/** The trace's `detail` JSON: the given detail plus the tool name, the recipient count and the workflow id (null = nothing to keep). */
+function traceDetail(t: TraceInput): string | null {
+  const tool = t.facts.target.tool;
+  const count = Array.isArray(t.facts.recipients) ? t.facts.recipients.length : undefined;
+  // C373 D2c: the verified workflow id of an app caller (an id, not personal data)
+  const workflow = t.facts.callerWorkflow ?? undefined;
+  if (!t.detail && tool === undefined && count === undefined && workflow === undefined) return null;
+  return JSON.stringify({ ...t.detail, ...(tool !== undefined ? { tool } : {}), ...(count !== undefined ? { recipients: count } : {}), ...(workflow !== undefined ? { workflow } : {}) });
+}
+
 export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string {
   const id = `dec_${ulid(now)}`;
-  const obo = t.facts.claim ? JSON.stringify({ ...t.facts.claim, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
+  // S4-3 (review 0.5.0, I8): a channel-sender claim id IS a handle, and handles never enter a trace: only the kind is kept for it
+  const c = t.facts.claim;
+  const who = c ? (c.kind === "channel_sender" ? { kind: c.kind, handle: true } : { ...c }) : null;
+  const obo = who ? JSON.stringify({ ...who, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
   db.prepare(
-    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, caller_product, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     id,
     t.callId,
@@ -314,6 +397,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.facts.caller.type,
     t.facts.caller.id,
     t.facts.caller.mode,
+    t.facts.callerProduct,
     t.facts.target.product,
     t.facts.target.op,
     t.facts.target.effect,
@@ -324,8 +408,9 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.rule?.rev ?? null,
     t.rule?.title ?? null,
     obo,
-    // spec 0.1.68: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration)
-    t.detail || t.facts.target.tool !== undefined ? JSON.stringify({ ...t.detail, ...(t.facts.target.tool !== undefined ? { tool: t.facts.target.tool } : {}) }) : null,
+    // spec 0.1.68: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration).
+    // C373 D5: of the recipients only their COUNT is kept (known recipients), never a handle; unknown ones are `recipientsUnknown`.
+    traceDetail(t),
     Math.max(0, Math.round(t.durationUs)),
   );
   if (++inserts % 1000 === 0) pruneDecisions(db, now);
@@ -342,7 +427,8 @@ export interface DecisionView {
   callId: string | null;
   phase: TraceInput["phase"];
   at: string;
-  caller: { type: string; id: string; mode: string | null };
+  /** `product`: the VERIFIED product of an app caller at decision time; null for an agent, an unverified app, and rows recorded before 0.5.0 */
+  caller: { type: string; id: string; mode: string | null; product: string | null };
   target: { product: string; op: string; effect: string; tool?: string };
   decision: Decision;
   answered: Answered;
@@ -363,7 +449,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
     callId: r.call_id == null ? null : String(r.call_id),
     phase: String(r.phase) as DecisionView["phase"],
     at: iso(Number(r.at)) as string,
-    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode) },
+    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode), product: r.caller_product == null ? null : String(r.caller_product) },
     target: { product: String(r.product), op: String(r.op), effect: String(r.effect), ...(tool !== undefined ? { tool } : {}) },
     decision: String(r.decision) as Decision,
     answered: String(r.answered) as Answered,
@@ -377,7 +463,15 @@ function decisionView(r: Record<string, unknown>): DecisionView {
   };
 }
 
-export function listDecisions(db: Db, q: { callId?: string; caller?: string; decision?: Decision; product?: string; cursor?: string; limit: number }): { items: DecisionView[]; nextCursor: string | null } {
+/**
+ * `appCaller`: an APP reads its own decisions by its VERIFIED product (any instance of it, so a reinstall keeps its history),
+ * and rows recorded without a product (before 0.5.0, or an unverified app) by its instance id. An app with no verified product
+ * passes `product: null` and reads by instance id only.
+ */
+export function listDecisions(
+  db: Db,
+  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; phase?: TraceInput["phase"]; cursor?: string; limit: number },
+): { items: DecisionView[]; nextCursor: string | null } {
   const where: string[] = [];
   const args: unknown[] = [];
   const add = (sql: string, value: unknown) => {
@@ -387,8 +481,19 @@ export function listDecisions(db: Db, q: { callId?: string; caller?: string; dec
   };
   add("call_id = ?", q.callId);
   add("caller_id = ?", q.caller);
+  if (q.appCaller) {
+    const { product, instance } = q.appCaller;
+    if (product) {
+      where.push("caller_type = 'app' AND (caller_product = ? OR (caller_product IS NULL AND caller_id = ?))");
+      args.push(product, instance);
+    } else {
+      where.push("caller_type = 'app' AND caller_id = ?");
+      args.push(instance);
+    }
+  }
   add("decision = ?", q.decision);
   add("product = ?", q.product);
+  add("phase = ?", q.phase);
   add("id < ?", q.cursor);
   const rows = db.prepare(`SELECT * FROM decisions ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...args, q.limit + 1);
   const items = rows.slice(0, q.limit).map(decisionView);
@@ -451,7 +556,7 @@ export function fleetState(db: Db): FleetSyncState {
  */
 export function dropFleetCopy(db: Db, error: string): void {
   memoryError.set(db, error.slice(0, 280));
-  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false });
+  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false, agentHandles: false });
 }
 
 /** Set the stale flag without counting it (a sync re-arming itself). */
@@ -484,7 +589,7 @@ const add = (map: Map<string, string[]>, k: string, team: string) => {
  * from the same rows, once per sync, here), the last transaction writes teams and the sync row and swaps the in-memory
  * index. A crash in between leaves `usable = 0`: the copy is unavailable (fail closed) and the next read is a full one.
  */
-function* writeSteps(db: Db, model: FleetModel | null, state: { revision: number | null; error: string | null }, now: number): Generator<void, void, void> {
+function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, now: number): Generator<void, void, void> {
   if (!model) {
     db.transaction(() => {
       if (state.error === null) db.prepare("UPDATE fleet_sync SET revision = ?, synced_at = ?, stale = 0, error = NULL, usable = 1 WHERE id = 1").run(state.revision, now);
@@ -545,11 +650,21 @@ function* writeSteps(db: Db, model: FleetModel | null, state: { revision: number
   });
   const usable = state.error === null;
   if (usable) memoryError.delete(db);
-  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable });
+  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable, agentHandles: usable && state.agentHandles === true });
+}
+
+/**
+ * The sync row of a write. `agentHandles` (S3-1): the model was read WITH agent handles (a Governance that answered `accept`).
+ * Absent or false = without: a handle's holders may miss an agent, so recipient facts are unknown (see `FleetFacts.agentHandles`).
+ */
+export interface FleetWriteState {
+  revision: number | null;
+  error: string | null;
+  agentHandles?: boolean;
 }
 
 /** Synchronous write (one go): small models, errors, tests. */
-export function writeFleet(db: Db, model: FleetModel | null, state: { revision: number | null; error: string | null }, now = Date.now()): void {
+export function writeFleet(db: Db, model: FleetModel | null, state: FleetWriteState, now = Date.now()): void {
   for (const g = writeSteps(db, model, state, now); !g.next().done; );
 }
 
@@ -557,7 +672,7 @@ export function writeFleet(db: Db, model: FleetModel | null, state: { revision: 
 export async function writeFleetChunked(
   db: Db,
   model: FleetModel | null,
-  state: { revision: number | null; error: string | null },
+  state: FleetWriteState,
   now = Date.now(),
   pause: () => Promise<void> = () => new Promise((r) => setImmediate(r)),
 ): Promise<void> {
@@ -585,9 +700,15 @@ export interface FleetFacts {
   trust: Map<string, TrustEntry>;
   /** keys with at least one holder that is blocked, departed or removed */
   gone: Set<string>;
+  /**
+   * S3-1: the copy lists the agents' handles (read with `accept: ["agent_handles"]`). False (an older Governance, the 10-minute
+   * window after a 400 to `accept`, or a restart before the first full read): a `handle:` key may miss an agent holder, so the
+   * gate treats every recipient as UNKNOWN (deny/hold recipient rules apply, allow ones do not). Teams and trust stay usable.
+   */
+  agentHandles: boolean;
 }
 
-const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set() });
+const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set(), agentHandles: false });
 
 /**
  * The Fleet facts the gate may use; cached until the next sync (built at write time). `available` is false (and the maps
@@ -599,11 +720,12 @@ export function fleetFacts(db: Db, now = Date.now()): FleetFacts {
   let hit = fleetCache.get(db);
   if (!hit) {
     const st = fleetState(db);
-    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable };
+    // a copy loaded from the database (a restart) does not say whether it has agent handles: not until the next full read
+    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable, agentHandles: false };
     fleetCache.set(db, hit);
   }
   const available = hit.usable && hit.okAt != null && now - hit.okAt <= FLEET_MAX_STALE_MS;
-  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone } : NONE();
+  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone, agentHandles: hit.agentHandles } : NONE();
 }
 
 /** member key → team ids of members that count (empty while unavailable). */

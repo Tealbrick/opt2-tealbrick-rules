@@ -47,19 +47,37 @@ export interface ProductOps {
   tools: Map<string, string>;
 }
 export type Catalog = Map<string, ProductOps>;
+/** A release whose manifest the last good read could not use: skipped on its own, the rest of the catalog is unaffected (QA-C373-RU-3). */
+export interface SkippedRelease {
+  product: string;
+  version: string;
+  reason: string;
+}
+/** At most this many skipped releases are kept and shown. */
+export const MAX_SKIPPED = 50;
 export interface CatalogState {
   generatedAt: string | null;
   syncedAt: number | null;
   attemptedAt: number | null;
+  /** a failed read of the INDEX itself (its fetch, its schema or its signature); a bad single manifest is in `skipped`, not here */
   error: string | null;
+  skipped: SkippedRelease[];
 }
 
 // ── read model ───────────────────────────────────────────────────────────────
 const cache = new WeakMap<Db, Catalog | null>();
 
 export function catalogState(db: Db): CatalogState {
-  const r = db.prepare("SELECT generated_at, synced_at, attempted_at, error FROM catalog_sync WHERE id = 1").get();
+  const r = db.prepare("SELECT generated_at, synced_at, attempted_at, error, skipped FROM catalog_sync WHERE id = 1").get();
+  let skipped: SkippedRelease[] = [];
+  try {
+    const parsed = r?.skipped == null ? [] : (JSON.parse(String(r.skipped)) as unknown);
+    if (Array.isArray(parsed)) skipped = parsed.filter((s): s is SkippedRelease => !!s && typeof s.product === "string" && typeof s.version === "string" && typeof s.reason === "string").slice(0, MAX_SKIPPED);
+  } catch {
+    skipped = [];
+  }
   return {
+    skipped,
     generatedAt: r?.generated_at == null ? null : String(r.generated_at),
     syncedAt: r?.synced_at == null ? null : Number(r.synced_at),
     attemptedAt: r?.attempted_at == null ? null : Number(r.attempted_at),
@@ -124,9 +142,9 @@ export function summarize(m: Manifest): OpSummary[] {
 // ── writer checks ────────────────────────────────────────────────────────────
 export const CATALOG_MISSING = "Rules has not read the app catalog yet, so it cannot check app and operation names. Try again in a minute.";
 
-/** True when checking `spec` needs the catalog (it names apps or operations). */
+/** True when checking `spec` needs the catalog (it names apps, calling apps or operations). */
 export function needsCatalog(spec: RuleSpec): boolean {
-  return (spec.match.products?.length ?? 0) > 0 || (spec.match.operations?.length ?? 0) > 0;
+  return (spec.match.products?.length ?? 0) > 0 || (spec.match.operations?.length ?? 0) > 0 || (spec.match.callerProducts?.length ?? 0) > 0;
 }
 
 const q = (s: string) => `“${s}”`;
@@ -140,14 +158,17 @@ const agentOpIds = (p: ProductOps) => [...p.ops].filter(([, o]) => o.agent).map(
 export function catalogProblem(spec: RuleSpec, cat: Catalog | null): string {
   const m = spec.match;
   const products = m.products ?? [];
+  const callers = m.callerProducts ?? [];
   const ops = m.operations ?? [];
   const effects: readonly string[] = m.effects ?? [];
   const tools = m.tools ?? [];
   const bad = effects.find((e) => !(EFFECTS as readonly string[]).includes(e));
   if (bad) return `unknown effect ${q(bad)} (effects: ${EFFECTS.join(", ")})`;
-  if (products.length === 0 && ops.length === 0) return "";
+  if (products.length === 0 && ops.length === 0 && callers.length === 0) return "";
   if (!cat) return CATALOG_MISSING;
   for (const p of products) if (!cat.has(p)) return `unknown app ${q(p)}: no release of it is in the signed app catalog`;
+  // `callerProducts` names the CALLING app: a product that is not in the signed catalog can never be a verified caller, so the rule never matches
+  for (const p of callers) if (!cat.has(p)) return `unknown calling app ${q(p)} in callerProducts: no release of it is in the signed app catalog, so the rule would never match`;
   for (const op of ops) {
     for (const p of products) {
       const po = cat.get(p) as ProductOps;
@@ -236,12 +257,17 @@ export async function syncCatalog(db: Db, opts: SyncOptions = {}): Promise<void>
     let ok = false as boolean;
     for (let attempt = 0; attempt < 3 && !ok; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, (opts.retryMs ?? 3000) * attempt));
-      const text = await get(url);
-      const jws = (await get(url.replace(/\.json$/, ".jws"))).trim();
-      body = JSON.parse(text) as Body;
-      if (body?.schema !== "opt2.release-index/v2" || !Array.isArray(body.releases)) throw new Error("unexpected release index schema");
-      const v = verifyReleaseIndex(jws, body as never, { now: Math.floor(now() / 1000), keys: keySetFrom(opts.keys ?? RELEASE_KEYS, "tb:releases") });
-      ok = v.ok;
+      try {
+        const text = await get(url);
+        const jws = (await get(url.replace(/\.json$/, ".jws"))).trim();
+        body = JSON.parse(text) as Body;
+        if (body?.schema !== "opt2.release-index/v2" || !Array.isArray(body.releases)) throw new Error("unexpected release index schema");
+        const v = verifyReleaseIndex(jws, body as never, { now: Math.floor(now() / 1000), keys: keySetFrom(opts.keys ?? RELEASE_KEYS, "tb:releases") });
+        ok = v.ok;
+      } catch (e) {
+        // the two index assets are replaced when the registry publishes: one may answer 404 for a moment. Read again; the last attempt reports.
+        if (attempt === 2) throw e;
+      }
     }
     if (!ok || !body) throw new Error("release index signature refused");
     const known = new Set(db.prepare("SELECT digest FROM catalog_manifests").all().map((r) => String(r.digest)));
@@ -253,6 +279,8 @@ export async function syncCatalog(db: Db, opts: SyncOptions = {}): Promise<void>
       else todo.push(r);
     }
     const fetched: { digest: string; product: string; version: string; publishedAt: string; ops: OpSummary[] }[] = [];
+    // QA-C373-RU-3: a release whose manifest cannot be used is skipped on its own and remembered here (shown on the Rules page)
+    const skipped: SkippedRelease[] = [];
     let next = 0;
     const worker = async () => {
       while (next < todo.length) {
@@ -265,7 +293,9 @@ export async function syncCatalog(db: Db, opts: SyncOptions = {}): Promise<void>
           if (m.id !== r.product || m.version !== r.version) throw new Error("manifest identity mismatch");
           fetched.push({ digest: val.digest, product: m.id, version: m.version, publishedAt: String(r.publishedAt ?? ""), ops: summarize(m) });
         } catch (e) {
-          opts.log?.warn("catalog: release skipped", { product: String(r.product), version: String(r.version), reason: e instanceof Error ? e.message.slice(0, 120) : "unknown" });
+          const reason = e instanceof Error ? e.message.slice(0, 120) : "unknown";
+          opts.log?.warn("catalog: release skipped", { product: String(r.product), version: String(r.version), reason });
+          skipped.push({ product: String(r.product).slice(0, 40), version: String(r.version).slice(0, 40), reason });
         }
       }
     };
@@ -277,11 +307,12 @@ export async function syncCatalog(db: Db, opts: SyncOptions = {}): Promise<void>
         ins.run(f.digest, f.product, f.version, f.publishedAt, JSON.stringify(f.ops));
         listed.push(f.digest);
       }
-      db.prepare("UPDATE catalog_sync SET generated_at = ?, synced_at = ?, attempted_at = ?, digests = ?, error = NULL WHERE id = 1").run(
+      db.prepare("UPDATE catalog_sync SET generated_at = ?, synced_at = ?, attempted_at = ?, digests = ?, error = NULL, skipped = ? WHERE id = 1").run(
         typeof body?.generatedAt === "string" ? body.generatedAt : null,
         t,
         t,
         JSON.stringify(listed),
+        skipped.length ? JSON.stringify(skipped.sort((a, b) => `${a.product}@${a.version}`.localeCompare(`${b.product}@${b.version}`)).slice(0, MAX_SKIPPED)) : null,
       );
     });
   } catch (e) {

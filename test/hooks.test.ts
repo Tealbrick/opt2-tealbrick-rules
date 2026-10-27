@@ -41,7 +41,9 @@ test("gate: deny with reason and a trace keyed by callId; ungated read without a
   ]);
   const money = traces.find((t) => t.callId === "cal_money");
   assert.equal(money?.ruleTitle, "Team X: nothing with money");
-  assert.deepEqual(money?.onBehalfOf, { kind: "channel_sender", id: "slack:u777", verified: false, teams: ["tm_x"], trust: ["trusted"] });
+  // S4-3 (review 0.5.0): a channel-sender claim id is a handle; the trace keeps only its kind
+  assert.deepEqual(money?.onBehalfOf, { kind: "channel_sender", handle: true, verified: false, teams: ["tm_x"], trust: ["trusted"] });
+  assert.doesNotMatch(JSON.stringify(traces), /slack:u777/i);
 });
 
 test("gate fails closed: over budget, aborted signal, store failure", async () => {
@@ -149,7 +151,7 @@ test("Fleet fail safe: refusal clears at once, transient keeps ≤ 10 min then c
     // still retrying: a later success restores the copy (full read, no stale sinceRevision)
     err = null;
     await syncFleet(db, async (_p: string, _o: string, input: unknown) => {
-      assert.deepEqual(input, {}, "after a clear the next read is a full one");
+      assert.deepEqual(input, { accept: ["agent_handles"] }, "after a clear the next read is a full one");
       return { status: "ok" as const, output: feed() };
     });
     assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);
