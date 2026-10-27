@@ -18,6 +18,9 @@
 //   "talk about work things only").
 // - decision: hold ("hold", "wait for me", "ask me", "needs my approval"), refuse ("block", "never", "may not", "no …"),
 //   allow ("allow", "may", "can").
+// - negation (review 0.5.0 S2-1): "do not allow", "never let", "may not" … refuse; "…, not pay", "… but not delete", "… without
+//   paying", "… except money" refuse those effects BEFORE the allow of the same sentence. Any other "not", "never", "no", "without",
+//   "except", "unless" … (with a name, a hold, a condition) sends the sentence to `unmatched`: words that forbid never become an allow.
 // A name that is not found or that two agents (or teams) share is never guessed: the sentence goes to `unmatched` with a
 // plain hint. So does anything the parser cannot read ("Ask your agent to draft this rule").
 import { normalizeTag } from "@opt2-tealbrick/manifest";
@@ -152,9 +155,21 @@ const EFFECT_WORDS: [Effect, RegExp][] = [
 ];
 const HOLD = /\b(?:hold|holds|wait for me|ask me|check with me|needs? my (?:approval|ok|okay|review)|requires? my (?:approval|review)|for my (?:approval|review)|with my approval|approve (?:it )?first)\b/;
 /** strong refusal verbs (a fragment with only this still makes a rule: "Block Hermes") */
-const DENY_STRONG = /\b(?:block|blocks|blocked|never|may not|must not|can ?not|can't|cannot|not allowed|deny|denied|refuse|refuses|refused|forbid|forbids|forbidden|prevent|stop|don't let|do not let)\b/;
+const DENY_STRONG = /\b(?:block|blocks|blocked|never|may not|must not|mustn't|should not|shouldn't|can ?not|can't|cannot|not allowed|not permitted|deny|denied|refuse|refuses|refused|forbid|forbids|forbidden|prevent|stop|don't let|do not let|don't allow|do not allow|don't permit|do not permit)\b/;
 const DENY_WEAK = /\bno\b/;
 const ALLOW = /\b(?:allow|allows|allowed|may|can|permit|permits|permitted|let)\b/;
+/**
+ * Negation and exception words (review 0.5.0 S2-1). The parser never ignores one: it is read only as part of a refusal phrase
+ * (DENY_STRONG, "no …"), as a leading "not / without / except …" that refuses the effects it names (NEG_MARK), or inside memory
+ * narrowing; any other one sends the whole sentence to `unmatched`, so an allow is never made from words that forbid.
+ */
+const NEG = /\b(?:not|never|no|without|except|unless|nothing|none|nobody|neither|nor|cannot)\b|n't\b|\bother than\b|\bapart from\b|\bbut for\b/;
+/** A fragment that starts with this and names only effects refuses them ("…, not pay", "… but not delete", "… without paying", "… except money"). */
+const NEG_MARK = /^\s*(?:not|without|except(?:\s+for)?|other\s+than|apart\s+from)\b/;
+const DENY_STRONG_ALL = new RegExp(DENY_STRONG.source, "g");
+/** The negation words of `s` that no refusal phrase reads. */
+const strayNegation = (s: string): boolean => NEG.test(s.replace(DENY_STRONG_ALL, " ").replace(/\bno\b/g, " "));
+const NEGATION_HINT = "Rules could not read a “not”, “never”, “without”, “except” or “unless” in it, and never turns words that forbid into an allow rule. Say what to refuse in its own sentence, for example “Block Hermes from paying.”";
 
 /** Words that carry no meaning of their own here (anything else that is left over is reported). */
 const FILLER = new Set(
@@ -164,7 +179,7 @@ const FILLER = new Set(
     "you you're your yours i i'm me my we our us someone anyone everyone somebody anybody people person member members when if " +
     "whenever once that which who whom only involved involving tag tags tagged tagging mention mentions mentioned asks asked request " +
     "requests requested behalf do does doing make makes anything everything something ever always first before approval review ok " +
-    "okay let lets without this these those there here have has had get gets go goes kind sort talk talks talking speak about " +
+    "okay let lets this these those there here have has had get gets go goes kind sort talk talks talking speak about " +
     "own app apps their s should need needs shall will would want wants rule rules set please work-related related"
   ).split(" "),
 );
@@ -437,6 +452,7 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
       body = low.slice(at).replace(/^(?:[:,]|then)/, "");
     }
   }
+  if (strayNegation(cond)) return fail(NEGATION_HINT);
   const condProducts = [...cond.matchAll(TOKEN)].filter((m) => kindAt(Number(m[1])) === "app").map((m) => (mentions[Number(m[1])] as Mention).id);
 
   const nar = narrowingOf(body);
@@ -445,10 +461,25 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
   const leftovers: string[] = [];
   let last: Decision | null = null;
   let missingCue = "";
-  for (const frag of nar.rest.split(/\s*[,:]\s*|\s+(?:and|or|but|also|plus|then)\s+/)) {
+  // an exception word starts its own fragment ("send messages without paying" → "send messages" + "without paying")
+  for (const frag of nar.rest.split(/\s*[,:]\s*|\s+(?:and|or|but|also|plus|then)\s+|\s+(?=(?:without|except|unless|other\s+than|apart\s+from)\b)/)) {
     const products = [...new Set([...condProducts, ...[...frag.matchAll(TOKEN)].filter((m) => kindAt(Number(m[1])) === "app").map((m) => (mentions[Number(m[1])] as Mention).id)])];
     const effects = effectsOf(frag.replace(TOKEN, " "));
     const cue = cueOf(frag.replace(TOKEN, " "));
+    // S2-1: a negation is read exactly or the sentence is not read at all
+    if (NEG.test(frag)) {
+      const plain = frag.replace(TOKEN, " ");
+      const marked = NEG_MARK.exec(plain);
+      if (cue === null && marked && !/@m\d+@/.test(frag) && effects.length && !NEG.test(plain.slice(marked[0].length))) {
+        // "…, not pay" / "… without paying": refuse those effects, in the place of the part it excepts from
+        const prevPlace = directives.at(-1)?.products ?? condProducts;
+        directives.push({ decision: "deny", effects, products: prevPlace });
+        leftovers.push(...leftoverWords(plain.slice(marked[0].length)));
+        last = "deny";
+        continue;
+      }
+      if (cue === null || cue.decision !== "deny" || strayNegation(plain)) return fail(NEGATION_HINT);
+    }
     leftovers.push(...leftoverWords(frag));
     const ownProducts = products.length > condProducts.length;
     if (effects.length || ownProducts) {
