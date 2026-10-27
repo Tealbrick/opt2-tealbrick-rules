@@ -270,14 +270,47 @@ function Editor({
           </div>
         </section>
       ) : null}
-      <Preview candidate={s} dir={dir} />
+      <Preview candidate={s} ruleId={initial?.id} dir={dir} />
       {initial && onRestore ? <RuleHistory ruleId={initial.id} dir={dir} onRestore={onRestore} /> : null}
     </Dialog>
   );
 }
 
+/** How many rows "Check against recent calls" lists (the answer counts all of them). */
+const RECENT_SHOWN = 20;
+
+/** D11: the calls the unsaved rule would have matched: time, caller, app and operation, before → after. */
+function RecentCalls({ result, dir }: { result: Out<"rules_preview_recent">; dir: Directory }) {
+  const shown = result.rows.slice(0, RECENT_SHOWN);
+  return (
+    <div className="tb-stack" role="status" aria-label="Recent calls">
+      {result.cannotCheck ? (
+        <Notice tone="live">{result.cannotCheck}</Notice>
+      ) : (
+        <p>
+          Of the last {result.checked} recorded {result.checked === 1 ? "call" : "calls"}, this rule would have matched {result.matched}. The decision would change for {result.changed}.
+        </p>
+      )}
+      {shown.length ? (
+        <ol className="rules-trace tb-list">
+          {shown.map((r) => (
+            <li key={r.id}>
+              <span className="tb-hint">{when(r.at)}</span> · {r.caller.type === "agent" ? dir.agentName(r.caller.id) : (r.caller.product ?? "an app whose product can’t be verified")} · {r.target.product}.{r.target.op}
+              {r.target.tool ? ` (${r.target.tool})` : ""} · <strong>{r.before.decision}</strong> ({r.before.by}) → <strong>{r.after.decision}</strong> ({r.after.by}){r.changed ? "" : ", no change"}
+            </li>
+          ))}
+        </ol>
+      ) : result.cannotCheck ? null : (
+        <p className="tb-soft">None of the recorded calls would have matched this rule.</p>
+      )}
+      {result.rows.length > shown.length ? <p className="tb-hint">Showing the newest {shown.length} of {result.rows.length}.</p> : null}
+      <p className="tb-hint">{result.note}</p>
+    </div>
+  );
+}
+
 /** Dry run: which rule would decide a sample call (with the edited rule included). */
-function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
+function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: string; dir: Directory }) {
   const [caller, setCaller] = useState("");
   const [appProduct, setAppProduct] = useState("");
   // C373 D2c: the verified workflow id of the calling app ("" = none); sent only when it is a workflow id, like the bridge does
@@ -297,6 +330,24 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [result, setResult] = useState<Out<"rules_preview"> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // D11: the unsaved rule over the last recorded calls (rules_preview_recent); nothing is stored
+  const [recent, setRecent] = useState<Out<"rules_preview_recent"> | null>(null);
+  const [recentError, setRecentError] = useState("");
+  const [recentBusy, setRecentBusy] = useState(false);
+  const ready = !!candidate?.title && !!candidate.outcome.reason;
+  const checkRecent = async () => {
+    if (!candidate || !ready || recentBusy) return;
+    setRecentBusy(true);
+    setRecentError("");
+    try {
+      setRecent(await run("rules_preview_recent", { rule: candidate, ...(ruleId ? { ruleId } : {}), limit: 200 }));
+    } catch (e) {
+      setRecent(null);
+      setRecentError(errorText(e));
+    } finally {
+      setRecentBusy(false);
+    }
+  };
   const go = async () => {
     setError("");
     setBusy(true);
@@ -374,7 +425,18 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <Button onClick={() => void go()} disabled={busy}>
           {busy ? "Running" : "Run dry run"}
         </Button>
+        {candidate ? (
+          <Button onClick={() => void checkRecent()} disabled={!ready || recentBusy}>
+            {recentBusy ? "Checking" : "Check against recent calls"}
+          </Button>
+        ) : null}
       </div>
+      {recentError ? (
+        <Notice tone="needs-you" role="alert">
+          {recentError}
+        </Notice>
+      ) : null}
+      {recent ? <RecentCalls result={recent} dir={dir} /> : null}
       {error ? (
         <Notice tone="needs-you" role="alert">
           {error}

@@ -305,3 +305,72 @@ describe("D12: allowPlan and readAllowQuery (pure)", () => {
     assert.equal(holdAllow.readAllowQuery(allowQuery({ agent: "" })).kind, "bad");
   });
 });
+
+describe("D11: Check against recent calls", () => {
+  const rowOf = (i: number, over: Record<string, unknown> = {}) => ({
+    id: `dec_${String(i).padStart(3, "0")}`,
+    at: `2026-10-27T09:${String(i % 60).padStart(2, "0")}:00.000Z`,
+    caller: i % 2 ? { type: "agent", id: AGENT, product: null } : { type: "app", id: "ins_1", product: "evolution" },
+    target: { product: "connect", op: "buzz_dm", effect: "outward" },
+    before: { decision: "allow", by: "Permissive mode" },
+    after: { decision: "hold", by: "Sends wait" },
+    changed: true,
+    ...over,
+  });
+  const openEditor = async (m: { host: Element }) => {
+    await click(button(m.host, "New rule"));
+    const editor = dialog("New rule");
+    await typeInto(inputOf(editor, "Title"), "Sends wait");
+    await typeInto(inputOf(editor, "Reason"), "Sends wait for me");
+    return editor;
+  };
+
+  it("sends the unsaved rule, lists the newest 20 rows with caller, app, operation and before to after, and stores nothing", async () => {
+    reset();
+    stub.outputs.rules_preview_recent = { checked: 80, matched: 25, changed: 24, cannotCheck: null, note: "Only calls Rules recorded are checked.", rows: Array.from({ length: 25 }, (_, i) => rowOf(i, i === 3 ? { changed: false, after: { decision: "allow", by: "Permissive mode" } } : {})) };
+    const m = await mount(h(rules.RulesPage));
+    const editor = await openEditor(m);
+    assert.equal(callsOf("rules_preview_recent").length, 0, "nothing runs before the button");
+    await click(button(editor, "Check against recent calls"));
+    const calls = callsOf("rules_preview_recent");
+    assert.equal(calls.length, 1);
+    const sent = calls[0]?.input as { rule: { title: string }; ruleId?: string; limit: number };
+    assert.equal(sent.rule.title, "Sends wait");
+    assert.equal(sent.ruleId, undefined, "a new rule replaces nothing");
+    const box = editor.querySelector('[aria-label="Recent calls"]') as HTMLElement;
+    assert.match(textOf(box), /Of the last 80 recorded calls, this rule would have matched 25\. The decision would change for 24\./);
+    const rows = [...box.querySelectorAll("li")];
+    assert.equal(rows.length, 20);
+    assert.match(textOf(rows[0] as Element), /evolution · connect\.buzz_dm · allow \(Permissive mode\) → hold \(Sends wait\)/);
+    assert.match(textOf(rows[1] as Element), /Front desk · connect\.buzz_dm/);
+    assert.match(textOf(rows[3] as Element), /no change/);
+    assert.match(textOf(box), /Showing the newest 20 of 25/);
+    assert.equal(callsOf("rules_set").length, 0);
+    await m.unmount();
+  });
+
+  it("an existing rule passes its id, so its stored version is replaced; a rule that can't be checked says why; the button waits for title and reason", async () => {
+    reset();
+    stub.outputs.rules_preview_recent = { checked: 0, matched: 0, changed: 0, cannotCheck: "This rule names recipients. The decision log keeps only how many recipients a call had.", note: "n", rows: [] };
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "New rule"));
+    assert.ok(button(dialog("New rule"), "Check against recent calls").disabled, "no title and reason yet");
+    await click(button(dialog("New rule"), "Cancel"));
+    await click(button(m.host, "Edit"));
+    const editor = dialog("Edit rule (revision 1)");
+    await click(button(editor, "Check against recent calls"));
+    assert.equal((callsOf("rules_preview_recent").at(0)?.input as { ruleId?: string } | undefined)?.ruleId, "rul_hold");
+    assert.match(textOf(editor.querySelector('[aria-label="Recent calls"]') as Element), /keeps only how many recipients/);
+    await m.unmount();
+  });
+
+  it("a failed check shows the plain error", async () => {
+    reset();
+    stub.fail.rules_preview_recent = { status: 400, code: "input_invalid", message: "app “nosuch” does not declare operation “x”" };
+    const m = await mount(h(rules.RulesPage));
+    const editor = await openEditor(m);
+    await click(button(editor, "Check against recent calls"));
+    assert.match(textOf(editor), /does not declare operation/);
+    await m.unmount();
+  });
+});

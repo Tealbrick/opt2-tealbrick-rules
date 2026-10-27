@@ -449,7 +449,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
  */
 export function listDecisions(
   db: Db,
-  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; cursor?: string; limit: number },
+  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; phase?: TraceInput["phase"]; cursor?: string; limit: number },
 ): { items: DecisionView[]; nextCursor: string | null } {
   const where: string[] = [];
   const args: unknown[] = [];
@@ -472,6 +472,7 @@ export function listDecisions(
   }
   add("decision = ?", q.decision);
   add("product = ?", q.product);
+  add("phase = ?", q.phase);
   add("id < ?", q.cursor);
   const rows = db.prepare(`SELECT * FROM decisions ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...args, q.limit + 1);
   const items = rows.slice(0, q.limit).map(decisionView);

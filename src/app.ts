@@ -40,6 +40,8 @@ import {
   type RulesListOutput,
   type RulesPreviewInput,
   type RulesPreviewOutput,
+  type RulesPreviewRecentInput,
+  type RulesPreviewRecentOutput,
   type RulesSetInput,
   type RulesSetOutput,
 } from "#kit";
@@ -52,6 +54,7 @@ import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECI
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
+import { previewRecent } from "./recent.ts";
 import {
   type DraftView,
   decideDraft,
@@ -330,6 +333,16 @@ export const handlers = {
         workflowUnavailable: v.closedOnWorkflow,
         steps: explain(rules, facts),
       };
+    },
+  }),
+  [OP.rulesPreviewRecent]: op<RulesPreviewRecentInput, RulesPreviewRecentOutput>({
+    // D11 (C373): the unsaved rule over the last recorded gate decisions (what they keep, nothing else); stores nothing.
+    async run(input, ctx) {
+      person(ctx);
+      await catalogFor(ctx, [input.rule]);
+      const p = ruleProblem(ctx.db, input.rule);
+      if (p) throw new TbError("input_invalid", p, 400);
+      return previewRecent(ctx.db, { candidate: input.rule, replaces: input.ruleId, limit: input.limit }, currentMode(ctx.db)) as RulesPreviewRecentOutput;
     },
   }),
   [OP.decisionsList]: op<DecisionsListInput, DecisionsListOutput>({
