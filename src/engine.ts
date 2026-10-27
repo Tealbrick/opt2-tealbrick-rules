@@ -4,7 +4,8 @@
 // Semantics (harvested from the v1 policy engine, new structure):
 // - A rule matches when every criterion it names matches (an absent or empty list = any).
 // - Rules are ordered by priority (lower first), then newest update, then id. The FIRST matching rule decides.
-// - No matching rule = allow (C84). Free/Bound caps and held families stay the floor in the target app.
+// - No matching rule = the workspace default mode decides (C373c, src/mode.ts): Permissive allow (C84, the default),
+//   Verification hold, Closed refuse. Free/Bound caps and held families stay the floor in the target app.
 // - An `onBehalfOf` claim that is not verified may only NARROW (C82): the decision is the stricter of the
 //   evaluation with the claim and the evaluation without any claim-dependent rule; narrowing lists are merged.
 // - Fleet facts (teams of the caller or of the claimed requester, trust of the claimed requester) come from the local
@@ -31,6 +32,7 @@
 //   applies). Both gaps share the closed/skipped machinery and the severity order below.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
+import { type DefaultMode, type ExemptionId, modeVerdict } from "./mode.ts";
 
 export type RuleSpec = RulesSetInputRuleSpec;
 export type Decision = RuleSpec["outcome"]["decision"];
@@ -130,6 +132,8 @@ export interface Verdict {
   toolUnknown: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
   narrowingRuleId: string | null;
+  /** C373c: set when NO rule matched: the default mode that decided, or the built-in exemption that kept the mode out (src/mode.ts) */
+  byMode?: { mode: DefaultMode; exemption: ExemptionId | null };
 }
 
 export interface Step {
@@ -326,9 +330,10 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
   return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, skippedNarrowing, skippedRuleId, skipFleet, skipProduct };
 }
 
-function verdictOf(hit: Hit): Verdict {
+function verdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
   const rule = hit.rule;
-  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
+  // No rule matched: the workspace default mode decides (C373c, src/mode.ts); Permissive keeps this allow.
+  if (!rule) return modeVerdict({ decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, narrowingRuleId: hit.skippedRuleId }, facts, mode);
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -404,14 +409,14 @@ export function mergeNarrowing(a: Narrowing | null, b: Narrowing | null): Narrow
   return { ...(tags ? { memoryTags: tags } : {}), ...(sets ? { deepDatasets: sets } : {}) };
 }
 
-/** The decision for one call. `rules` must already be in evaluation order (see `order`). */
-export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
-  const withClaim = verdictOf(firstMatch(ordered, facts, true));
+/** The decision for one call. `rules` must already be in evaluation order (see `order`). `mode` decides a call no rule matches (C373c). */
+export function evaluate(ordered: readonly Rule[], facts: CallFacts, mode: DefaultMode = "permissive"): Verdict {
+  const withClaim = verdictOf(firstMatch(ordered, facts, true), facts, mode);
   if (!facts.claim || facts.claimVerified) return withClaim;
   // Unverified claim: never wider than the decision without claim-dependent rules (C82). Always compare, also when the
   // decisive rule does not name the claim: a claim rule that matches ends the scan early, so an earlier closed hold
   // (Fleet facts unavailable) could decide where the scan without the claim reaches a later deny.
-  const base = verdictOf(firstMatch(ordered, facts, false));
+  const base = verdictOf(firstMatch(ordered, facts, false), facts, mode);
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
   return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct };
@@ -435,7 +440,7 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
 
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown;
+  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.decision !== "allow";
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */

@@ -15,6 +15,10 @@ import {
   type DraftsListOutput,
   type FleetStatusInput,
   type FleetStatusOutput,
+  type ModeGetInput,
+  type ModeGetOutput,
+  type ModeSetInput,
+  type ModeSetOutput,
   OP,
   type OpId,
   type RuleDraftSubmitInput,
@@ -38,6 +42,8 @@ import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type Syn
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
+import { decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
+import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import {
   type DraftView,
   decideDraft,
@@ -132,7 +138,10 @@ export const handlers = {
         // Stored rules that can never match stay (never deleted) and are flagged; the gate simply never matches them.
         rules: rules.map((r) => ({ ...r, problem: ruleProblem(ctx.db, r.spec) || null })),
         holdSupported: HOLD_SUPPORTED,
-        defaultDecision: "allow",
+        // the default mode (C373c) decides a call no rule matches; its built-in exemptions are shown as read-only system lines
+        defaultDecision: ({ permissive: "allow", verification: "hold", closed: "deny" } as const)[currentMode(ctx.db)],
+        mode: modeState(ctx.db),
+        system: EXEMPTIONS.map((e) => ({ ...e })),
         catalog: { generatedAt: st.generatedAt, syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(), error: st.error, products: catalogOf(ctx.db)?.size ?? 0, productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort() },
       };
     },
@@ -188,8 +197,14 @@ export const handlers = {
         // the dry run's product is typed in by the owner; it passes the same validity rule as a bridge-sent one
         callerProduct: input.call.caller.type === "app" && validProduct(input.call.caller.product) ? input.call.caller.product : null,
       };
-      const v = evaluate(rules, facts);
+      // the dry run may try another default mode than the current one (C373c); nothing is stored
+      const mode = input.mode ?? currentMode(ctx.db);
+      const v = evaluate(rules, facts, mode);
       return {
+        mode,
+        decidedBy: decidedBy(v),
+        exemption: v.byMode?.exemption ?? null,
+        modeNote: modeNote(v),
         decision: v.decision,
         answered: gateAnswer(v).answered,
         reason: v.reason,
@@ -244,6 +259,19 @@ export const handlers = {
       };
     },
   }),
+  [OP.modeGet]: op<ModeGetInput, ModeGetOutput>({
+    async run(_input, ctx) {
+      person(ctx);
+      return { ...modeState(ctx.db), history: modeHistory(ctx.db), system: EXEMPTIONS.map((e) => ({ ...e })) };
+    },
+  }),
+  [OP.modeSet]: op<ModeSetInput, ModeSetOutput>({
+    // Owner only (person op; agents never reach it). Looser needs confirm: true (409 confirm_required); every change is recorded.
+    async run(input, ctx) {
+      const actor = person(ctx);
+      return setMode(ctx.db, { mode: input.mode, confirm: input.confirm, actor });
+    },
+  }),
   [OP.rulesExplain]: op<RulesExplainInput, RulesExplainOutput>({
     // A caller sees only its own calls' decisions (the identity is bound by the grant, never by input).
     async run(input, ctx) {
@@ -264,6 +292,8 @@ export const handlers = {
           ruleTitle: d.ruleTitle,
           fleetUnavailable: d.detail?.fleetUnavailable === true,
           callerProductUnavailable: d.detail?.callerProductUnavailable === true,
+          // C373c: a rule, or the workspace default mode (a row with neither is a Permissive no-match row)
+          ...traceDecidedBy(d.ruleId, d.detail),
         })),
       };
     },

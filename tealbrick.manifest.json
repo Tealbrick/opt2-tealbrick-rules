@@ -72,7 +72,7 @@
       "idempotency": "none",
       "id": "rules_list",
       "title": "List rules",
-      "description": "List the workspace rules in evaluation order (priority, then newest first).",
+      "description": "List the workspace rules in evaluation order (priority, then newest first), the default mode that decides a call no rule matches, and the built-in system exemptions of that mode (read-only).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -90,7 +90,9 @@
           "rules",
           "holdSupported",
           "defaultDecision",
-          "catalog"
+          "catalog",
+          "mode",
+          "system"
         ],
         "properties": {
           "rules": {
@@ -104,7 +106,11 @@
             "type": "boolean"
           },
           "defaultDecision": {
-            "const": "allow"
+            "enum": [
+              "allow",
+              "deny",
+              "hold"
+            ]
           },
           "catalog": {
             "type": "object",
@@ -146,6 +152,60 @@
                 "items": {
                   "type": "string",
                   "maxLength": 40
+                }
+              }
+            }
+          },
+          "mode": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "changedAt",
+              "changedBy"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "permissive",
+                  "verification",
+                  "closed"
+                ]
+              },
+              "changedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "changedBy": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "system": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "text"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
                 }
               }
             }
@@ -1505,7 +1565,7 @@
       "idempotency": "none",
       "id": "rules_preview",
       "title": "Preview a decision",
-      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not. For an app caller, pass its product (omit it to try a call whose product cannot be verified: deny and hold rules with callerProducts apply, allow rules with it do not).",
+      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not. For an app caller, pass its product (omit it to try a call whose product cannot be verified: deny and hold rules with callerProducts apply, allow rules with it do not). When no rule matches, the answer says what the default mode would do (pass `mode` to compare the three modes).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1618,6 +1678,14 @@
           },
           "candidate": {
             "$ref": "#/$defs/RuleSpec"
+          },
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ],
+            "description": "Try the call under this default mode instead of the current one (dry run only; nothing changes)."
           }
         },
         "$defs": {
@@ -1887,7 +1955,11 @@
           "trust",
           "fleetAvailable",
           "callerProductUnavailable",
-          "steps"
+          "steps",
+          "mode",
+          "decidedBy",
+          "exemption",
+          "modeNote"
         ],
         "properties": {
           "decision": {
@@ -2038,6 +2110,33 @@
                 }
               }
             }
+          },
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "decidedBy": {
+            "enum": [
+              "rule",
+              "mode",
+              "exemption"
+            ]
+          },
+          "exemption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modeNote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300
           }
         }
       }
@@ -3215,9 +3314,192 @@
       }
     },
     {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "mode_get",
+      "title": "Default mode and its history",
+      "description": "The default mode for calls that match no rule, who changed it last, its change history (newest first) and the built-in system exemptions.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "changedAt",
+          "changedBy",
+          "history",
+          "system"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "changedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "at",
+                "actor",
+                "from",
+                "to"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "actor": {
+                  "type": "string"
+                },
+                "from": {
+                  "enum": [
+                    "permissive",
+                    "verification",
+                    "closed"
+                  ]
+                },
+                "to": {
+                  "enum": [
+                    "permissive",
+                    "verification",
+                    "closed"
+                  ]
+                }
+              }
+            }
+          },
+          "system": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "text"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "mode_set",
+      "title": "Set the default mode",
+      "description": "Set what happens to a call that matches no rule: permissive (allow), verification (hold for the owner) or closed (refuse). A move to a looser mode (closed, then verification, then permissive) needs confirm: true. Setting the current mode again changes nothing.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "confirm": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "previous",
+          "changed",
+          "changedAt",
+          "changedBy"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "previous": {
+            "enum": [
+              "permissive",
+              "verification",
+              "closed"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "changedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "rules_explain",
       "title": "Explain my decisions",
-      "description": "Why Rules allowed, refused or held your calls. Pass the callId of one call, or get your latest decisions.",
+      "description": "Why Rules allowed, refused or held your calls. Pass the callId of one call, or get your latest decisions. `decidedBy` says whether a rule or the workspace default mode (`mode`: permissive, verification or closed) decided.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3259,7 +3541,9 @@
                 "ruleId",
                 "ruleTitle",
                 "fleetUnavailable",
-                "callerProductUnavailable"
+                "callerProductUnavailable",
+                "decidedBy",
+                "mode"
               ],
               "properties": {
                 "callId": {
@@ -3313,6 +3597,27 @@
                 },
                 "callerProductUnavailable": {
                   "type": "boolean"
+                },
+                "decidedBy": {
+                  "enum": [
+                    "rule",
+                    "mode",
+                    "exemption"
+                  ]
+                },
+                "mode": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "permissive",
+                        "verification",
+                        "closed"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }

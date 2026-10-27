@@ -29,7 +29,7 @@ export const DECISION_LABEL = { allow: "Allow", deny: "Refuse", hold: "Hold for 
 const SIGNED_OUT = "You’re signed out. Open this app from Portal to sign in again.";
 const GENERIC = "Something went wrong. Try again in a moment.";
 /** The app’s own refusals: their text already says what is wrong and what to do (src/store.ts), so it is shown as it is. */
-const OWN_REFUSALS = new Set(["revision_conflict", "input_invalid", "draft_never_matches", "draft_decided", "too_many_rules", "too_many_drafts", "catalog_unavailable", "not_found", "forbidden"]);
+const OWN_REFUSALS = new Set(["revision_conflict", "input_invalid", "draft_never_matches", "draft_decided", "too_many_rules", "too_many_drafts", "catalog_unavailable", "not_found", "forbidden", "confirm_required"]);
 /** Plain sentence for a failed call (RUL-01, RUL-14). Anything that is not the app’s own refusal gets a standard sentence, never raw upstream text. */
 export function errorText(e: unknown): string {
   const err = (e ?? {}) as { code?: unknown; httpStatus?: unknown; message?: unknown };
