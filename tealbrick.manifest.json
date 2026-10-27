@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.1.17"
@@ -113,7 +113,8 @@
               "generatedAt",
               "syncedAt",
               "error",
-              "products"
+              "products",
+              "productIds"
             ],
             "properties": {
               "generatedAt": {
@@ -138,6 +139,14 @@
               "products": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "productIds": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
               }
             }
           }
@@ -290,6 +299,17 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
+                    }
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
                   "onBehalfOf": {
@@ -648,6 +668,17 @@
                       "maxLength": 64
                     }
                   },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
                   "onBehalfOf": {
                     "type": "object",
                     "additionalProperties": false,
@@ -914,6 +945,17 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
+                    }
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
                   "onBehalfOf": {
@@ -1200,6 +1242,17 @@
                       "maxLength": 64
                     }
                   },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
                   "onBehalfOf": {
                     "type": "object",
                     "additionalProperties": false,
@@ -1452,7 +1505,7 @@
       "idempotency": "none",
       "id": "rules_preview",
       "title": "Preview a decision",
-      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not.",
+      "description": "Dry run: which rule would decide this call, and why. Optionally with an unsaved rule. The answer names the Fleet facts used (the caller's teams, the claimed requester's teams and trust) and whether they were available; when they are not, deny and hold rules that name them apply and allow rules that name them do not. For an app caller, pass its product (omit it to try a call whose product cannot be verified: deny and hold rules with callerProducts apply, allow rules with it do not).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1492,6 +1545,12 @@
                       "free",
                       "bound"
                     ]
+                  },
+                  "product": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40,
+                    "pattern": "^[a-z0-9][a-z0-9_-]*$"
                   }
                 }
               },
@@ -1668,6 +1727,17 @@
                       "maxLength": 64
                     }
                   },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
                   "onBehalfOf": {
                     "type": "object",
                     "additionalProperties": false,
@@ -1816,6 +1886,7 @@
           "callerTeams",
           "trust",
           "fleetAvailable",
+          "callerProductUnavailable",
           "steps"
         ],
         "properties": {
@@ -1935,6 +2006,9 @@
             ]
           },
           "fleetAvailable": {
+            "type": "boolean"
+          },
+          "callerProductUnavailable": {
             "type": "boolean"
           },
           "steps": {
@@ -2089,7 +2163,8 @@
                 "required": [
                   "type",
                   "id",
-                  "mode"
+                  "mode",
+                  "product"
                 ],
                 "properties": {
                   "type": {
@@ -2099,6 +2174,12 @@
                     "type": "string"
                   },
                   "mode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "product": {
                     "type": [
                       "string",
                       "null"
@@ -2468,6 +2549,17 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
+                    }
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
                   "onBehalfOf": {
@@ -2885,6 +2977,17 @@
                       "maxLength": 64
                     }
                   },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
                   "onBehalfOf": {
                     "type": "object",
                     "additionalProperties": false,
@@ -3155,7 +3258,8 @@
                 "reason",
                 "ruleId",
                 "ruleTitle",
-                "fleetUnavailable"
+                "fleetUnavailable",
+                "callerProductUnavailable"
               ],
               "properties": {
                 "callId": {
@@ -3205,6 +3309,9 @@
                   ]
                 },
                 "fleetUnavailable": {
+                  "type": "boolean"
+                },
+                "callerProductUnavailable": {
                   "type": "boolean"
                 }
               }
@@ -3356,6 +3463,17 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 64
+                    }
+                  },
+                  "callerProducts": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
                   "onBehalfOf": {

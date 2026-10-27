@@ -14,6 +14,12 @@ export function run<K extends keyof PersonOps>(op: K, input: In<K>): Promise<Out
   return callOp<Out<K>>(op, input as never);
 }
 
+/**
+ * Same rule as the gate's `validProduct` (src/engine.ts, which the browser build does not load): a product id is `[a-z0-9][a-z0-9_-]*`,
+ * at most 40 characters, NOT trimmed. The dry run sends a product only when it passes, like the gate treats a bridge-sent one.
+ */
+export const verifiableProduct = (p: string): boolean => p.length <= 40 && /^[a-z0-9][a-z0-9_-]*$/.test(p);
+
 export const EFFECTS = ["read", "write", "outward", "destructive", "money"] as const;
 /** Status pill of a decision (allow = live, refuse = needs you, hold = busy). */
 export const DECISION_STATUS = { allow: "live", deny: "needs-you", hold: "busy", narrow: "live", redact: "live" } as const;
@@ -69,6 +75,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.tools?.length) parts.push(`tools ${m.tools.join(", ")}`);
   if (m.effects?.length) parts.push(`effects ${m.effects.join(", ")}`);
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
+  if (m.callerProducts?.length) parts.push(`calls from app ${m.callerProducts.join(", ")}`);
   const o = m.onBehalfOf;
   if (o?.teams?.length) parts.push(`on behalf of team ${o.teams.map(teamName).join(", ")}`);
   if (o?.ids?.length) parts.push(`on behalf of ${o.ids.join(", ")}`);

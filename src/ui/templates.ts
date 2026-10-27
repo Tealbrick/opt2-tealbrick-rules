@@ -5,14 +5,14 @@
 import type { RuleSpec } from "./api.ts";
 
 /** The one thing a template asks for before it fills the editor. */
-export type TemplateParam = "agent" | "team";
+export type TemplateParam = "agent" | "team" | "app";
 
 export interface RuleTemplate {
-  id: "hold-agent-outward" | "hold-money" | "deny-bound-destructive" | "hold-team-outward";
+  id: "hold-agent-outward" | "hold-money" | "deny-bound-destructive" | "hold-team-outward" | "hold-app-outward";
   title: string;
   /** one sentence for the picker */
   summary: string;
-  /** what the owner picks first (agent from the agent directory, team from the Governance copy); absent = nothing */
+  /** what the owner picks first (agent from the agent directory, team from the Governance copy, app from the app catalog); absent = nothing */
   param?: TemplateParam;
 }
 
@@ -21,6 +21,7 @@ export const TEMPLATES: readonly RuleTemplate[] = [
   { id: "hold-money", title: "Hold all money actions", summary: "Every payment or other money action of any agent waits for your review." },
   { id: "deny-bound-destructive", title: "Block destructive actions for bound agents", summary: "Bound agents may not delete or overwrite anything." },
   { id: "hold-team-outward", title: "Hold outward actions of a team", summary: "Outward actions of every agent in a Governance team wait for your review.", param: "team" },
+  { id: "hold-app-outward", title: "Hold an app’s outward actions", summary: "Outward actions that another app starts (not an agent) wait for your review.", param: "app" },
 ];
 
 /** The picked agent or team: its id (stored in the rule) and its name (only used in the title and reason). */
@@ -38,7 +39,7 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 export function templateSpec(id: RuleTemplate["id"], arg?: TemplateArg): RuleSpec {
   const base = { active: true, priority: 100 } as const;
   const need = (): TemplateArg => {
-    if (!arg?.id) throw new Error(`template ${id} needs ${id === "hold-team-outward" ? "a team" : "an agent"}`);
+    if (!arg?.id) throw new Error(`template ${id} needs ${id === "hold-team-outward" ? "a team" : id === "hold-app-outward" ? "an app" : "an agent"}`);
     return { id: arg.id, name: clip(arg.name.trim() || arg.id, 60) };
   };
   switch (id) {
@@ -53,6 +54,11 @@ export function templateSpec(id: RuleTemplate["id"], arg?: TemplateArg): RuleSpe
     case "hold-team-outward": {
       const t = need();
       return { ...base, title: `Hold outward actions of ${t.name}`, match: { callerTeams: [t.id], effects: ["outward"] }, outcome: { decision: "hold", reason: `${t.name}: outward actions wait for you` } };
+    }
+    case "hold-app-outward": {
+      // calls from the app with this VERIFIED product (C237); the product id is the app's name in the catalog
+      const p = need();
+      return { ...base, title: `Hold ${p.name}’s outward actions`, match: { callerProducts: [p.id], effects: ["outward"] }, outcome: { decision: "hold", reason: `${p.name}: outward actions wait for you` } };
     }
   }
 }

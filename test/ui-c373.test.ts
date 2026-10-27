@@ -294,3 +294,20 @@ describe("Q-9: start from a template", () => {
     await m.unmount();
   });
 });
+
+describe("Q-9: the app template (C237 callerProducts)", () => {
+  it("shows only while the app catalog lists apps and fills the chosen calling app", async () => {
+    reset();
+    stub.outputs.rules_list = { ...LIST([RULE]), catalog: { generatedAt: null, syncedAt: null, error: null, products: 2, productIds: ["knowledge", "notes"] } };
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host.querySelector(".page-head") as Element, "Start from a template"));
+    const pick = dialog("Start from a template");
+    assert.equal(pick.querySelectorAll('button[role="radio"]').length, 5);
+    await click(radio(pick, "Hold an app’s outward actions"));
+    await choose(pick, "notes");
+    await click(button(pick, "Continue"));
+    await click(button(dialog("New rule from a template"), "Save rule"));
+    assert.deepEqual((callsOf("rules_set")[0]?.input as { rule: unknown } | undefined)?.rule, templateSpec("hold-app-outward", { id: "notes", name: "notes" }));
+    await m.unmount();
+  });
+});

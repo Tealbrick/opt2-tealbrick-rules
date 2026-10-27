@@ -6,17 +6,26 @@ import type { RuleSpec } from "./api.ts";
 import type { Directory } from "./shared.tsx";
 import { type RuleTemplate, TEMPLATES, templateSpec } from "./templates.ts";
 
-/** The templates the owner can use now: the team template only while Governance teams are known. */
-export function availableTemplates(dir: Directory): RuleTemplate[] {
-  return TEMPLATES.filter((t) => t.param !== "team" || dir.teams.length > 0);
+/** The templates the owner can use now: the team template only while Governance teams are known, the app template only while the app catalog lists apps. */
+export function availableTemplates(dir: Directory, products: readonly string[] = []): RuleTemplate[] {
+  return TEMPLATES.filter((t) => (t.param !== "team" || dir.teams.length > 0) && (t.param !== "app" || products.length > 0));
 }
 
-export function TemplatePicker({ dir, onPick, onClose }: { dir: Directory; onPick: (spec: RuleSpec) => void; onClose: () => void }) {
-  const templates = availableTemplates(dir);
+/** `products` = the app catalog's product ids (rules_list `catalog.productIds`), for the app template. */
+export function TemplatePicker({ dir, products = [], onPick, onClose }: { dir: Directory; products?: readonly string[]; onPick: (spec: RuleSpec) => void; onClose: () => void }) {
+  const templates = availableTemplates(dir, products);
   const [id, setId] = useState<RuleTemplate["id"] | null>(null);
   const [arg, setArg] = useState("");
   const chosen = templates.find((t) => t.id === id) ?? null;
-  const options = chosen?.param === "agent" ? dir.agents.map((a) => ({ value: a.id, label: a.name })) : chosen?.param === "team" ? dir.teams.map((t) => ({ value: t.id, label: t.name })) : [];
+  const options =
+    chosen?.param === "agent"
+      ? dir.agents.map((a) => ({ value: a.id, label: a.name }))
+      : chosen?.param === "team"
+        ? dir.teams.map((t) => ({ value: t.id, label: t.name }))
+        : chosen?.param === "app"
+          ? products.map((p) => ({ value: p, label: p }))
+          : [];
+  const what = chosen?.param === "agent" ? "agent" : chosen?.param === "team" ? "team" : "app";
   const ready = chosen !== null && (!chosen.param || options.some((o) => o.value === arg));
   const use = () => {
     if (!chosen || !ready) return;
@@ -50,10 +59,10 @@ export function TemplatePicker({ dir, onPick, onClose }: { dir: Directory; onPic
       />
       {chosen?.param ? (
         options.length === 0 ? (
-          <Notice tone="needs-you">{chosen.param === "agent" ? "No agents to choose from yet." : "No Governance teams to choose from yet."}</Notice>
+          <Notice tone="needs-you">{what === "agent" ? "No agents to choose from yet." : what === "team" ? "No Governance teams to choose from yet." : "No apps to choose from yet."}</Notice>
         ) : (
-          <Field label={chosen.param === "agent" ? "Agent" : "Team"}>
-            <Select value={arg} placeholder={chosen.param === "agent" ? "Choose an agent" : "Choose a team"} options={options} onValueChange={setArg} />
+          <Field label={what === "agent" ? "Agent" : what === "team" ? "Team" : "Calling app"}>
+            <Select value={arg} placeholder={what === "agent" ? "Choose an agent" : what === "team" ? "Choose a team" : "Choose an app"} options={options} onValueChange={setArg} />
           </Field>
         )
       ) : null}

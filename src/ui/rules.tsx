@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
@@ -13,6 +13,8 @@ const DECISIONS = [
   { value: "hold", label: "Hold for my review" },
 ];
 const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
+/** The dry run's caller choice for "an app" (agents are listed by id). */
+const APP_CALLER = "__app__";
 const MODES = [
   { value: "free" as const, label: "Free" },
   { value: "bound" as const, label: "Bound" },
@@ -22,7 +24,7 @@ const MODES = [
  * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). `prefill` = a new
  * rule from a template (Q-9). An existing rule shows its History; "Restore this version" hands over to the page (Q-7).
  */
-function Editor({ initial, prefill, dir, onDone, onRestore }: { initial: RuleRow | null; prefill?: RuleSpec; dir: Directory; onDone: (saved: boolean) => void; onRestore?: (t: RestoreTarget) => void }) {
+function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initial: RuleRow | null; prefill?: RuleSpec; dir: Directory; products: readonly string[]; onDone: (saved: boolean) => void; onRestore?: (t: RestoreTarget) => void }) {
   const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? prefill ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -129,6 +131,13 @@ function Editor({ initial, prefill, dir, onDone, onRestore }: { initial: RuleRow
           onChange={(v) => setMatch({ callerTeams: v })}
         />
         <ChipChoice
+          label="Calls from apps"
+          hint="none = any caller. An app is identified by its verified product, never by its name; an agent never matches. If the product can’t be verified, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
+          value={m.callerProducts}
+          onChange={(v) => setMatch({ callerProducts: v })}
+        />
+        <ChipChoice
           label="On behalf of a member of team (from Governance)"
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={obo.teams}
@@ -174,7 +183,11 @@ function Editor({ initial, prefill, dir, onDone, onRestore }: { initial: RuleRow
 /** Dry run: which rule would decide a sample call (with the edited rule included). */
 function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [caller, setCaller] = useState("");
+  const [appProduct, setAppProduct] = useState("");
   const [mode, setMode] = useState<"free" | "bound">("free");
+  const isApp = caller === APP_CALLER;
+  // like the gate: the product is not trimmed; one that is not a product id is no verified product (the dry run sends none)
+  const badProduct = appProduct !== "" && !verifiableProduct(appProduct);
   const [product, setProduct] = useState("knowledge");
   const [op, setOp] = useState("memory_recall");
   const [tool, setTool] = useState("");
@@ -191,7 +204,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       setResult(
         await run("rules_preview", {
           call: {
-            caller: { type: "agent", id, mode },
+            caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}) } : { type: "agent", id, mode },
             target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}) },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
@@ -210,11 +223,24 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       <h3>Try a call (dry run)</h3>
       <div className="rules-form">
         <Field label="Caller">
-          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name }))]} onValueChange={setCaller} />
+          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name })), { value: APP_CALLER, label: "An app" }]} onValueChange={setCaller} />
         </Field>
-        <Field label="Mode">
-          <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
-        </Field>
+        {isApp ? (
+          <Field
+            label="App product"
+            hint={
+              badProduct
+                ? "This is not a product id (lower-case letters, digits, - and _; no spaces), so the dry run treats it as an app whose product can’t be verified."
+                : "Its verified product id, such as knowledge. Leave empty to try an app whose product can’t be verified."
+            }
+          >
+            <TextInput value={appProduct} onChange={(e) => setAppProduct(e.target.value)} />
+          </Field>
+        ) : (
+          <Field label="Mode">
+            <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
+          </Field>
+        )}
         <Field label="App">
           <TextInput value={product} onChange={(e) => setProduct(e.target.value)} />
         </Field>
@@ -257,6 +283,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>
           )}
+          {result.callerProductUnavailable ? (
+            <p className="tb-soft">The calling app’s product can’t be verified, so refuse and hold rules that name apps (calls from) apply and allow rules that name them do not.</p>
+          ) : null}
           {result.decision === "hold" && result.answered === "deny" ? (
             <p className="tb-soft">Holds from rules arrive with the next platform release. Until then a hold rule refuses.</p>
           ) : null}
@@ -414,6 +443,7 @@ export function RulesPage() {
           initial={editing === "new" ? null : editing}
           prefill={editing === "new" ? prefill : undefined}
           dir={dir}
+          products={data?.catalog.productIds ?? []}
           onDone={(saved) => {
             setEditing(null);
             setPrefill(undefined);
@@ -428,6 +458,7 @@ export function RulesPage() {
       {picking ? (
         <TemplatePicker
           dir={dir}
+          products={data?.catalog.productIds ?? []}
           onClose={() => setPicking(false)}
           onPick={(spec) => {
             setPicking(false);

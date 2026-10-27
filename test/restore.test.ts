@@ -141,10 +141,10 @@ test("idempotency: a repeated restore of the same version (same expectedRev) wri
   );
 });
 
-test("upgrade from a 0.4.1 database: 0006 adds from_rev; old revisions read without from and can be restored", () => {
+test("upgrade from a 0.4.1 database: 0007 adds from_rev; old revisions read without from and can be restored", () => {
   const raw = new DatabaseSync(":memory:");
   const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files.filter((x) => x < "0006")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
+  for (const f of files.filter((x) => x < "0007")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
   const v1 = JSON.stringify(spec({ title: "old v1", match: { effects: ["money"] } }));
   const v2 = JSON.stringify(spec({ title: "old v2", match: { effects: ["money"] }, decision: "hold" }));
   raw.prepare("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES ('rul_old', 3, ?, 100, 0, 1, 'owner', 1, 3)").run(v2);
@@ -152,7 +152,7 @@ test("upgrade from a 0.4.1 database: 0006 adds from_rev; old revisions read with
   rev.run(1, "created", v1, OWNER, 1);
   rev.run(2, "updated", v2, OWNER, 2);
   rev.run(3, "deleted", v2, OWNER, 3);
-  for (const f of files.filter((x) => x >= "0006")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
+  for (const f of files.filter((x) => x >= "0007")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
   const db = {
     exec: (s: string) => raw.exec(s),
     prepare: (s: string) => raw.prepare(s),
