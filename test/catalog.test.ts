@@ -251,9 +251,14 @@ test("tools: a condition naming gmail_send matches gmail_send__first_contact, no
     assert.equal(g.allow, false, `fire-on-bad: ${tool} (gate)`);
     assert.match(g.reason ?? "", /gmail_send deny rule/);
   }
-  for (const tool of ["gmail_sendx", "gmail_send_bulk", "gmail_sen", "xgmail_send", "Gmail_Send__first_contact", "gmail_send_", "xgmail_send__first_contact"]) {
+  for (const tool of ["gmail_sendx", "gmail_send_bulk", "gmail_sen", "xgmail_send", "xgmail_send__first_contact"]) {
     assert.equal((await preview(tool)).decision, "allow", `quiet-on-good: ${tool} (preview)`);
     assert.equal((await gate(tool)).allow, true, `quiet-on-good: ${tool} (gate)`);
+  }
+  // S4-1 (review 0.5.0): a value that is no catalog tool name counts as absent: on this dynamic op the deny applies (fail closed)
+  for (const tool of ["Gmail_Send__first_contact", "gmail_send_"]) {
+    assert.equal((await preview(tool)).decision, "deny", `fail closed: ${tool} (preview)`);
+    assert.equal((await gate(tool)).allow, false, `fail closed: ${tool} (gate)`);
   }
   // hold fires on the variant as well
   await run(OP.rulesSet)({ id: saved.id, expectedRev: saved.rev, rule: rule("hold", 10) }, owner);

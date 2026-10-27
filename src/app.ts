@@ -48,7 +48,7 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
-import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
+import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
@@ -340,7 +340,8 @@ export const handlers = {
       const { recipients: typedRecipients, recipientsIncomplete, ...target } = input.call.target;
       const facts: CallFacts = {
         caller: { type: input.call.caller.type, id: input.call.caller.id, mode: input.call.caller.mode ?? null },
-        target: { ...target, ...dynamicFact(ctx.db, target.product, target.op) },
+        // a typed tool that is no catalog tool name counts as absent, exactly like the gate reads one (S4-1)
+        target: { ...target, ...(target.tool !== undefined && !wellFormedTool(target.tool) ? { tool: undefined } : {}), ...dynamicFact(ctx.db, target.product, target.op) },
         claim,
         claimVerified: false,
         ...claimFleetFacts(fx, claim),
