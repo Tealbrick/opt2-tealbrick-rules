@@ -418,11 +418,16 @@ test("the writers apply it: rules_set, a draft from an agent and approving a sto
   };
   walk(manifest);
   assert.equal(sets.length, 11, "rules_list, rules_get, rules_set (in, out), preview candidate, rules_preview_recent, drafts_list, draft_decide, rule_draft_submit, rule_compose (out), rule_compose_save (in)");
-  for (const s of sets) assert.deepEqual((s as Record<string, unknown>).callerProducts, { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 40, pattern: "^[a-z0-9][a-z0-9_-]*$" } });
+  // input copies add `minItems: 1` (delta D-3: no empty match list); output copies stay without it (legacy rules with [] still read)
+  for (const s of sets) {
+    const { minItems, ...rest } = (s as Record<string, Record<string, unknown>>).callerProducts as Record<string, unknown>;
+    assert.ok(minItems === undefined || minItems === 1, "minItems is 1 or absent");
+    assert.deepEqual(rest, { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 40, pattern: "^[a-z0-9][a-z0-9_-]*$" } });
+  }
   const input = manifest.operations.find((o) => o.id === "rules_set")?.input as Parameters<typeof validateAgainstSchema>[0];
   const withProducts = (callerProducts: unknown) => ({ rule: { ...good, match: { callerProducts } } }) as Json;
   assert.equal(validateAgainstSchema(input, withProducts(["a", "my-app_2"])).ok, true);
-  for (const badList of [["a", "a"], ["Bad"], [""], ["a".repeat(41)], Array.from({ length: 51 }, (_, i) => `p${i}`), "a", [1]]) assert.equal(validateAgainstSchema(input, withProducts(badList)).ok, false, JSON.stringify(badList));
+  for (const badList of [[], ["a", "a"], ["Bad"], [""], ["a".repeat(41)], Array.from({ length: 51 }, (_, i) => `p${i}`), "a", [1]]) assert.equal(validateAgainstSchema(input, withProducts(badList)).ok, false, JSON.stringify(badList));
 });
 
 // ── 6b. callerProducts is checked against the signed catalog like products (S2) ─────────────────────────────
