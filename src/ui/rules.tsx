@@ -1,10 +1,11 @@
 // Rules page: the rule list, the rule editor (a form in a Dialog, saving passes the revision that was edited) and the
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
+import { type AllowPlan, allowPlan, readAllowQuery } from "./hold-allow.ts";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
@@ -43,6 +44,7 @@ function Editor({
   onRestore,
   seed,
   onUse,
+  fromHold,
 }: {
   initial: RuleRow | null;
   prefill?: RuleSpec;
@@ -52,6 +54,8 @@ function Editor({
   onRestore?: (t: RestoreTarget) => void;
   seed?: RuleSpec;
   onUse?: (spec: RuleSpec) => void;
+  /** D12: the rule was prepared by "Allow always" on a hold card (its priority and why; Save waits for the one tool of a dynamic operation) */
+  fromHold?: AllowPlan;
 }) {
   const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec()));
   const [busy, setBusy] = useState(false);
@@ -83,8 +87,10 @@ function Editor({
   };
   const setTags = (patch: Lists) => setNarrowing("memoryTags", { ...tags, ...patch });
   const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
+  // D12: an allow rule for a dynamic operation (many tools) must name ONE tool before it can be saved; never "any tool"
+  const needTool = !!fromHold?.needTool && !m.tools?.length;
   const save = async () => {
-    if (busy) return;
+    if (busy || needTool || fromHold?.blocked) return;
     if (onUse) {
       onUse(s);
       return;
@@ -104,7 +110,7 @@ function Editor({
     <Dialog
       open
       kicker="Rule"
-      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
+      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : fromHold ? "Allow always" : prefill ? "New rule from a template" : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -113,7 +119,7 @@ function Editor({
           <Button onClick={() => onDone(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={busy || !s.title || !s.outcome.reason} onClick={() => void save()}>
+          <Button variant="primary" disabled={busy || needTool || !!fromHold?.blocked || !s.title || !s.outcome.reason} onClick={() => void save()}>
             {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
           </Button>
         </>
@@ -125,6 +131,28 @@ function Editor({
         </Notice>
       ) : null}
       <DirectoryErrors dir={dir} />
+      {fromHold ? (
+        <div className="tb-stack">
+          <Notice tone="live">
+            This rule is not saved yet. It allows this one operation for this caller, every time. {fromHold.why}
+          </Notice>
+          {fromHold.blocked ? (
+            <Notice tone="needs-you" role="alert">
+              {fromHold.blocked}
+            </Notice>
+          ) : null}
+          {fromHold.warnings.map((w) => (
+            <Notice key={w} tone="needs-you" role="alert">
+              {w}
+            </Notice>
+          ))}
+          {needTool ? (
+            <Notice tone="needs-you" role="alert">
+              This app runs many tools; choose the one tool to always allow. Type its name in Tools below. Save stays off until you do.
+            </Notice>
+          ) : null}
+        </div>
+      ) : null}
       <div className="rules-form">
         <Field label="Title">
           <TextInput value={s.title} maxLength={120} onChange={(e) => setS({ ...s, title: e.target.value })} />
@@ -452,6 +480,27 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
   const [prefill, setPrefill] = useState<RuleSpec | undefined>(undefined);
   const [history, setHistory] = useState<RuleRow | null>(null);
   const [restoring, setRestoring] = useState<RestoreTarget | null>(null);
+  // D12: "Allow always" from a hold card opens Rules with a query; it is read once and removed from the URL, so a reload does not reopen it
+  const [incoming] = useState(() => readAllowQuery(globalThis.location.search));
+  const [linkNotice, setLinkNotice] = useState(incoming.kind === "bad" ? incoming.notice : "");
+  const [fromHold, setFromHold] = useState<AllowPlan | undefined>(undefined);
+  const opened = useRef(false);
+  useEffect(() => {
+    if (incoming.kind === "none") return;
+    const { pathname, hash } = globalThis.location;
+    globalThis.history.replaceState(globalThis.history.state, "", `${pathname}${hash}`);
+  }, [incoming]);
+  // the rule needs the owner's rules (its place) and the catalog (is the operation dynamic?), and the agent names (its title)
+  useEffect(() => {
+    if (incoming.kind !== "ok" || opened.current || !data || dir.loading) return;
+    opened.current = true;
+    const q = incoming.query;
+    const who = q.agent ? dir.agentName(q.agent) : (q.callerProduct as string);
+    const plan = allowPlan(q, data.rules.filter((r) => !r.deleted), who, (data.catalog.dynamicOps ?? []).includes(`${q.product}.${q.op}`));
+    setFromHold(plan);
+    setPrefill(plan.spec);
+    setEditing("new");
+  }, [incoming, data, dir]);
   const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
   const startFromTemplate = <Button onClick={() => setPicking(true)}>Start from a template</Button>;
   return (
@@ -475,6 +524,16 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         onOpenDrafts={onOpenDrafts}
         editor={(spec, done) => <Editor initial={null} dir={dir} products={data?.catalog.productIds ?? []} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
       />
+      {linkNotice ? (
+        <Notice tone="needs-you" role="alert">
+          <span className="tb-row">
+            <span>{linkNotice}</span>
+            <Button size="sm" onClick={() => setLinkNotice("")}>
+              Dismiss
+            </Button>
+          </span>
+        </Notice>
+      ) : null}
       {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       <DirectoryErrors dir={dir} />
       {data && !data.holdSupported ? (
@@ -542,11 +601,13 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         <Editor
           initial={editing === "new" ? null : editing}
           prefill={editing === "new" ? prefill : undefined}
+          fromHold={editing === "new" ? fromHold : undefined}
           dir={dir}
           products={data?.catalog.productIds ?? []}
           onDone={(saved) => {
             setEditing(null);
             setPrefill(undefined);
+            setFromHold(undefined);
             if (saved) reload();
           }}
           onRestore={(t) => {

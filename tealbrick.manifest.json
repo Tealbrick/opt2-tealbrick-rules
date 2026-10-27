@@ -120,7 +120,8 @@
               "syncedAt",
               "error",
               "products",
-              "productIds"
+              "productIds",
+              "dynamicOps"
             ],
             "properties": {
               "generatedAt": {
@@ -153,6 +154,15 @@
                   "type": "string",
                   "maxLength": 40
                 }
+              },
+              "dynamicOps": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "string",
+                  "maxLength": 81
+                },
+                "description": "`product.op` of every dynamic operation in the catalog (an operation that runs many tools); the \"Allow always\" link uses it to ask for one tool."
               }
             }
           },

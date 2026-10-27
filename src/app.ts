@@ -210,6 +210,13 @@ async function draftRules(ctx: OpContext, text: string, env: ComposeEnv): Promis
   }
 }
 
+/** `product.op` of every dynamic operation the catalog lists (the "Allow always" link asks for one tool on these). */
+const dynamicOpIds = (db: Db): string[] =>
+  [...(catalogOf(db) ?? [])]
+    .flatMap(([product, p]) => [...p.ops].filter(([, o]) => o.dynamic).map(([id]) => `${product}.${id}`))
+    .sort()
+    .slice(0, 1000);
+
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
   const dynamic = isDynamicOp(db, product, op);
   return dynamic === undefined ? {} : { dynamic };
@@ -230,7 +237,14 @@ export const handlers = {
         defaultDecision: ({ permissive: "allow", verification: "hold", closed: "deny" } as const)[currentMode(ctx.db)],
         mode: modeState(ctx.db),
         system: EXEMPTIONS.map((e) => ({ ...e })),
-        catalog: { generatedAt: st.generatedAt, syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(), error: st.error, products: catalogOf(ctx.db)?.size ?? 0, productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort() },
+        catalog: {
+          generatedAt: st.generatedAt,
+          syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(),
+          error: st.error,
+          products: catalogOf(ctx.db)?.size ?? 0,
+          productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort(),
+          dynamicOps: dynamicOpIds(ctx.db),
+        },
       };
     },
   }),
