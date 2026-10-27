@@ -13,6 +13,12 @@ const DECISIONS = [
   { value: "hold", label: "Hold for my review" },
 ];
 const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
+/** The editor's choice for `recipients.known` ("" = any). */
+const RECIPIENT_KNOWN = [
+  { value: "", label: "Any recipient" },
+  { value: "known", label: "Only recipients Governance knows" },
+  { value: "unknown", label: "Recipients Governance doesn’t know" },
+];
 /** The dry run's caller choice for "an app" (agents are listed by id). */
 const APP_CALLER = "__app__";
 const MODES = [
@@ -34,6 +40,14 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
   const setObo = (patch: Partial<NonNullable<RuleSpec["match"]["onBehalfOf"]>>) => {
     const next = { ...obo, ...patch };
     setMatch({ onBehalfOf: next.teams || next.ids || next.kinds || next.trust ? next : undefined });
+  };
+  type Recipients = NonNullable<RuleSpec["match"]["recipients"]>;
+  const rcp: Partial<Recipients> = m.recipients ?? {};
+  // C373 D5: one recipients object; a sub-criterion set to "any" is dropped, and the object goes when none is left
+  const setRcp = (patch: Partial<Recipients>) => {
+    const next: Partial<Recipients> = { ...rcp, ...patch };
+    for (const k of ["teams", "trust", "known"] as const) if (next[k] === undefined) delete next[k];
+    setMatch({ recipients: Object.keys(next).length ? (next as Recipients) : undefined });
   };
   const tags = s.narrowing?.memoryTags ?? {};
   const sets = s.narrowing?.deepDatasets ?? {};
@@ -160,6 +174,21 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
         <Field label="On behalf of" hint="Ids or handles such as slack:U123, comma separated. A claimed requester can only make a decision stricter, never wider.">
           <TextInput value={joinList(obo.ids)} onChange={(e) => setObo({ ids: list(e.target.value) })} />
         </Field>
+        <ChipChoice
+          label="Recipients in teams (from Governance)"
+          hint="none = any. Who an outward call goes to (needs Effect outward or an app). Refuse or hold: one matching recipient is enough; allow: every recipient must match. If the recipients aren’t known, a refuse or hold rule with this applies and an allow rule does not."
+          options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
+          value={rcp.teams}
+          onChange={(v) => setRcp({ teams: v })}
+        />
+        <ChipChoice label="Recipients with trust (from Governance)" hint="none = any. A recipient Governance doesn’t list counts as unreviewed." options={TRUSTS.map((t) => ({ value: t, label: t }))} value={rcp.trust} onChange={(v) => setRcp({ trust: v })} />
+        <Field label="Unknown recipients" hint="Whether the recipient is a contact or agent that Governance lists.">
+          <Select
+            value={rcp.known === undefined ? "" : rcp.known ? "known" : "unknown"}
+            options={RECIPIENT_KNOWN}
+            onValueChange={(v) => setRcp({ known: v === "" ? undefined : v === "known" })}
+          />
+        </Field>
       </section>
 
       {s.outcome.decision === "allow" ? (
@@ -200,6 +229,8 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [tool, setTool] = useState("");
   const [effect, setEffect] = useState<(typeof EFFECTS)[number]>("read");
   const [handle, setHandle] = useState("");
+  // C373 D5: recipients of the tried call, comma separated ("" = the bridge sent none: unknown)
+  const [recipients, setRecipients] = useState("");
   const [result, setResult] = useState<Out<"rules_preview"> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -212,7 +243,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         await run("rules_preview", {
           call: {
             caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}) } : { type: "agent", id, mode },
-            target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}) },
+            target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}), ...(recipients.trim() ? { recipients: recipients.trim() === "-" ? [] : (list(recipients) ?? []) } : {}) },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
           ...(candidate?.title && candidate.outcome.reason ? { candidate } : {}),
@@ -254,6 +285,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <Field label="Operation">
           <TextInput value={op} onChange={(e) => setOp(e.target.value)} />
         </Field>
+        <Field label="Recipients (optional)" hint="Handles such as slack:U123, comma separated; - for a call with no recipients. Empty = the recipients aren’t known.">
+          <TextInput value={recipients} placeholder="slack:U123, telegram:42" onChange={(e) => setRecipients(e.target.value)} />
+        </Field>
         <Field label="Tool (optional)" hint="Only for a call of a connected service tool.">
           <TextInput value={tool} onChange={(e) => setTool(e.target.value)} />
         </Field>
@@ -290,6 +324,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>
           )}
+          {result.recipientsUnknown ? (
+            <p className="tb-soft">The call’s recipients aren’t known, so refuse and hold rules that name recipients apply and allow rules that name them do not.</p>
+          ) : null}
           {result.callerProductUnavailable ? (
             <p className="tb-soft">The calling app’s product can’t be verified, so refuse and hold rules that name apps (calls from) apply and allow rules that name them do not.</p>
           ) : null}

@@ -351,6 +351,14 @@ export interface TraceInput {
 
 let inserts = 0;
 
+/** The trace's `detail` JSON: the given detail plus the tool name and the recipient count (null = nothing to keep). */
+function traceDetail(t: TraceInput): string | null {
+  const tool = t.facts.target.tool;
+  const count = Array.isArray(t.facts.recipients) ? t.facts.recipients.length : undefined;
+  if (!t.detail && tool === undefined && count === undefined) return null;
+  return JSON.stringify({ ...t.detail, ...(tool !== undefined ? { tool } : {}), ...(count !== undefined ? { recipients: count } : {}) });
+}
+
 export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string {
   const id = `dec_${ulid(now)}`;
   const obo = t.facts.claim ? JSON.stringify({ ...t.facts.claim, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
@@ -375,8 +383,9 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.rule?.rev ?? null,
     t.rule?.title ?? null,
     obo,
-    // spec 0.1.68: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration)
-    t.detail || t.facts.target.tool !== undefined ? JSON.stringify({ ...t.detail, ...(t.facts.target.tool !== undefined ? { tool: t.facts.target.tool } : {}) }) : null,
+    // spec 0.1.68: the tool name of a dynamic call rides in `detail` (no column: the decisions table needs no migration).
+    // C373 D5: of the recipients only their COUNT is kept (known recipients), never a handle; unknown ones are `recipientsUnknown`.
+    traceDetail(t),
     Math.max(0, Math.round(t.durationUs)),
   );
   if (++inserts % 1000 === 0) pruneDecisions(db, now);

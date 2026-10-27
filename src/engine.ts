@@ -33,6 +33,13 @@
 //   agents[].trust, key `agent:<id>`). A Fleet fact like `callerTeams`: unavailable → deny/hold apply, allow does not. An allow
 //   needs the agent active (not blocked, not removed). An agent the directory does not know is `unreviewed` (and not known to be
 //   gone). An APP caller has no agent trust: a rule with `callerTrust` never matches an app, whatever the decision.
+// - Recipients ("who may talk to whom", 0.5.0, C373 D5, CONTRACT-RECIPIENTS): `match.recipients {teams?, trust?, known?}` matches
+//   the recipients of an outward call (bridge `target.recipients`, canonical handles). Each handle maps to its HOLDERS in the Fleet
+//   read model (contacts by handle, agents by handle): their teams, their trust set, known = at least one holder. Deny/hold:
+//   ANY recipient matches ALL the given sub-criteria. Allow: at least one recipient, and EVERY recipient matches them with every
+//   holder active. Unknown recipients (absent, or `recipientsIncomplete`) fail CLOSED: deny/hold apply (`recipientsUnknown`),
+//   allow never. `[]` (known: no recipients) matches no recipient rule. The facts are Fleet facts (C236 strict path). Handles never
+//   enter CallFacts: only the per-recipient facts do, so a decision or trace can hold the COUNT and never a handle.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 
@@ -63,6 +70,20 @@ export interface Rule {
 /** Trust states of a contact (contract fleet.directory_feed/1). */
 export const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
 export type Trust = (typeof TRUSTS)[number];
+
+/** What the Fleet read model says about ONE recipient handle (`handle:<canonical>` key); never the handle itself. */
+export interface RecipientFact {
+  /** team ids where EVERY holder is an active member (allow rules) */
+  teams: readonly string[];
+  /** team ids where ANY holder is a member, incl. blocked, departed, removed (deny and hold rules) */
+  teamsAny: readonly string[];
+  /** the holders' raw trust set; a handle with no holder is `["unreviewed"]` */
+  trusts: readonly Trust[];
+  /** false when any holder is blocked, departed or removed */
+  allActive: boolean;
+  /** at least one holder (a contact or an agent) has this handle */
+  known: boolean;
+}
 
 export interface Claim {
   kind: "person" | "agent" | "channel_sender";
@@ -103,6 +124,12 @@ export interface CallFacts {
   /** false when the calling agent is blocked or removed (an allow rule by `callerTrust` never matches it); absent = active */
   callerTrustActive?: boolean;
   /**
+   * The recipients of the call (C373 D5), one fact per canonical handle of `target.recipients`. `null` or absent = UNKNOWN (the
+   * bridge sent none: no cap `hook_recipients`, a read, an op that declares none; or `recipientsIncomplete`; or a value that is not
+   * canonical): deny/hold recipient rules apply, allow rules do not. `[]` = known: the call names no recipient.
+   */
+  recipients?: readonly RecipientFact[] | null;
+  /**
    * The raw trust values of everyone who holds the claimed requester's key (contact id, canonical handle or agent id), as a
    * set. `[]` = no claim or facts unavailable. A requester the directory does not know is `["unreviewed"]`.
    * Deny/hold rules match when ANY holder's trust is listed; allow rules need EVERY holder active and listed.
@@ -139,6 +166,8 @@ export interface Verdict {
   closedOnProduct: boolean;
   /** true when the decisive deny/hold rule applied only because the call of a dynamic op carried no `target.tool` (fail closed) */
   toolUnknown: boolean;
+  /** true when the decisive deny/hold rule applied only because the call's recipients were unknown (or an allow rule that narrows was skipped for it) */
+  recipientsUnknown: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
   narrowingRuleId: string | null;
 }
@@ -152,10 +181,10 @@ export interface Step {
 
 const anyOf = (list: readonly string[] | undefined, value: string | null | undefined): boolean => !list || list.length === 0 || (value != null && list.includes(value));
 
-/** Fleet facts a rule names: caller teams, claimed requester's teams or trust. */
+/** Fleet facts a rule names: caller teams or trust, claimed requester's teams or trust, recipients (their holders). */
 export function dependsOnFleet(spec: RuleSpec): boolean {
   const m = spec.match;
-  return (m.callerTeams?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
+  return (m.callerTeams?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || m.recipients !== undefined || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
 }
 
 export function dependsOnClaim(spec: RuleSpec): boolean {
@@ -182,6 +211,21 @@ export function dependsOnProduct(spec: RuleSpec): boolean {
 
 export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rules do not apply without them)";
 export const NEEDS_PRODUCT = "needs the calling app's verified product, which is unavailable (allow rules do not apply without it)";
+export const NEEDS_RECIPIENTS = "needs the call's recipients, which are unknown (allow rules do not apply without them)";
+
+/** One recipient against the sub-criteria: deny/hold see every membership and ANY holder's trust; allow needs every holder active and listed. */
+function recipientMatches(c: NonNullable<RuleSpec["match"]["recipients"]>, r: RecipientFact, strict: boolean): boolean {
+  if (c.known !== undefined && r.known !== c.known) return false;
+  if (strict) {
+    if (c.teams?.length && !c.teams.some((t) => r.teamsAny.includes(t))) return false;
+    if (c.trust?.length && !r.trusts.some((t) => (c.trust as readonly string[]).includes(t))) return false;
+    return true;
+  }
+  if (!r.allActive) return false;
+  if (c.teams?.length && !c.teams.some((t) => r.teams.includes(t))) return false;
+  if (c.trust?.length && !(r.trusts.length > 0 && r.trusts.every((t) => (c.trust as readonly string[]).includes(t)))) return false;
+  return true;
+}
 
 export interface Judged {
   why: string;
@@ -193,6 +237,8 @@ export interface Judged {
   onProduct: boolean;
   /** the closed outcome rests on a dynamic call without `target.tool` (deny and hold rules with `tools` only) */
   onTool: boolean;
+  /** the closed or skipped outcome rests on unknown recipients */
+  onRecipients: boolean;
 }
 
 /**
@@ -201,7 +247,7 @@ export interface Judged {
  * else was skipped because they are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
  */
 export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged {
-  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false });
+  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false, onRecipients: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
   if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
@@ -224,6 +270,7 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
   let skipped = false;
   let onFleet = false;
   let onProduct = false;
+  let onRecipients = false;
   // A fact that may be unavailable: met for a deny/hold rule and never met for an allow rule.
   const gap = (): void => {
     if (strict) closed = true;
@@ -258,6 +305,20 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
     const why = fleet(met, "caller's trust is not listed");
     if (why) return no(why);
   }
+  if (m.recipients) {
+    // C373 D5: unknown recipients fail closed; [] = known none; else ANY (deny/hold) or EVERY (allow) recipient, a Fleet fact
+    const c = m.recipients;
+    const list = facts.recipients;
+    if (list == null) {
+      gap();
+      onRecipients = true;
+    } else if (list.length === 0) return no("call has no recipients");
+    else {
+      const met = strict ? list.some((r) => recipientMatches(c, r, true)) : list.every((r) => recipientMatches(c, r, false));
+      const why = fleet(met, strict ? "no recipient matches" : "not every recipient matches");
+      if (why) return no(why);
+    }
+  }
   if (dependsOnClaim(spec)) {
     const obo = m.onBehalfOf as NonNullable<RuleSpec["match"]["onBehalfOf"]>;
     if (!useClaim) return no("needs an on-behalf-of claim (claims only narrow)");
@@ -279,8 +340,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
       if (why) return no(why);
     }
   }
-  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false };
-  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed };
+  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT, onRecipients && NEEDS_RECIPIENTS].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false, onRecipients };
+  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed, onRecipients };
 }
 
 export function mismatch(spec: RuleSpec, facts: CallFacts, useClaim = true): string {
@@ -299,12 +360,14 @@ interface Hit {
   onFleet: boolean;
   onProduct: boolean;
   onTool: boolean;
+  onRecipients: boolean;
   /** merged narrowing of the allow rules skipped for unavailable facts (Fleet or product) that precede the decisive rule */
   skippedNarrowing: Narrowing | null;
   skippedRuleId: string | null;
   /** which unavailable facts the skipped allow rules that contributed that narrowing rest on */
   skipFleet: boolean;
   skipProduct: boolean;
+  skipRecipients: boolean;
 }
 
 /**
@@ -318,6 +381,7 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
   let skippedRuleId: string | null = null;
   let skipFleet = false;
   let skipProduct = false;
+  let skipRecipients = false;
   let worst: Rule | null = null;
   let worstJ: Judged | null = null;
   for (const r of ordered) {
@@ -329,6 +393,7 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
         skippedRuleId ??= r.id;
         skipFleet ||= j.onFleet;
         skipProduct ||= j.onProduct;
+        skipRecipients ||= j.onRecipients;
       }
     }
     if (j.why !== "") continue;
@@ -341,14 +406,14 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
     const closed = decisive === worst;
-    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, skippedNarrowing, skippedRuleId, skipFleet, skipProduct };
+    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients };
   }
-  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, skippedNarrowing, skippedRuleId, skipFleet, skipProduct };
+  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients };
 }
 
 function verdictOf(hit: Hit): Verdict {
   const rule = hit.rule;
-  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, narrowingRuleId: hit.skippedRuleId };
+  if (!rule) return { decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, recipientsUnknown: hit.skipRecipients, narrowingRuleId: hit.skippedRuleId };
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -360,6 +425,7 @@ function verdictOf(hit: Hit): Verdict {
     closedOnFleet: (hit.closed && hit.onFleet) || (allow && hit.skipFleet),
     closedOnProduct: (hit.closed && hit.onProduct) || (allow && hit.skipProduct),
     toolUnknown: hit.closed && hit.onTool,
+    recipientsUnknown: (hit.closed && hit.onRecipients) || (allow && hit.skipRecipients),
     narrowingRuleId: allow ? (own ? rule.id : hit.skippedRuleId) : null,
   };
 }
@@ -434,14 +500,14 @@ export function evaluate(ordered: readonly Rule[], facts: CallFacts): Verdict {
   const base = verdictOf(firstMatch(ordered, facts, false));
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
-  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct };
+  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct, recipientsUnknown: withClaim.recipientsUnknown || base.recipientsUnknown };
 }
 
 /** "matches", or what a closed match rests on: unavailable Fleet facts or app product, and/or a call that names no tool. */
 function closedWhy(j: Judged): string {
   if (!j.closed) return "matches";
   const names = [j.onFleet && "Fleet facts", j.onProduct && "the calling app's verified product"].filter(Boolean).join(" and ");
-  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool"].filter(Boolean).join(" and ");
+  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool", j.onRecipients && "the call's recipients are unknown"].filter(Boolean).join(" and ");
   return `matches: ${gaps}, so this rule applies (fail closed)`;
 }
 
@@ -455,7 +521,7 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
 
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown;
+  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown;
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */
@@ -568,6 +634,18 @@ export function specProblem(spec: RuleSpec): string {
     // an app caller has no agent trust: agents that lists only app instances (ins_…) could never match
     if (m.agents?.length && m.agents.every((a) => a.startsWith("ins_"))) return "callerTrust is the trust of a calling agent, but agents lists only apps (ins_…), so the rule would never match";
   }
+  const rc = m.recipients;
+  if (rc !== undefined) {
+    // C373 D5: recipients exist only on outward calls. A rule needs `effects` with outward or `products`, else a deny/hold would
+    // apply to every call whose recipients are unknown (every read and write); effects without outward could never see recipients.
+    if (!rc || typeof rc !== "object" || (rc.teams === undefined && rc.trust === undefined && rc.known === undefined)) return "recipients needs teams, trust or known (an empty object would name nobody)";
+    if (rc.teams !== undefined && rc.teams.length === 0) return "recipients.teams needs at least one team";
+    if (rc.trust !== undefined && rc.trust.length === 0) return "recipients.trust needs at least one trust value";
+    if (rc.trust?.some((t) => !(TRUSTS as readonly string[]).includes(t))) return "recipients.trust values are unreviewed, trusted, limited or blocked";
+    if (rc.known !== undefined && typeof rc.known !== "boolean") return "recipients.known is true or false";
+    if (m.effects?.length && !m.effects.includes("outward")) return "recipients come only with outward calls: add outward to effects (other calls have no recipients, so a refuse or hold rule would apply to every one of them)";
+    if (!m.effects?.length && !m.products?.length) return "recipients need effects with outward or the apps (products): without either, a refuse or hold rule would apply to every call whose recipients are unknown";
+  }
   return "";
 }
 
@@ -587,6 +665,8 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
     // a callerTrust rule can apply to an agent only (its trust is a Fleet fact: could apply)
     if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
+    // a recipients rule cannot apply to a call known to name no recipient; unknown recipients and their facts could apply
+    if (m.recipients && facts.recipients?.length === 0) continue;
     if (m.callerProducts?.length && (facts.caller.type !== "app" || (facts.callerProduct !== null && !m.callerProducts.includes(facts.callerProduct)))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)

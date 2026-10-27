@@ -3,6 +3,7 @@
 // manifest operation id and one handler per manifest hook id. Op ids and I/O types come from the generated kit (`#kit`).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { normalizeHandle } from "@opt2-tealbrick/manifest";
 import { type AppDefinition, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type DecisionsListInput,
@@ -37,7 +38,7 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
-import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
+import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts } from "./hooks.ts";
 import {
   type DraftView,
   decideDraft,
@@ -116,6 +117,21 @@ function reviewed(ctx: OpContext, d: DraftView): DraftView & { problems: (string
   return { ...d, problems: d.rules.map((s) => ruleProblem(ctx.db, s) || null), opTitles: opTitles(d.rules, catalogOf(ctx.db)) };
 }
 
+/**
+ * The dry run's recipients, typed by the owner: each value goes through `normalizeHandle` like the bridge does (C373 D5). Absent,
+ * `recipientsIncomplete`, more than 64, or a value that is not a handle = unknown (null), exactly how the gate reads such a call.
+ */
+function previewRecipients(list: readonly string[] | undefined, incomplete: boolean | undefined): string[] | null {
+  if (!list || incomplete === true || list.length > MAX_RECIPIENTS) return null;
+  const out = new Set<string>();
+  for (const v of list) {
+    const h = normalizeHandle(v);
+    if (!h) return null;
+    out.add(h);
+  }
+  return [...out];
+}
+
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
   const dynamic = isDynamicOp(db, product, op);
   return dynamic === undefined ? {} : { dynamic };
@@ -176,15 +192,18 @@ export const handlers = {
       const rules: Rule[] = order([...liveRules(ctx.db), ...(input.candidate ? [{ id: "candidate", rev: 0, spec: input.candidate, updatedAt: Date.now() }] : [])]);
       const claim = input.call.onBehalfOf ?? null;
       const fx = fleetFacts(ctx.db);
+      // the recipients stay out of the facts (only their per-recipient Fleet facts go in, as in the gate)
+      const { recipients: typedRecipients, recipientsIncomplete, ...target } = input.call.target;
       const facts: CallFacts = {
         caller: { type: input.call.caller.type, id: input.call.caller.id, mode: input.call.caller.mode ?? null },
-        target: { ...input.call.target, ...dynamicFact(ctx.db, input.call.target.product, input.call.target.op) },
+        target: { ...target, ...dynamicFact(ctx.db, target.product, target.op) },
         claim,
         claimVerified: false,
         ...claimFleetFacts(fx, claim),
         callerTeams: input.call.caller.type === "agent" ? (fx.teams.get(`agent:${input.call.caller.id}`) ?? []) : [],
         callerTeamsAny: input.call.caller.type === "agent" ? (fx.teamsAny.get(`agent:${input.call.caller.id}`) ?? []) : [],
         ...callerTrustFacts(fx, input.call.caller),
+        recipients: recipientFacts(fx, previewRecipients(typedRecipients, recipientsIncomplete)),
         fleetAvailable: fx.available,
         // the dry run's product is typed in by the owner; it passes the same validity rule as a bridge-sent one
         callerProduct: input.call.caller.type === "app" && validProduct(input.call.caller.product) ? input.call.caller.product : null,
@@ -203,6 +222,7 @@ export const handlers = {
         callerTrust: facts.callerTrusts?.length ? facts.callerTrusts.reduce(strictest) : null,
         fleetAvailable: facts.fleetAvailable,
         callerProductUnavailable: v.closedOnProduct,
+        recipientsUnknown: v.recipientsUnknown,
         steps: explain(rules, facts),
       };
     },
@@ -266,6 +286,7 @@ export const handlers = {
           ruleTitle: d.ruleTitle,
           fleetUnavailable: d.detail?.fleetUnavailable === true,
           callerProductUnavailable: d.detail?.callerProductUnavailable === true,
+          recipientsUnknown: d.detail?.recipientsUnknown === true,
         })),
       };
     },

@@ -2,10 +2,10 @@
 // (manifest `match`); the SDK route checks the hook proof and the timeout. Each handler decides from Rules' own
 // cached tables only: no app call (G3), no model call, no network. Every error refuses (fail closed).
 import { performance } from "node:perf_hooks";
-import { hookResponseProblem } from "@opt2-tealbrick/manifest";
+import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
 /** Rules' own answer budget, far below the bridge's 2 s hook limit: slower → refuse. */
@@ -97,8 +97,8 @@ export function otherRuleNarrowing(gaps: string): string {
 }
 
 /** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows), and a dynamic call without a tool name. */
-export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown">): Record<string, boolean> {
-  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) };
+export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown" | "recipientsUnknown">): Record<string, boolean> {
+  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}), ...(v.recipientsUnknown ? { recipientsUnknown: true } : {}) };
 }
 
 /**
@@ -110,6 +110,37 @@ export function callerTrustFacts(fx: FleetFacts, caller: { type: string; id: str
   if (caller.type !== "agent" || !fx.available) return { callerTrusts: [], callerTrustActive: true };
   const entry = fx.trust.get(`agent:${caller.id}`);
   return { callerTrusts: entry?.trusts ?? ["unreviewed"], callerTrustActive: entry?.allActive ?? true };
+}
+
+/** At most this many recipients per call (CONTRACT-RECIPIENTS: the bridge caps `target.recipients` at 64 and sets `recipientsIncomplete` above). */
+export const MAX_RECIPIENTS = 64;
+
+/**
+ * C373 D5 (CONTRACT-RECIPIENTS, spec 0.1.81, bridge cap `hook_recipients`): the canonical recipient handles of the call, or null =
+ * UNKNOWN. The pinned SDK types (spec 0.1.64) do not carry `target.recipients` / `target.recipientsIncomplete` yet, so they are read
+ * structurally (TODO(C373 D5): use the typed fields when Rules pins the spec release that has them). Unknown: absent, not an array,
+ * `recipientsIncomplete: true`, more than 64, or any value that is not a string with `normalizeHandle(h) === h` (the bridge sends
+ * canonical handles only; anything else means the list cannot be trusted to be complete).
+ */
+export function recipientsOf(target: unknown): string[] | null {
+  const t = (isObj(target) ? target : {}) as { recipients?: unknown; recipientsIncomplete?: unknown };
+  if (t.recipientsIncomplete === true || !Array.isArray(t.recipients) || t.recipients.length > MAX_RECIPIENTS) return null;
+  const out = new Set<string>();
+  for (const h of t.recipients) {
+    if (typeof h !== "string" || normalizeHandle(h) !== h) return null;
+    out.add(h);
+  }
+  return [...out];
+}
+
+/** The Fleet facts of each recipient handle (`handle:<h>` and its holders); never the handle itself. Unknown stays null. */
+export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null): RecipientFact[] | null {
+  if (handles === null) return null;
+  return handles.map((h) => {
+    const key = `handle:${h}`;
+    const entry = fx.trust.get(key);
+    return { teams: fx.teams.get(key) ?? [], teamsAny: fx.teamsAny.get(key) ?? [], trusts: entry?.trusts ?? ["unreviewed"], allActive: entry?.allActive ?? true, known: entry !== undefined };
+  });
 }
 
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
@@ -129,6 +160,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
     ...callerTrustFacts(fx, req.call.caller),
+    recipients: recipientFacts(fx, recipientsOf(req.call.target)),
     fleetAvailable: fx.available,
     callerProduct: callerProductOf(req.call.caller),
   };
@@ -220,7 +252,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const narrowingRuleId = v.narrowingRuleId;
     if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
-      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified"].filter(Boolean).join("; ");
+      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified", v.recipientsUnknown && "the recipients are unknown"].filter(Boolean).join("; ");
       const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : otherRuleNarrowing(gaps);
       // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
       // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
