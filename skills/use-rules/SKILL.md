@@ -14,7 +14,7 @@ description: How Rules and Approvals decides your calls, how to ask why, and how
 
 ## Drafting a rule from the owner's English
 
-Rules never calls a model. When the owner asks you to set a rule in plain English, you translate it:
+Rules never calls a model to decide; a model may only help draft. When the owner asks you to set a rule in plain English, you translate it (the owner can also type a rule in Rules itself; its own reader handles simple rules and leaves the rest to you):
 
 1. Read the owner's sentence. Split it into one structured rule per outcome (at most 10).
 2. Call `rules__rule_draft_submit` with `text` (the owner's exact words), `rules` (your structured rules) and an optional `note` (your doubts). Send an idempotency key.

@@ -3,6 +3,7 @@
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
 import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { Composer } from "./compose.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 
 const DECISIONS = [
@@ -16,9 +17,12 @@ const MODES = [
   { value: "bound" as const, label: "Bound" },
 ];
 
-/** Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). */
-function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Directory; onDone: (saved: boolean) => void }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? emptySpec()));
+/**
+ * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). With `onUse` it edits a
+ * PROPOSED rule of the English box (`seed`): "Use this rule" hands the rule back and saves nothing (it is saved as a draft later).
+ */
+function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null; dir: Directory; onDone: (saved: boolean) => void; seed?: RuleSpec; onUse?: (spec: RuleSpec) => void }) {
+  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -42,6 +46,10 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
   const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
   const save = async () => {
     if (busy) return;
+    if (onUse) {
+      onUse(s);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -57,7 +65,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
     <Dialog
       open
       kicker="Rule"
-      title={initial ? `Edit rule (revision ${initial.rev})` : "New rule"}
+      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -67,7 +75,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
             Cancel
           </Button>
           <Button variant="primary" disabled={busy || !s.title || !s.outcome.reason} onClick={() => void save()}>
-            {busy ? "Saving" : "Save rule"}
+            {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
           </Button>
         </>
       }
@@ -314,7 +322,7 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
   );
 }
 
-export function RulesPage() {
+export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () => void; onOpenDrafts?: () => void }) {
   const dir = useDirectory();
   const load = useCallback(() => run("rules_list", {}), []);
   const { data, error, loading, reload } = useLoaded(load);
@@ -331,6 +339,12 @@ export function RulesPage() {
             New rule
           </Button>
         }
+      />
+      <Composer
+        dir={dir}
+        onSaved={onDraftSaved}
+        onOpenDrafts={onOpenDrafts}
+        editor={(spec, done) => <Editor initial={null} dir={dir} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
       />
       {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       <DirectoryErrors dir={dir} />

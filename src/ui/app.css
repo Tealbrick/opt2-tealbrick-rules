@@ -19,3 +19,5 @@
 .toolbar .rules-search { max-width: calc(var(--tb-s10) * 7); } /* 280px, the mockup's search width */
 .rules-intro { max-width: 62ch; }
 .rules-pri { white-space: nowrap; } /* "priority 90" wraps as one unit, as in the mockup */
+.rules-compose { display: grid; gap: var(--tb-s4); align-content: start; }
+.rules-compose h2 { font-size: var(--tb-text-title); }

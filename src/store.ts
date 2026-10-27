@@ -157,7 +157,8 @@ export interface DraftView {
 }
 
 export interface DraftSource {
-  kind: "agent" | "app";
+  /** `owner` (C373): the owner typed the English rule in Rules (`rule_compose_save`) */
+  kind: "agent" | "app" | "owner";
   /** product id of the proposing app: the VERIFIED `Caller.product` (SDK 0.1.27); absent on drafts stored before it */
   product?: string;
   name?: string;
@@ -188,6 +189,7 @@ export interface Submitter {
 }
 
 function sourceFor(by: Submitter): DraftSource {
+  if (by.type === "person") return { kind: "owner" };
   if (by.type !== "app") return { kind: "agent" };
   if (by.product) return { kind: "app", product: by.product, name: by.name.slice(0, 80), ...(by.instance ? { instance: by.instance } : {}) };
   return { kind: "app", name: by.name.slice(0, 80), instance: by.id };
@@ -223,7 +225,7 @@ export function submitDraft(db: Db, input: { text: string; note?: string; rules:
       : db.prepare("SELECT COUNT(*) AS n FROM drafts WHERE status = 'pending' AND submitted_by_type = ? AND submitted_by_id = ?").get(input.by.type, input.by.id)
     )?.n ?? 0,
   );
-  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : "agent"}; ask the owner to review them`, 429);
+  if (pending >= MAX_PENDING_DRAFTS) throw new TbError("too_many_drafts", `at most ${MAX_PENDING_DRAFTS} pending drafts per ${unverifiedApp ? "set of unverified apps" : input.by.type === "app" ? "app" : input.by.type === "person" ? "owner" : "agent"}; ${input.by.type === "person" ? "approve or reject some on the Drafts page first" : "ask the owner to review them"}`, 429);
   const id = `drf_${ulid(now)}`;
   db.prepare(
     "INSERT INTO drafts (id, status, text, note, rules, submitted_by_type, submitted_by_id, submitted_by_name, submitted_at, source) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",

@@ -1,6 +1,6 @@
 # Rules & Approvals (Tealbrick mini app)
 
-Rules & Approvals (product id `rules`): the per-workspace policy. It gates other apps' calls with allow, refuse or hold, always with a recorded reason. English rule requests are drafted by the owner's own agent and approved by the owner; Rules never calls a model. Built on the Miniapp SDK.
+Rules & Approvals (product id `rules`): the per-workspace policy. It gates other apps' calls with allow, refuse or hold, always with a recorded reason. English rules are proposals: the owner types one in Rules (a deterministic reader, no model) or asks their own agent, and approves the draft; Rules never calls a model to decide. Built on the Miniapp SDK.
 
 **Status:** stable 0.2.12; `main` is 0.4.0 (dev channel until promoted; 0.3.0 is never promoted, C266; it needs Governance 0.2.0 or newer for team rules, else they fail closed). Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-rules` (on 2026-10-17 its version tags are the plain build `0.2.12`, its earlier dev pre-release, and a `sha-` tag; there is no `0.2.11` tag in that registry). The manifest declares `requires.bridge: 0.1.17` (needed to carry the hold verdict).
 
@@ -38,7 +38,7 @@ Rule shape: `title`, `active`, `priority` 0 to 1000 (lower first), `match` {agen
 - **Fleet read model:** Governance (product id `fleet`) `directory_feed` (contract `fleet.directory_feed/1`, `sinceRevision`) through the companion grant, never inside a hook: at start and every 60 s with an app-initiated call, on agent-list changes, and from owner pages when older than 60 s. Every answer is validated against the vendored schema (`src/contracts`) and every handle must satisfy `normalizeHandle(h) === h`; a mismatch is a refusal (error shown by `fleet_status`, nothing of the answer read). Fail closed (C230, C236): a refusal (no grant, not found, unlicensed, any 4xx, an invalid answer) clears the copy at once; a transient failure (5xx incl. the feed's 503 `feed_too_large`, timeout) keeps it only while the last successful read is 10 minutes old or less. While the copy is unavailable (never read, refused, too old), a **deny or hold** rule that names Fleet facts (`callerTeams`, `onBehalfOf.teams`, `onBehalfOf.trust`) **applies**, and an **allow** rule that names them does **not**. The Rules pages say "Governance data unavailable — team rules apply strictly".
 - **Badge:** pending English drafts count toward the app's `pendingHolds` (TBD badge).
 - **App catalog (since 0.2.7, writers strict):** at start and every 6 h (every minute after a failure) Rules reads the SIGNED release index that Core reads (platform `registry` release; JWS verified with the pinned release key, which is a copy of the platform `registry/keys.json`, so a release-key rotation needs a new Rules release; each manifest is checked against `manifestDigest` and `validateManifest`). Every writer (owner rule create/update, dry-run candidate, `rule_draft_submit`, draft apply) refuses a rule that can never match: an unknown app, an operation a named app does not declare (an MCP tool name such as `tools_call` gets "did you mean `tools`"), an owner-only (person) operation, or an effect the named operation never has (dynamic operations excepted: the bridge sends the resolved effect). Without any catalog yet, a rule that names apps is refused with `catalog_unavailable` (503). Stored rules and drafts are never deleted: the Rules page flags them "never matches", and such a draft cannot be applied (`draft_never_matches`, 409). The gate never reads the catalog. Unit tests set `TB_RULES_CATALOG_OFF=1`. The catalog is the only outbound call of the app (15 s timeout, 4 MB cap; outbound HTTPS to github.com).
-- **English rules:** the owner's own agent translates and calls `rule_draft_submit` (a draft only); the owner approves it on the Drafts page. Rules never calls a model.
+- **English rules:** two ways in, both a draft only; the owner approves it on the Drafts page (`draft_decide`, C84). (1) The owner's own agent translates and calls `rule_draft_submit`. (2) The owner types the rule in the box at the top of the Rules page (C373, J3): `rule_compose` (person, read, no state) reads it with a deterministic parser (`src/compose.ts`: agent names from the agent directory, Governance team names, app ids from the catalog, effects and hold/refuse/allow words, memory-tag narrowing) and returns proposed rules, one readable line each, notes and what it could not read (a name not found or shared is never guessed); the owner edits or removes rules in the structured editor and `rule_compose_save` stores them as a draft with source `owner`. Every proposed rule passes the same writer checks as `rules_set` (schema, `specProblem`, the catalog). The parser sits behind a `Drafter` seam (`drafter: parser | model`); a model drafter may plug in later and goes through the same checks. Rules never calls a model to decide; a model may only help draft.
 
 ## Language
 
@@ -48,12 +48,14 @@ New code is TypeScript (Node 24+). Swift only where the macOS app requires it.
 
 | Path | Content |
 |---|---|
-| `tealbrick.manifest.json` | the only description: ops (person: rules, drafts, decisions, preview, Fleet status; agent: `rules_explain`, `rule_draft_submit`, `draft_status`), hooks, Fleet companion |
+| `tealbrick.manifest.json` | the only description: ops (person: rules, drafts, decisions, preview, Fleet status, English box `rule_compose` / `rule_compose_save`; agent: `rules_explain`, `rule_draft_submit`, `draft_status`), hooks, Fleet companion |
 | `src/engine.ts` | pure rule engine: match, first match, narrow-only claims, narrowing merge, redaction pointers |
 | `src/hooks.ts` | the three hook handlers (fail closed) |
 | `src/store.ts` | tables: rules + revisions, drafts, decision traces, Fleet copy (cached for the gate) |
 | `src/fleet.ts` | Fleet read model sync |
 | `src/catalog.ts` | the signed app catalog (release index) used by the writers |
+| `src/compose.ts` | the owner's English rule box: deterministic parser, `Drafter` seam, `vetProposal` (writer checks for any drafter) |
+| `src/directory.ts` | agent names from `events.agentsChanged` (memory only), for the English box |
 | `src/app.ts` | `defineApp`: one typed handler per operation, hooks, events, `onStart` |
 | `src/ui/` | owner UI in `<AppShell>`: Rules (editor + dry run), Drafts, Decisions, Teams, Holds, Agents |
 | `migrations/` | 2 forward-only migrations (`0001_init.sql` baseline, `0002_catalog.sql`). Never edit a released file. |

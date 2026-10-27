@@ -2,6 +2,18 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## Unreleased
+
+### Added
+- The owner's English rule box (C373, journey J3): a "Write a rule in plain English" box at the top of the Rules page. "Show rules" calls the new person op `rule_compose {text}` (read, no state), which returns `{drafter, rules, lines, notes, unmatched}`: proposed structured rules, one readable line each, notes, and the words it could not read with a plain hint. The owner can edit a proposed rule in the structured editor ("Use this rule" saves nothing) or remove it; "Save for approval" calls the new person op `rule_compose_save {text, rules, note?}` (write, idempotency required) and stores a pending draft with `source.kind` `owner`. Nothing applies before the owner approves it on the Drafts page (`draft_decide`, C84).
+- `src/compose.ts`: the deterministic parser (no model, no network) behind a `Drafter` seam (`drafter: parser | model`, Coordinator Q-A). It reads agent names (agent directory, possessives such as "Hermes's", "the CEO agent"), Governance team names ("agents in team Dev" → `callerTeams`; "someone from team X" → `onBehalfOf.teams`), app ids from the catalog ("in Connect"), effects, hold/refuse/allow words and memory-tag narrowing ("only work-tagged memories", "memories tagged work, non-critical", "talk about work things only"). Names that are not found or that two agents or teams share are never guessed. Every proposed rule passes the same writer checks as `rules_set` (`vetProposal`: manifest schema, then `ruleProblem`). Rules about the acting app (`callerProducts`) are a TODO for the 0.5 base.
+- `src/directory.ts`: agent names from `events.agentsChanged`, in memory only.
+- Drafts page: an owner draft says "written by you in Rules"; `drafts_list` / `draft_decide` outputs allow `source.kind` `owner` (no migration: `drafts.source` is JSON).
+- Tests: `test/compose.test.ts`, `test/compose-app.test.ts`, `test/ui-compose.test.ts`.
+
+### Changed
+- Code comments and docs: "Rules never calls a model to decide; a model may only help draft."
+
 ## 0.4.1 - 2026-10-25 (not tagged)
 
 ### Changed

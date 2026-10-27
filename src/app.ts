@@ -3,7 +3,8 @@
 // manifest operation id and one handler per manifest hook id. Op ids and I/O types come from the generated kit (`#kit`).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { validateAgainstSchema } from "@opt2-tealbrick/manifest";
+import { type AppDefinition, type Db, defineApp, type HandlerSpec, type Json, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type DecisionsListInput,
   type DecisionsListOutput,
@@ -17,6 +18,10 @@ import {
   type FleetStatusOutput,
   OP,
   type OpId,
+  type RuleComposeInput,
+  type RuleComposeOutput,
+  type RuleComposeSaveInput,
+  type RuleComposeSaveOutput,
   type RuleDraftSubmitInput,
   type RuleDraftSubmitOutput,
   type RulesDeleteInput,
@@ -33,6 +38,8 @@ import {
   type RulesSetOutput,
 } from "#kit";
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
+import { APP_NAMES, type ComposeEnv, type Drafter, describeRule, parserDrafter, vetProposal } from "./compose.ts";
+import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
@@ -117,6 +124,40 @@ const catalogOpts = (log: OpContext["log"]): SyncOptions => ({ log: { warn: (msg
 /** Review data for a draft: per rule why it can never match (null = fine), and each named operation's manifest title. */
 function reviewed(ctx: OpContext, d: DraftView): DraftView & { problems: (string | null)[]; opTitles: Record<string, string> } {
   return { ...d, problems: d.rules.map((s) => ruleProblem(ctx.db, s) || null), opTitles: opTitles(d.rules, catalogOf(ctx.db)) };
+}
+
+/** The RuleSpec schema of the manifest (the one the SDK validates `rules_set` input with). */
+const RULE_SCHEMA = (() => {
+  const set = manifest.operations.find((o) => o.id === "rules_set") as unknown as { input: { $defs: { RuleSpec: Record<string, unknown> } } };
+  return { ...set.input.$defs.RuleSpec, $defs: set.input.$defs } as unknown as Parameters<typeof validateAgainstSchema>[0];
+})();
+
+/**
+ * THE writer check for a proposed rule ("" = fine): the manifest schema (what the SDK checks on `rules_set` and draft
+ * input), then `ruleProblem` (the check every writer runs). A drafter's rules can only become drafts through it.
+ */
+const writerProblem =
+  (db: Db) =>
+  (spec: RuleSpec): string => {
+    const v = validateAgainstSchema(RULE_SCHEMA, spec as unknown as Json);
+    if (!v.ok) return `the rule does not fit the rule schema: ${v.errors.slice(0, 2).map((e) => `${e.path || "/"} ${e.message}`).join("; ")}`;
+    return ruleProblem(db, spec);
+  };
+
+/** Names the owner can use in an English rule: agents (directory), Governance teams (Fleet copy), apps (catalog). */
+function composeEnv(ctx: OpContext): ComposeEnv {
+  const cat = catalogOf(ctx.db);
+  return {
+    agents: knownAgents(ctx.db),
+    teams: fleetTeams(ctx.db).map((t) => ({ id: t.id, name: t.name })),
+    apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
+    problem: writerProblem(ctx.db),
+  };
+}
+
+/** The drafter for an English rule. Only the deterministic parser on this SDK; a model drafter plugs in here later (C373 Q-A). */
+function drafterFor(_ctx: OpContext): Drafter {
+  return parserDrafter;
 }
 
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
@@ -264,12 +305,36 @@ export const handlers = {
     },
   }),
   [OP.ruleDraftSubmit]: op<RuleDraftSubmitInput, RuleDraftSubmitOutput>({
-    // Creates a DRAFT only; the owner approves it in the UI (C84). Rules itself never calls a model.
+    // Creates a DRAFT only; the owner approves it in the UI (C84). Rules never calls a model to decide; a model may only help draft.
     redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
     async run(input, ctx) {
       await catalogFor(ctx, input.rules);
       const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: identity(ctx) });
       ctx.receipt.meta({ draftId: d.id });
+      ctx.statusChanged();
+      return { draftId: d.id, status: "pending" as const };
+    },
+  }),
+  [OP.ruleCompose]: op<RuleComposeInput, RuleComposeOutput>({
+    // The owner's English box (C373, J3): a PROPOSAL only, no state. Every drafter's rules pass the writer checks (vetProposal).
+    async run(input, ctx) {
+      person(ctx);
+      await freshFleet(ctx);
+      const draft = await drafterFor(ctx).draft(input.text, composeEnv(ctx));
+      await catalogFor(ctx, draft.rules);
+      const p = vetProposal(draft, writerProblem(ctx.db));
+      const agentName = (id: string) => knownAgents(ctx.db).find((a) => a.id === id)?.name ?? id;
+      const teamName = (id: string) => fleetTeams(ctx.db).find((t) => t.id === id)?.name ?? id;
+      return { drafter: drafterFor(ctx).id, rules: p.rules, lines: p.rules.map((r) => describeRule(r, agentName, teamName)), notes: p.notes.slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
+    },
+  }),
+  [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({
+    // The owner's own English rule as a pending DRAFT (source owner). It applies only through draft_decide (C84).
+    redact: (input) => `owner rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
+    async run(input, ctx) {
+      const actor = person(ctx);
+      await catalogFor(ctx, input.rules);
+      const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: { type: "person", id: actor, name: ctx.caller.name || "Owner" } });
       ctx.statusChanged();
       return { draftId: d.id, status: "pending" as const };
     },
@@ -285,7 +350,9 @@ export const definition: SdkAppDefinition = {
   migrations: migrationsDir,
   events: {
     // A changed agent list may change Fleet's teams: mark the copy stale and refresh now (app-initiated call, C85).
-    async agentsChanged(_agents, ctx) {
+    async agentsChanged(agents, ctx) {
+      // Agent names for the owner's English rule box (lookup only; rules store ids).
+      rememberAgents(ctx.db, agents);
       markFleetStale(ctx.db);
       void syncFleet(ctx.db, ctx.callApp as CallApp);
     },
