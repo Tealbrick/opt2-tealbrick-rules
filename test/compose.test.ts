@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildCatalog, catalogProblem } from "../src/catalog.ts";
-import { ALLOW_PRIORITY, type ComposeEnv, composeRules, describeRule, parserDrafter, STRICT_PRIORITY, vetProposal } from "../src/compose.ts";
+import { ALLOW_PRIORITY, type ComposeEnv, composeRules, describeRule, parserDrafter, placeProposal, priorityWhy, STRICT_PRIORITY, vetProposal } from "../src/compose.ts";
 import { evaluate, order, type RuleSpec, specProblem } from "../src/engine.ts";
 
 const HERMES = "agt_01J000000000000000000HERMES";
@@ -234,6 +234,34 @@ test("drafters: the parser is deterministic; vetProposal checks ANY drafter's pr
     ["bad", "ok 10"],
   );
   assert.match(v.unmatched[0]?.hint ?? "", /narrowing applies only to rules that allow/);
+});
+
+test("S2 placement: a composed allow never runs before an existing refuse/hold; composed refuse/hold run before existing allows", () => {
+  const text = "When someone from team X tags the CEO agent: only work-tagged memories, no money";
+  const existing = [
+    { priority: 100, decision: "deny" as const },
+    { priority: 5, decision: "allow" as const },
+    { priority: 40, decision: "hold" as const },
+  ];
+  const [deny, allow] = compose(text, { existing }).rules as [RuleSpec, RuleSpec];
+  assert.equal(allow.outcome.decision, "allow");
+  assert.equal(allow.priority, 110, "after the existing deny at 100");
+  assert.equal(deny.priority, 4, "before the existing allow at 5");
+  assert.equal(priorityWhy(allow, existing), "Priority 110: after your refuse and hold rules (highest priority 100), so it never skips them.");
+  assert.equal(priorityWhy(deny, existing), "Priority 4: before your allow rules (lowest priority 5), so none of them skips it.");
+  // the engine: a money call and a send by the CEO for team X still meet the owner's deny at 100 before the composed allow
+  const rules = order([
+    { id: "own", rev: 1, spec: { title: "no sends", active: true, priority: 100, match: { effects: ["outward"] }, outcome: { decision: "deny", reason: "r" } } as RuleSpec, updatedAt: 1 },
+    ...[deny, allow].map((spec, i) => ({ id: `c${i}`, rev: 1, spec, updatedAt: 2 })),
+  ]);
+  assert.deepEqual(rules.map((r) => r.id), ["c0", "own", "c1"]);
+  // no room after a refuse/hold at 1000: the allow is not proposed
+  const full = compose(text, { existing: [{ priority: 1000, decision: "hold" }] });
+  assert.deepEqual(full.rules, []);
+  assert.match(full.unmatched[0]?.hint ?? "", /already has priority 1000/);
+  // a model's own priorities are never kept
+  const placed = placeProposal({ rules: [{ ...allow, priority: 0 }], notes: [], unmatched: [] }, existing);
+  assert.equal(placed.rules[0]?.priority, 110);
 });
 
 test("describeRule: one readable line per rule", () => {

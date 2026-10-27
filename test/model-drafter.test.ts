@@ -6,7 +6,7 @@ import { test } from "node:test";
 import type { ResolvedModelRole } from "@opt2-tealbrick/manifest";
 import type { OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { OP } from "#kit";
-import { definition, handlers, MODEL_DRAFT_NOTE, MODEL_FAILED_NOTE, MODEL_FEWER_NOTE } from "../src/app.ts";
+import { definition, handlers, MODEL_DRAFT_NOTE, MODEL_FAILED_NOTE, MODEL_FEWER_NOTE, manifest } from "../src/app.ts";
 import { namesProblem } from "../src/compose.ts";
 import { syncFleet } from "../src/fleet.ts";
 import { draftBinding, type FetchFn, modelDrafter, parseAnswer } from "../src/model-drafter.ts";
@@ -134,5 +134,26 @@ test("rule_compose: model failure, a worse draft, no cap or no binding → the p
     const r = await withFetch(async () => ({ ok: true, status: 200, text: async () => answer({ rules: [rule()] }) }), async () => run(OP.ruleCompose)({ text }, await setup(model)));
     assert.equal(r.calls, 0);
     assert.equal(r.out.drafter, "parser");
+  }
+});
+
+test("C373 readiness: declaring the OPTIONAL roles never makes Rules report a model role (SDK 0.1.40): unset role, no bridge, no cap", async () => {
+  // the SDK's own model-roles module (not exported by the package; imported by file so the check runs against the pinned SDK)
+  const mod = (await import(new URL("../node_modules/@opt2-tealbrick/miniapp-sdk/dist/server/model-roles.js", import.meta.url).href)) as {
+    createModelRoles: (o: Record<string, unknown>) => { refresh(): Promise<void>; missing(): string[]; attention(): unknown };
+  };
+  const declared = (manifest as unknown as { settings?: { modelRoles?: { role: string; required: boolean; usedBy: string[] }[] } }).settings?.modelRoles ?? [];
+  assert.ok(declared.every((r) => r.required === false && r.usedBy.includes("app")), "only optional roles, used by the app");
+  const bridges: (() => unknown)[] = [
+    () => null, // no bridge yet
+    () => ({ request: async () => Object.assign(new Error("not found"), { status: 404 }) }), // a bridge without the model-roles route (no cap)
+  ];
+  for (const bridge of bridges) {
+    let pushes = 0;
+    const roles = mod.createModelRoles({ manifest, env: {}, secrets: { add() {} }, log: quiet, bridge, rev: () => 0, changed: () => pushes++ });
+    await roles.refresh();
+    assert.deepEqual(roles.missing(), [], "no role counts as missing");
+    assert.equal(roles.attention(), null, "no model_role_missing / model_role_optional attention: readiness stays ok");
+    assert.equal(pushes, 0, "no status push for an optional role");
   }
 });
