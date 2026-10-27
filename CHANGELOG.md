@@ -2,18 +2,28 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## Unreleased: calls from product X (C237)
+## 0.5.0 - unreleased
 
-Calls from product X (decision C237; Lane D review items S4-3 and S4-5). Needs bridge >= 0.2.2, which sends `HookCallInfo.caller.product` (spec 0.1.45); on older bridges a deny/hold rule with `callerProducts` applies to every app call and an allow rule with it never matches (see "Fail closed"). `requires.bridge` stays 0.1.17: nothing else needs the newer bridge, and an older one only makes these rules stricter. The version in `package.json` and the manifest is bumped by a separate chore PR.
+Rules 0.5.0 is the next release after 0.3.2 (the version on stable and qa1). It ships the work of 0.4.0 and 0.4.1 (never tagged or released), "calls from product X" (decision C237; built on a branch as "0.3.1"/"0.3.2", never released under that number) and new package pins (C373). The update 0.3.2 → 0.5.0 is allowed (`tealbrick-ci.json` `upgradeFrom: "<0.5.0"`); its only schema change is migration 0006.
 
-### Added
+### Summary
+- Dataset narrowing `narrowing.deepDatasets` and the match field `tools` (0.4.0, C336 RQ-2; details under 0.4.0 below).
+- Writers check `tools` entries with the catalog-name rule (0.4.1, QA-C354-3; details under 0.4.1 below).
+- Match field `callerProducts`: calls from the app with the VERIFIED product X (C237; details below). The hook reads `call.caller.product` (spec 0.1.45 HOOK-CALLER-PRODUCT, bridge 0.2.2 and later: present only for app callers, from the bridge's signed config). An app caller without a valid product is unverified: a `callerProducts` deny or hold applies (fail closed) and an allow does not match.
+- Both features share one fail-closed machinery in `src/engine.ts`: a closed deny/hold match can rest on unavailable Fleet facts, an unverified app product and/or a dynamic call without `target.tool`; the verdict carries `closedOnFleet`, `closedOnProduct` and `toolUnknown`, the trace detail `fleetUnavailable`, `callerProductUnavailable` and `toolUnknown`, and the dry run names every gap ("Fleet facts are unavailable and the call names no tool").
+- Dependencies (C373): miniapp-sdk 0.1.40 (was 0.1.31), manifest 0.1.31 (was 0.1.25), conformance 0.1.30 (was 0.1.22), ui 0.3.0 (was 0.2.4): the newest released tarballs. Lockfile integrity re-pinned (`tb-ci pin-tarballs`, checked against each release's `.integrity` asset); manifest 0.1.31 brings spec 0.1.64. No code change was needed for SDK 0.1.32 to 0.1.40: Rules declares no events, no model roles and no scopes, and its owner UI never calls `acceptOffer` (C283d). The test hook context stubs `modelRole` (SDK 0.1.39). UI 0.3.0 renames only the `scribe`/`design` header tokens, which Rules does not use. Conformance 0.1.30 passes (147 pass, 48 not applicable).
+- Still LOCAL COPIES (L1): `datasetsMatch` (spec 0.1.68) and the catalog tool name rule `DYNAMIC_CATALOG_NAME_RE` (spec 0.1.74) in `src/engine.ts`, because manifest 0.1.31 (spec 0.1.64) does not export them; `target.tool` is still read structurally. The TODOs say so.
+- Tests: `test/c270-gate.test.ts` (C270 checker): a call to an op the cached catalog does not list is still judged by the rules (no method registry, no passthrough); an app caller, with and without a verified product, is gated like an agent (deny by its `ins_` id in `agents`, deny and hold by `callerProducts`). `test/caller-product.test.ts` (C237) now also fuzzes unverified claims (`FUZZ_UNVERIFIED_CLAIMS` on: main has the 0.3.1 C82 fix).
+- Needs: bridge 0.2.2 or later for `callerProducts` and a bridge with `hook_tool` (spec 0.1.68) for `tools`; on older bridges these rules only get stricter, so `requires.bridge` stays 0.1.17.
+
+### Added: calls from product X (C237)
 - Match criterion `callerProducts` (list of product ids, unique, at most 50; `[a-z0-9][a-z0-9_-]*`, at most 40 characters) in every rule schema of the manifest (`rules_set`, `rule_draft_submit`, `rules_list`, `rules_get`, the drafts, `rules_preview` candidate). It matches only an APP caller whose VERIFIED product is listed. The product is the one the bridge sends on the hook call (`caller.product`, from its signed config), never an input field, a context field, a manifest name or an instance id. An AGENT never matches a rule that names `callerProducts`, whatever the decision (deny, hold or allow): an agent is not a product.
 - `rules_preview` takes `call.caller.product` for an app caller and answers `callerProductUnavailable`; the step text says when a rule applied or was skipped for that reason. `rules_explain` adds `callerProductUnavailable` per decision, next to `fleetUnavailable`. `decisions_list` adds `caller.product`. `rules_list` adds `catalog.productIds` (the editor's app picker).
 - Editor: the field "Calls from apps" (chips of the catalog's apps; an app the catalog does not list stays visible while a rule names it), the rule list line "calls from app ...", the dry run caller "An app" with its product, and the notice "The calling app's product can't be verified, ...". The Decisions page names an app by its product and says when it was not verified.
 - Migration `migrations/0006_caller_product.sql`: nullable `decisions.caller_product` and an index on it. No row changes; no down migration. A failed update is rolled back by the SDK pre-update snapshot.
 
-### Changed
-- `rules_explain` for an app caller reads its decisions by its verified product (S4-3): every instance of the product, so a reinstall keeps the history. Rows recorded before 0.3.2 have no product and are found by the instance id. An app with no verified product reads by its instance id only. An agent reads by its agent id as before.
+### Changed: calls from product X (C237)
+- `rules_explain` for an app caller reads its decisions by its verified product (S4-3): every instance of the product, so a reinstall keeps the history. Rows recorded before 0.5.0 have no product and are found by the instance id. An app with no verified product reads by its instance id only. An agent reads by its agent id as before.
 - The decision trace records the verified product of an app caller (`decisions.caller_product`). The context-phase trace of a narrowing now carries the same `fleetUnavailable` and `callerProductUnavailable` flags as the before-phase trace.
 - Writers stay strict (L24): a rule is refused when `callerProducts` holds an id that is not a product id, lists an id twice, or is combined with a field that can never match an app: `agents` that lists only `agt_` ids (an app is listed by its instance id `ins_...`), `modes`, or `callerTeams`. Stored rules and drafts are read as they are (they simply never match); the Rules page flags them "never matches".
 - The product validity rule (`validProduct`) lives in `src/engine.ts`; the draft identity, the hook facts, the dry run server side and the writers share it. The browser build does not load `engine.ts`, so the dry run form keeps a copy (`verifiableProduct` in `src/ui/api.ts`); a test pins the two to the same answer.
@@ -26,17 +36,17 @@ Calls from product X (decision C237; Lane D review items S4-3 and S4-5). Needs b
 - Seeded fuzz tests (30 000 and 40 000 random rule sets) check that an app without a product is never decided less strictly, and never narrowed less, than with any product; an agent is decided as if the product rules did not exist. The 30 000 case fuzz in `test/caller-product.test.ts` also draws claim rules (`onBehalfOf` kinds and ids alone, no Fleet fact) and calls with a VERIFIED claim or no claim, and checks the same properties for them. It also draws calls with an UNVERIFIED claim (`FUZZ_UNVERIFIED_CLAIMS`, on since the merge with the 0.3.1 C82 fix). Fleet-dependent claim criteria (teams, trust) are covered by the explicit tests, not by the fuzz.
 
 ### Caller identity (S4-5)
-- An app caller is identified by its verified product everywhere in Rules: draft keys (0.3.0), `callerProducts` rules and `rules_explain` (0.3.2). Names are labels only. An agent is identified by its agent id and never matches a product rule.
+- An app caller is identified by its verified product everywhere in Rules: draft keys (0.3.0), `callerProducts` rules and `rules_explain` (0.5.0). Names are labels only. An agent is identified by its agent id and never matches a product rule.
 - Accepted consequence (review item S3, decision C237): product is identity, so two live instances of the same verified product share one `rules_explain` decision history; each sees the other's rows. Decisions of a different product, of an agent, and of an app with no verified product (read by its own instance id) stay isolated; tests keep those cases.
 
-## 0.4.1 - 2026-10-25 (not tagged)
+## 0.4.1 - 2026-10-25 (not tagged, never released; shipped in 0.5.0)
 
 ### Changed
 - Writers refuse a `tools` entry that is not a catalog tool name (QA-C354-3, spec 0.1.74 `DYNAMIC_CATALOG_NAME_RE`): lower case letters, digits and single `_`, 2 to 48 characters, starting with a letter and not ending in `_`. Matching is unchanged: a call tool `x__…` still matches an entry `x`, also when the suffix is malformed (deny and hold fail closed; the bridge refuses such resolutions under spec 0.1.74). The regex is a local copy until the spec pin moves.
 
-## 0.4.0 - 2026-10-24 (not tagged)
+## 0.4.0 - 2026-10-24 (not tagged, never released; shipped in 0.5.0)
 
-Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.68, specs#47 at 3c108b0, not yet published). The pins stay as they are; the pin bump follows the spec release.
+Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.68, specs#47 at 3c108b0, not yet published). The pins stayed as they were; 0.5.0 moves them (see there).
 
 ### Added
 - Narrowing `deepDatasets {anyOf?, noneOf?}` (canonical dataset ids such as `public.orders`, each 1 to 128 characters, up to 64 per list, the object needs `anyOf` or `noneOf`): the datasets a data app (Knowledge deep knowledge) may read for the call, so an agent such as Henry can query Foundry data only for the datasets an allow rule grants. Ids compare EXACTLY and case-sensitively (no trim, no case folding; a name with a space at either end is refused at save). It merges across matching rules per key (including the skipped allow rules of the Fleet fail-closed path and the unverified-claim merge): `anyOf` lists intersect, `noneOf` lists unite, disjoint `anyOf` gives `[]` = nothing passes (C115), and a list present on either side survives. The context hook emits it as `rules.narrowing.deepDatasets` next to `memoryTags` with `v: 2` EXACTLY when the merged narrowing has `deepDatasets` (else `v: 1`), so a reader without dataset narrowing refuses it instead of answering unfiltered; a datasets-only narrowing is emitted. Writers refuse it on a deny or hold rule, an empty `anyOf`, a missing list, over-long lists or names, and names with a space at either end.
@@ -52,6 +62,10 @@ Dataset narrowing and tool matching (decisions C336 RQ-2, C325, C330; spec 0.1.6
 - No migration: both fields live in the rule JSON (`rules.spec`), and a stored rule without them reads as before.
 - LOCAL COPY: `datasetsMatch` and `normalizeDataset` in `src/engine.ts` copy the contract of the shared helper in @opt2-tealbrick/manifest (SDK-API 18.5 rules 3 and 4, specs#47 bd00164: exact ids; key present with an EMPTY id list fails under `noneOf` as under `anyOf`; no lineage; the `normalizeDataset` of the first draft is gone) (TODO in the code). The copy is replaced by the import when Rules pins the manifest package that carries it.
 - A deny or hold rule with `tools` still applies to a dynamic call when the bridge does not send `target.tool` (older than spec 0.1.68, or a bridge bug). The editor does not show "needs a bridge with `hook_tool`": the pinned SDK gives an app no view of the bridge capabilities (Core and the GUI show it). The gate reads whether the op is dynamic from the cached app catalog (a local table, no network).
+
+## 0.3.2 - 2026-10-25
+
+Image-only patch on the 0.3.1 line (decision C361a; branch `hotfix/0.3.2`): Node 24.22.1 base image (Node.js security release 2026-10-21), `upgradeFrom: "<=0.3.1"`, CI template ci-v9.21. No code change. This is the version on stable and qa1 when 0.5.0 is built.
 
 ## 0.3.1 - 2026-10-18
 

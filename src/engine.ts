@@ -24,7 +24,7 @@
 //   never matches a `tools` rule. A DYNAMIC op (or one the catalog cannot place) fails CLOSED like the Fleet facts do: a DENY or HOLD
 //   rule with `tools` applies (the tool is unknown, an older bridge or a bridge bug must not switch it off), an ALLOW rule with
 //   `tools` does not. With `target.tool` the match is exact. The verdict says so in `toolUnknown`.
-// - Calls from product X (`callerProducts`, 0.3.2): only an APP caller whose VERIFIED product (the bridge's signed
+// - Calls from product X (`callerProducts`, 0.5.0): only an APP caller whose VERIFIED product (the bridge's signed
 //   `caller.product`, never a name, input or context) is listed matches. An AGENT never matches a rule that names it
 //   (an agent is not a product), whatever the decision. An app caller with no valid product is handled like unavailable
 //   Fleet facts: a deny or hold rule APPLIES (its own flag, `closedOnProduct`) and an allow rule does NOT (its narrowing still

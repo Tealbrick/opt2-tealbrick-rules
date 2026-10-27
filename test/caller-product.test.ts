@@ -1,4 +1,4 @@
-// Rules 0.3.2 (C237): "calls from product X" (`match.callerProducts`). The hook's VERIFIED caller product (spec 0.1.45) for app callers:
+// Rules 0.5.0 (C237; developed as 0.3.2, merged into the 0.4.x line): "calls from product X" (`match.callerProducts`). The hook's VERIFIED caller product (spec 0.1.45) for app callers:
 // engine semantics (agent never matches, listed / not listed, absent or invalid = fail closed with its own flag), the fact source
 // (the caller only), writer strictness (L24), the decision trace and rules_explain by verified product (S4-3), the upgrade of a
 // 0.3.0 database. Every check has a quiet-on-good and a fire-on-bad case with exact outcomes (L27, L34).
@@ -552,7 +552,7 @@ test("rules_explain: an app reads its decisions by VERIFIED product (any instanc
   await gate(db, { callId: "cal_q_i3", app: { id: I3, product: "q" } });
   await gate(db, { callId: "cal_none_i4", app: { id: I4 } }); // no verified product
   await gate(db, { callId: "cal_agent", caller: AGENT_A });
-  // rows recorded before 0.3.2 have no product: they belong to an instance id only
+  // rows recorded before 0.5.0 have no product: they belong to an instance id only
   const legacy = (callId: string, id: string) =>
     recordDecision(db, { callId, phase: "before", facts: { ...base, caller: { type: "app", id, mode: null }, callerProduct: null }, decision: "allow", answered: "allow", reason: "old", rule: null, durationUs: 1 });
   legacy("cal_old_i1", I1);

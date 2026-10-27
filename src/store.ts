@@ -381,7 +381,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
 
 /**
  * `appCaller`: an APP reads its own decisions by its VERIFIED product (any instance of it, so a reinstall keeps its history),
- * and rows recorded without a product (before 0.3.2, or an unverified app) by its instance id. An app with no verified product
+ * and rows recorded without a product (before 0.5.0, or an unverified app) by its instance id. An app with no verified product
  * passes `product: null` and reads by instance id only.
  */
 export function listDecisions(

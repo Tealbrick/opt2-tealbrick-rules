@@ -437,7 +437,7 @@ describe("C336 RQ-2: tools and dataset narrowing in the rules editor", () => {
   });
 });
 
-// ── C237 / 0.3.2: calls from apps ──────────────────────────────────────────────────────────────────────────────
+// ── C237 / 0.5.0: calls from apps ──────────────────────────────────────────────────────────────────────────────
 const optionOf = (root: Element, label: string) => {
   const found = [...root.querySelectorAll('[role="option"]')].find((o) => o.textContent === label);
   assert.ok(found, `option "${label}"`);

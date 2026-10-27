@@ -236,7 +236,7 @@ export const handlers = {
     // A caller sees only its own calls' decisions (the identity is bound by the grant, never by input).
     async run(input, ctx) {
       // An agent is its agent id. An app is its VERIFIED product (S4-3: any instance of it, so a reinstall keeps its history); rows
-      // recorded without a product (before 0.3.2) and an app with no verified product are read by the verified instance id.
+      // recorded without a product (before 0.5.0) and an app with no verified product are read by the verified instance id.
       const me = ctx.caller.type === "app" ? { appCaller: { product: identity(ctx).product ?? null, instance: ctx.caller.id } } : { caller: ctx.caller.id };
       const { items } = listDecisions(ctx.db, { ...me, callId: input.callId, limit: input.limit ?? 10 });
       return {
