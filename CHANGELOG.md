@@ -17,7 +17,7 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`
 ### Changed
 - Code comments and docs: "Rules never calls a model to decide; a model may only help draft."
 
-## 0.5.0 - unreleased
+## 0.5.0-dev.5 - unreleased
 
 Rules 0.5.0 is the next release after 0.3.2 (the version on stable and qa1). It ships the work of 0.4.0 and 0.4.1 (never tagged or released), "calls from product X" (decision C237; built on a branch as "0.3.1"/"0.3.2", never released under that number) and new package pins (C373). The update 0.3.2 → 0.5.0 is allowed (`tealbrick-ci.json` `upgradeFrom: "<0.5.0"`); its schema changes are migrations 0006 and 0007.
 
