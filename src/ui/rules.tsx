@@ -280,6 +280,13 @@ function Editor({
   );
 }
 
+/** QA-C373-RU-3: "1 app manifest could not be read: knowledge 0.3.1." (up to 5 named). */
+export function skippedText(skipped: readonly { product: string; version: string }[]): string {
+  const named = skipped.slice(0, 5).map((s) => safeText(`${s.product} ${s.version}`));
+  const more = skipped.length > named.length ? `, and ${skipped.length - named.length} more` : "";
+  return `${skipped.length} app ${skipped.length === 1 ? "manifest" : "manifests"} could not be read: ${named.join(", ")}${more}.`;
+}
+
 /** How many rows "Check against recent calls" lists (the answer counts all of them). */
 const RECENT_SHOWN = 20;
 
@@ -610,6 +617,11 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           <strong>{broken === 1 ? "1 rule never matches:" : `${broken} rules never match:`}</strong> {broken === 1 ? "it names" : "they name"} an app or operation that the app doesn’t declare. Edit or
           delete {broken === 1 ? "it" : "them"}; until then {broken === 1 ? "it protects" : "they protect"} nothing.
         </Notice>
+      ) : null}
+      {data?.catalog.skipped?.length ? (
+        <p className="tb-hint">
+          {skippedText(data.catalog.skipped)} Rules naming an operation of {data.catalog.skipped.length === 1 ? "it" : "them"} may be refused until {data.catalog.skipped.length === 1 ? "it is" : "they are"} readable.
+        </p>
       ) : null}
       {data?.catalog.error ? (
         <p className="tb-hint">

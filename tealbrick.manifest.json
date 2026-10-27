@@ -121,7 +121,8 @@
               "error",
               "products",
               "productIds",
-              "dynamicOps"
+              "dynamicOps",
+              "skipped"
             ],
             "properties": {
               "generatedAt": {
@@ -163,6 +164,34 @@
                   "maxLength": 81
                 },
                 "description": "`product.op` of every dynamic operation in the catalog (an operation that runs many tools); the \"Allow always\" link uses it to ask for one tool."
+              },
+              "skipped": {
+                "type": "array",
+                "maxItems": 50,
+                "description": "Releases whose manifest the last good index read could not use (for example a manifest URL that answered 404). The rest of the catalog is unaffected.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product",
+                    "version",
+                    "reason"
+                  ],
+                  "properties": {
+                    "product": {
+                      "type": "string",
+                      "maxLength": 40
+                    },
+                    "version": {
+                      "type": "string",
+                      "maxLength": 40
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 120
+                    }
+                  }
+                }
               }
             }
           },

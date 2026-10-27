@@ -1,9 +1,12 @@
 // C373 dev.5 fixes, server side: rules_list names the dynamic operations of the catalog (D12), the preview over recent calls (D11),
 // control characters in writer text (RU-1), decisions of no-match writes (RU-2) and one bad manifest URL in the catalog (RU-3).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { generateKeyPair, type Manifest, signReleaseIndex, validateManifest } from "@opt2-tealbrick/manifest";
 import type { OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import { handlers } from "../src/app.ts";
+import { handlers, manifest as rulesManifest } from "../src/app.ts";
+import { catalogOf, catalogState, syncCatalog } from "../src/catalog.ts";
 import { makeHooks } from "../src/hooks.ts";
 import { setMode } from "../src/mode-store.ts";
 import { listDecisions, pruneDecisions, saveRule, TRACE_KEEP } from "../src/store.ts";
@@ -250,4 +253,76 @@ test("RU-2: the extra rows stay inside the retention (newest TRACE_KEEP, 30 days
   for (let i = 0; i < 2000; i++) await gate(db, { callId: callId(), caller: AGENT_A, product: "knowledge", op: "some_op", effect: "write" });
   const total = Number(db.prepare("SELECT COUNT(*) AS n FROM decisions").get()?.n);
   assert.ok(total < TRACE_KEEP + 1000, `pruned while recording (${total})`);
+});
+
+// ── RU-3: one bad manifest URL does not fail the catalog read ────────────────
+const connectManifest = JSON.parse(readFileSync(new URL("./fixtures/connect.manifest.json", import.meta.url), "utf8")) as Manifest;
+const INDEX = "https://registry.test/index.json";
+
+/** A signed index (test key) with Connect and Rules; `fail` lists URLs (or index assets) that answer 404; `failOnce` answers 404 on the first fetch only. */
+async function fakeIndex(opts: { fail?: string[]; failOnce?: string[] } = {}) {
+  const key = await generateKeyPair({ extractable: true });
+  const files = new Map<string, string>();
+  const rec = (m: Manifest, n: number) => {
+    const v = validateManifest(m);
+    assert.ok(v.ok, `fixture manifest ${m.id} is valid`);
+    const url = `https://raw.test/${m.id}/tealbrick.manifest.json`;
+    files.set(url, JSON.stringify(m));
+    return { id: `rel_01J0000000000000000000000${n}`, product: m.id, kind: "app", version: m.version, channel: "stable", manifestDigest: v.digest, manifestUrl: url, publishedAt: "2026-10-13T00:00:00.000Z" };
+  };
+  const body = { schema: "opt2.release-index/v2" as const, generatedAt: "2026-10-13T12:00:00.000Z", releases: [rec(connectManifest, 1), rec(rulesManifest as unknown as Manifest, 2)], harnesses: [], offers: [] };
+  files.set(INDEX, JSON.stringify(body));
+  files.set(INDEX.replace(/\.json$/, ".jws"), await signReleaseIndex(body, { iat: Math.floor(Date.now() / 1000) }, key));
+  const once = new Set(opts.failOnce ?? []);
+  const fetches: string[] = [];
+  const fetchText = async (url: string) => {
+    fetches.push(url);
+    if (opts.fail?.includes(url)) throw new Error("fetch 404");
+    if (once.delete(url)) throw new Error("fetch 404");
+    const t = files.get(url);
+    if (t === undefined) throw new Error(`fetch 404 ${url}`);
+    return t;
+  };
+  return { url: INDEX, fetchText, fetches, retryMs: 0, keys: { keys: [{ kty: "OKP" as const, crv: "Ed25519" as const, x: key.publicJwk.x }] }, connectUrl: "https://raw.test/connect/tealbrick.manifest.json" };
+}
+
+test("RU-3: one manifest URL that answers 404 skips that release only; the catalog is read, the rest works, the owner is told which", async () => {
+  const { db } = migratedDb();
+  const idx = await fakeIndex({ fail: ["https://raw.test/connect/tealbrick.manifest.json"] });
+  await syncCatalog(db, idx);
+  const st = catalogState(db);
+  assert.equal(st.error, null, "the catalog read did not fail");
+  assert.notEqual(st.syncedAt, null);
+  assert.deepEqual(st.skipped, [{ product: "connect", version: connectManifest.version, reason: "fetch 404" }]);
+  assert.equal(catalogOf(db)?.has("rules"), true, "the other release is in the catalog");
+  assert.equal(catalogOf(db)?.has("connect"), false);
+  const listed = await run("rules_list")({}, owner(db));
+  assert.equal(listed.catalog.error, null);
+  assert.deepEqual(listed.catalog.skipped, [{ product: "connect", version: connectManifest.version, reason: "fetch 404" }]);
+  assert.equal(listed.catalog.products, 1);
+  // the writer still refuses an operation it cannot place
+  await assert.rejects(run("rules_set")({ rule: spec({ title: "t", match: { products: ["connect"], operations: ["buzz_dm"] } }) }, owner(db)), { code: "input_invalid", message: /unknown app “connect”/ });
+  // the release is read again by the next sync and the note goes
+  await syncCatalog(db, await fakeIndex());
+  assert.deepEqual(catalogState(db).skipped, []);
+  assert.equal(catalogOf(db)?.has("connect"), true);
+  assert.deepEqual((await run("rules_list")({}, owner(db))).catalog.skipped, []);
+});
+
+test("RU-3: a failed INDEX read keeps the last catalog and the last skipped note, and says so as the global error; a 404 for a moment is read again", async () => {
+  const { db } = migratedDb();
+  await syncCatalog(db, await fakeIndex({ fail: ["https://raw.test/connect/tealbrick.manifest.json"] }));
+  // the index.jws answers 404 on every try: the read fails as a whole
+  await syncCatalog(db, await fakeIndex({ fail: [INDEX.replace(/\.json$/, ".jws")] }));
+  const st = catalogState(db);
+  assert.equal(st.error, "fetch 404");
+  assert.equal(catalogOf(db)?.has("rules"), true, "the last catalog stays");
+  assert.equal(st.skipped.length, 1, "the last skipped note stays");
+  // index.json answers 404 once (a registry publish replaces its assets): the read tries again and succeeds
+  const { db: db2 } = migratedDb();
+  const idx = await fakeIndex({ failOnce: [INDEX] });
+  await syncCatalog(db2, idx);
+  assert.equal(catalogState(db2).error, null);
+  assert.equal(catalogOf(db2)?.has("connect"), true);
+  assert.ok(idx.fetches.filter((u) => u === INDEX).length >= 2, "the index was read twice");
 });

@@ -249,6 +249,7 @@ export const handlers = {
           products: catalogOf(ctx.db)?.size ?? 0,
           productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort(),
           dynamicOps: dynamicOpIds(ctx.db),
+          skipped: st.skipped,
         },
       };
     },

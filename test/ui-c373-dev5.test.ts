@@ -477,3 +477,28 @@ describe("RU-1: a stored value with control or invisible characters is shown wri
     await m.unmount();
   });
 });
+
+describe("RU-3: a manifest that could not be read is named, not a global failure", () => {
+  it("one skipped release: the note names product and version and the page does not say the catalog read failed", async () => {
+    reset();
+    stub.outputs.rules_list = LIST([HOLD_RULE]);
+    (stub.outputs.rules_list as { catalog: object }).catalog = { ...CATALOG, skipped: [{ product: "connect", version: "0.4.2", reason: "fetch 404" }] };
+    let m = await mount(h(rules.RulesPage));
+    assert.match(textOf(m.host), /1 app manifest could not be read: connect 0\.4\.2\./);
+    assert.doesNotMatch(textOf(m.host), /last read failed/);
+    await m.unmount();
+    (stub.outputs.rules_list as { catalog: object }).catalog = { ...CATALOG, skipped: Array.from({ length: 7 }, (_, i) => ({ product: `app${i}`, version: "1.0.0", reason: "fetch 404" })) };
+    m = await mount(h(rules.RulesPage));
+    assert.match(textOf(m.host), /7 app manifests could not be read: app0 1\.0\.0, app1 1\.0\.0, app2 1\.0\.0, app3 1\.0\.0, app4 1\.0\.0, and 2 more\./);
+    await m.unmount();
+  });
+  it("a failed index read still says so", async () => {
+    reset();
+    stub.outputs.rules_list = LIST([HOLD_RULE]);
+    (stub.outputs.rules_list as { catalog: object }).catalog = { ...CATALOG, error: "fetch 404", syncedAt: "2026-10-27T01:00:00.000Z", skipped: [] };
+    const m = await mount(h(rules.RulesPage));
+    assert.match(textOf(m.host), /App catalog: last read failed \(fetch 404\)/);
+    assert.doesNotMatch(textOf(m.host), /could not be read/);
+    await m.unmount();
+  });
+});
