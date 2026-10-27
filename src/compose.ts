@@ -69,15 +69,33 @@ export const DECISION_WORD: Record<Decision, string> = { allow: "Allow", deny: "
 const EFFECT_WORD: Record<Effect, string> = { read: "reads", write: "writes", outward: "outward actions", destructive: "destructive actions", money: "money" };
 
 /**
- * Writer checks on a proposal from ANY drafter: a rule with a problem is taken out and listed in `unmatched` with the
- * problem; at most MAX_COMPOSED_RULES rules stay.
+ * A rule that names an agent, team or app the owner's directory does not list ("" = fine). The parser only ever uses listed
+ * names; a model drafter could invent one, and a rule about an id nobody has would look like protection and protect nothing.
  */
-export function vetProposal(p: Proposal, problem: (spec: RuleSpec) => string): Proposal {
+export function namesProblem(spec: RuleSpec, env: Pick<ComposeEnv, "agents" | "teams" | "apps">): string {
+  const m = spec.match;
+  const agents = new Set(env.agents.map((a) => a.id));
+  const teams = new Set(env.teams.map((t) => t.id));
+  const apps = new Set(env.apps.map((a) => a.id));
+  const agent = m.agents?.find((a) => !agents.has(a));
+  if (agent !== undefined) return `it names an agent Rules does not know (${quote(cap(agent, 64))})`;
+  const team = [...(m.callerTeams ?? []), ...(m.onBehalfOf?.teams ?? [])].find((t) => !teams.has(t));
+  if (team !== undefined) return `it names a team Rules does not know (${quote(cap(team, 64))})`;
+  const app = [...(m.products ?? []), ...(((m as { callerProducts?: string[] }).callerProducts) ?? [])].find((a) => !apps.has(a));
+  if (app !== undefined) return `it names an app Rules does not know (${quote(cap(app, 40))})`;
+  return "";
+}
+
+/**
+ * Writer checks on a proposal from ANY drafter: a rule with a problem (the writer check, then, with `env`, unknown names) is
+ * taken out and listed in `unmatched` with the problem; at most MAX_COMPOSED_RULES rules stay.
+ */
+export function vetProposal(p: Proposal, problem: (spec: RuleSpec) => string, env?: Pick<ComposeEnv, "agents" | "teams" | "apps">): Proposal {
   const rules: RuleSpec[] = [];
   const unmatched = [...p.unmatched];
   for (const spec of p.rules) {
-    const why = problem(spec);
-    if (why) unmatched.push({ text: spec.title, hint: `This rule cannot be saved: ${why}` });
+    const why = problem(spec) || (env ? namesProblem(spec, env) : "");
+    if (why) unmatched.push({ text: typeof spec.title === "string" ? cap(spec.title, 200) : "a rule", hint: `This rule cannot be saved: ${why}` });
     else if (rules.length >= MAX_COMPOSED_RULES) unmatched.push({ text: spec.title, hint: `A draft holds at most ${MAX_COMPOSED_RULES} rules. Write the rest as a second rule.` });
     else rules.push(spec);
   }

@@ -40,11 +40,12 @@ import {
   type RulesSetOutput,
 } from "#kit";
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
-import { APP_NAMES, type ComposeEnv, type Drafter, describeRule, parserDrafter, vetProposal } from "./compose.ts";
+import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
+import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
 import {
   type DraftView,
   decideDraft,
@@ -152,9 +153,35 @@ function composeEnv(ctx: OpContext): ComposeEnv {
   };
 }
 
-/** The drafter for an English rule. Only the deterministic parser on this SDK; a model drafter plugs in here later (C373 Q-A). */
-function drafterFor(_ctx: OpContext): Drafter {
-  return parserDrafter;
+export const MODEL_DRAFT_NOTE = "Drafted with your model. Check every rule before you save it.";
+export const MODEL_FAILED_NOTE = "Your model could not help this time, so this is Rules’ own reading.";
+export const MODEL_FEWER_NOTE = "Your model’s draft had fewer rules Rules can save, so this is Rules’ own reading.";
+
+/**
+ * The English box's drafters (C373 Q-A). The deterministic parser always runs first. Only when it could not read everything AND
+ * the owner bound the optional model role (`utility`, else `reasoning`; bridge cap `model_roles`) does the model draft the
+ * whole text; its proposal is vetted exactly like the parser's (writer checks plus known names) and is used only when it keeps
+ * at least as many rules. Any model failure falls back to the parser with a note. Never used by a hook.
+ */
+async function draftRules(ctx: OpContext, text: string): Promise<{ drafter: DrafterId; proposal: Proposal }> {
+  const env = composeEnv(ctx);
+  const vet = async (p: Proposal): Promise<Proposal> => {
+    await catalogFor(ctx, p.rules.filter((r) => !!r && typeof r === "object" && !!r.match && typeof r.match === "object"));
+    return vetProposal(p, env.problem, env);
+  };
+  const parsed = await vet(await parserDrafter.draft(text, env));
+  if (parsed.unmatched.length === 0) return { drafter: parserDrafter.id, proposal: parsed };
+  const binding = await draftBinding(ctx as ModelSource, (msg, data) => ctx.log.warn(msg, data));
+  if (!binding) return { drafter: parserDrafter.id, proposal: parsed };
+  try {
+    const drafted = await vet(await modelDrafter(binding, { signal: ctx.signal }).draft(text, env));
+    if (drafted.rules.length >= parsed.rules.length) return { drafter: "model", proposal: { ...drafted, notes: [MODEL_DRAFT_NOTE, ...drafted.notes] } };
+    return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FEWER_NOTE] } };
+  } catch (e) {
+    // the reason only (an HTTP status, a parse error); never the binding or its key
+    ctx.log.warn("model draft failed", { error: (e instanceof Error ? e.message : "unknown").slice(0, 200) });
+    return { drafter: parserDrafter.id, proposal: { ...parsed, notes: [...parsed.notes, MODEL_FAILED_NOTE] } };
+  }
 }
 
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
@@ -332,12 +359,10 @@ export const handlers = {
     async run(input, ctx) {
       person(ctx);
       await freshFleet(ctx);
-      const draft = await drafterFor(ctx).draft(input.text, composeEnv(ctx));
-      await catalogFor(ctx, draft.rules);
-      const p = vetProposal(draft, writerProblem(ctx.db));
+      const { drafter, proposal: p } = await draftRules(ctx, input.text);
       const agentName = (id: string) => knownAgents(ctx.db).find((a) => a.id === id)?.name ?? id;
       const teamName = (id: string) => fleetTeams(ctx.db).find((t) => t.id === id)?.name ?? id;
-      return { drafter: drafterFor(ctx).id, rules: p.rules, lines: p.rules.map((r) => describeRule(r, agentName, teamName)), notes: p.notes.slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
+      return { drafter, rules: p.rules, lines: p.rules.map((r) => describeRule(r, agentName, teamName)), notes: p.notes.slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
     },
   }),
   [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({
