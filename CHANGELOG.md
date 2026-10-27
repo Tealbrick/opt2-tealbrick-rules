@@ -2,6 +2,21 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## Unreleased
+
+### Added
+- The owner's English rule box (C373, journey J3): a "Write a rule in plain English" box at the top of the Rules page. "Show rules" calls the new person op `rule_compose {text}` (read, no state), which returns `{drafter, rules, lines, notes, unmatched}`: proposed structured rules, one readable line each, notes, and the words it could not read with a plain hint. The owner can edit a proposed rule in the structured editor ("Use this rule" saves nothing) or remove it; "Save for approval" calls the new person op `rule_compose_save {text, rules, note?}` (write, idempotency required) and stores a pending draft with `source.kind` `owner`. Nothing applies before the owner approves it on the Drafts page (`draft_decide`, C84).
+- `src/compose.ts`: the deterministic parser (no model, no network) behind a `Drafter` seam (`drafter: parser | model`, Coordinator Q-A). It reads agent names (agent directory, possessives such as "Hermes's", "the CEO agent"), Governance team names ("agents in team Dev" → `callerTeams`; "someone from team X" → `onBehalfOf.teams`), app ids from the catalog ("in Connect"), effects, hold/refuse/allow words and memory-tag narrowing ("only work-tagged memories", "memories tagged work, non-critical", "talk about work things only"). Names that are not found or that two agents or teams share are never guessed. Every proposed rule passes the same writer checks as `rules_set` (`vetProposal`: manifest schema, then `ruleProblem`). The app that makes the call ("Evolution's outward actions", "calls from the Evolution app") becomes `callerProducts`.
+- `src/directory.ts`: agent names from `events.agentsChanged`, in memory only.
+- Optional model drafter (`src/model-drafter.ts`, C373 Q-A, SDK 0.1.40 `modelRole`): when the parser could not read everything, the bridge has cap `model_roles` and the owner bound the optional role `utility` (else `reasoning`), the owner's model drafts the text as JSON (OpenAI-compatible or Anthropic API). Its rules pass the same writer checks plus a known-names check (`namesProblem`); it is used only when it keeps at least as many rules; any failure falls back to the parser with a note. The manifest declares both roles as optional (`settings.modelRoles`, `usedBy` app, `required` false) in a separate commit; without the declaration the parser drafts alone.
+- Tests: `test/model-drafter.test.ts`.
+- Placement (S2): composed refuse/hold rules run before the owner's existing allow rules, composed allow rules after every existing refuse/hold (highest + 10); each line says the priority and why. `rule_compose` takes optional `agents` (names the page read from `tb.agents_list`). Declaring the optional model roles leaves readiness `ok` (SDK 0.1.40 reports only required roles).
+- Drafts page: an owner draft says "written by you in Rules"; `drafts_list` / `draft_decide` outputs allow `source.kind` `owner` (no migration: `drafts.source` is JSON).
+- Tests: `test/compose.test.ts`, `test/compose-app.test.ts`, `test/ui-compose.test.ts`.
+
+### Changed
+- Code comments and docs: "Rules never calls a model to decide; a model may only help draft."
+
 ## 0.5.0 - unreleased
 
 Rules 0.5.0 is the next release after 0.3.2 (the version on stable and qa1). It ships the work of 0.4.0 and 0.4.1 (never tagged or released), "calls from product X" (decision C237; built on a branch as "0.3.1"/"0.3.2", never released under that number) and new package pins (C373). The update 0.3.2 → 0.5.0 is allowed (`tealbrick-ci.json` `upgradeFrom: "<0.5.0"`); its schema changes are migrations 0006 and 0007.

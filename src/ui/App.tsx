@@ -112,7 +112,7 @@ export function App() {
       ) : nav.page === "agents" ? (
         <AgentsPage />
       ) : (
-        <RulesPage />
+        <RulesPage onDraftSaved={refreshPending} onOpenDrafts={() => nav.go("drafts")} />
       )}
     </AppShell>
   );
