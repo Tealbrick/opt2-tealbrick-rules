@@ -10,7 +10,7 @@ import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { OP } from "#kit";
 import { handlers } from "../src/app.ts";
 import { FEED_INVALID, parseFeed, syncFleet } from "../src/fleet.ts";
-import { fleetFacts, fleetState, fleetTeams } from "../src/store.ts";
+import { fleetFacts, fleetState, fleetTeams, writeFleet } from "../src/store.ts";
 import { AGENT_A, AGENT_R, feed, migratedDb, OWNER, opCtx } from "./helpers.ts";
 
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
@@ -59,6 +59,29 @@ test("agents[].handles: read when sent (the agent holds each handle:<h> key), re
   // fire: a handle that is not canonical refuses the whole answer (the schema's handle pattern already catches this one)
   assert.throws(() => parseFeed(feed({ agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, handles: ["slack:u900"] }] })), { code: FEED_INVALID });
   assert.throws(() => parseFeed(feed({ agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, handles: Array.from({ length: 17 }, (_, i) => `telegram:${i + 1}`) }] })), { code: FEED_INVALID });
+});
+
+test("upgrade: a stored copy read WITHOUT accept (Rules 0.3.x, or before this process) is never delta-read with accept: the first accept read is FULL", async () => {
+  // Governance answers {unchanged} for sinceRevision === its revision BEFORE it looks at accept (Governance 0.3.0, QA S3), so a
+  // delta read would keep a copy without agent handles until the revision moves.
+  const { db } = migratedDb();
+  writeFleet(db, parseFeed(feed({ revision: 5 })).model, { revision: 5, error: null });
+  assert.equal(fleetState(db).stale, false, "a usable, fresh stored copy that would allow a delta read");
+  const seen: Record<string, unknown>[] = [];
+  const handles = feed({ revision: 5, agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, handles: ["slack:U900"] }] });
+  await syncFleet(db, (async (_p: string, _o: string, input: Record<string, unknown>) => {
+    seen.push(input);
+    return { status: "ok" as const, output: input.sinceRevision === 5 ? { v: 1, revision: 5, unchanged: true } : handles };
+  }) as never);
+  assert.deepEqual([...seen], [{ accept: ["agent_handles"] }], "no sinceRevision on the first read with accept");
+  assert.equal(fleetFacts(db).trust.has("handle:slack:U900"), true, "the agent handles arrive at once, not when the revision moves");
+  // quiet: the next read is a delta read again (the copy now has the shape asked for)
+  seen.length = 0;
+  await syncFleet(db, (async (_p: string, _o: string, input: Record<string, unknown>) => {
+    seen.push(input);
+    return { status: "ok" as const, output: { v: 1, revision: 5, unchanged: true } };
+  }) as never);
+  assert.deepEqual(seen, [{ accept: ["agent_handles"], sinceRevision: 5 }]);
 });
 
 test("an older Governance that refuses accept (400 input_invalid) is read without it at once, asked again after 10 min; delta reads only onto a copy of the same shape", async () => {

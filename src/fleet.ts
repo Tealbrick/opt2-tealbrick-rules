@@ -257,7 +257,8 @@ const acceptRefusedAt = new WeakMap<Db, number>();
 /**
  * Whether the stored copy was read WITH agent handles (in memory). A delta read (`sinceRevision`) is only asked for when the
  * copy has the shape this read asks for: after a restart, or when `accept` is switched on or off, the next read is a full one
- * (an "unchanged" answer would keep a copy without the handles). No column, so no migration.
+ * (Governance 0.3.0 answers "unchanged" for `sinceRevision` = its revision BEFORE it looks at `accept`, so a delta read would keep
+ * a copy without the handles until the revision moves). In memory, so an upgrade or restart costs one full read; no column, no migration.
  */
 const copyWithHandles = new WeakMap<Db, boolean>();
 

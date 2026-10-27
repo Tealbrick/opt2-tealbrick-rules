@@ -414,6 +414,8 @@ interface Hit {
   skipProduct: boolean;
   skipRecipients: boolean;
   skipWorkflow: boolean;
+  /** the scan ended without a rule that matches on known facts: what follows the closed rules is the no-match path (the mode) */
+  exhausted: boolean;
 }
 
 /**
@@ -454,12 +456,24 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
     const closed = decisive === worst;
-    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, onWorkflow: closed && !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow };
+    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, onWorkflow: closed && !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow, exhausted: false };
   }
-  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, onWorkflow: !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow };
+  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, onWorkflow: !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow, exhausted: true };
 }
 
 function verdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
+  const v = ruleVerdictOf(hit, facts, mode);
+  // C236 with the default mode (C373c): closed rules that only apply because facts are missing, and NO rule that matches on known
+  // facts after them. With the facts those rules might not match, and then the MODE decides; so the stricter of the closed rule
+  // and the mode decides (ties: the rule). Without this, Closed mode would answer a hold where the known facts get a refusal.
+  if (hit.rule && hit.closed && hit.exhausted && mode !== "permissive") {
+    const m = ruleVerdictOf({ ...hit, rule: null }, facts, mode);
+    if (SEVERITY[m.decision] > SEVERITY[v.decision]) return m;
+  }
+  return v;
+}
+
+function ruleVerdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
   const rule = hit.rule;
   // No rule matched: the workspace default mode decides (C373c, src/mode.ts); Permissive keeps this allow.
   if (!rule) return modeVerdict({ decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, recipientsUnknown: hit.skipRecipients, closedOnWorkflow: hit.skipWorkflow, narrowingRuleId: hit.skippedRuleId }, facts, mode);
