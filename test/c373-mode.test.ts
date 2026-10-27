@@ -1,6 +1,6 @@
 // C373c: the workspace DEFAULT MODE for calls that match no rule (Permissive allow, Verification hold, Closed refuse), its
 // built-in exemptions (Rules' own Governance read first), `mode_set` (looser needs confirm, every change recorded, person
-// only), the dry run, `rules_explain`, and migration 0010 on a 0.4.x-shaped database. Every case asserts the exact outcome
+// only), the dry run, `rules_explain`, and migration 0008 on a 0.4.x-shaped database. Every case asserts the exact outcome
 // and has a fire-on-bad counterpart (L27).
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -163,6 +163,33 @@ test("exemption (a) does not override an owner rule: a matching deny rule on the
   assert.equal((await gate(db, { callId: "cal_f", app: { product: "rules" }, product: "fleet", op: "directory_feed", effect: "read" })).allow, false);
 });
 
+test("exemption (a2): Operator Inbox's owner DMs through Connect pass Verification and Closed (no hold-notification loop)", async () => {
+  const { db } = migratedDb();
+  for (const mode of ["verification", "closed"] as const) {
+    setMode(db, { mode, confirm: true, actor: OWNER });
+    for (const op of ["buzz_dm", "buzz_dm_first", "channel_dm", "channel_dm_first"])
+      assert.deepEqual(await gate(db, { callId: `cal_${mode}_${op}`, app: { product: "inbox" }, product: "connect", op, effect: "outward" }), { allow: true }, `${mode} ${op}`);
+  }
+  // outward, so recorded: the trace says the exemption, not a rule, let it pass
+  assert.deepEqual(traces(db).cal_closed_buzz_dm?.detail, { decidedBy: "exemption", mode: "closed", exemption: "inbox-owner-alerts" });
+});
+
+test("exemption (a2) fire-on-bad: an ins_ caller without a product, another product calling buzz_dm, Inbox calling another Connect op, an agent calling buzz_dm are NOT exempt", async () => {
+  const { db } = migratedDb();
+  setMode(db, { mode: "verification", actor: OWNER });
+  const held = (r: Record<string, any>) => [r.allow, r.hold?.family];
+  assert.deepEqual(held(await gate(db, { callId: "cal_a", app: { id: APP_INSTANCE }, product: "connect", op: "buzz_dm", effect: "outward" })), [false, "policy"], "app without product");
+  assert.deepEqual(held(await gate(db, { callId: "cal_b", app: { product: "observer" }, product: "connect", op: "buzz_dm", effect: "outward" })), [false, "policy"], "another product");
+  assert.deepEqual(held(await gate(db, { callId: "cal_c", app: { product: "inbox" }, product: "connect", op: "tools", effect: "outward" })), [false, "policy"], "another connect op");
+  assert.deepEqual(held(await gate(db, { callId: "cal_d", product: "connect", op: "buzz_dm", effect: "outward" })), [false, "policy"], "an agent");
+  assert.deepEqual(held(await gate(db, { callId: "cal_e", app: { product: "inbox" }, product: "kanban", op: "buzz_dm", effect: "outward" })), [false, "policy"], "the same op name on another app");
+  // an owner rule still decides: a deny on connect refuses Inbox's DM
+  const cdb = seedCatalog(migratedDb().db, ["connect"]);
+  saveRule(cdb, { spec: spec({ title: "no dms", match: { products: ["connect"] }, decision: "deny", reason: "dms are off" }), actor: OWNER });
+  setMode(cdb, { mode: "closed", actor: OWNER });
+  assert.equal((await gate(cdb, { callId: "cal_f", app: { product: "inbox" }, product: "connect", op: "buzz_dm", effect: "outward" })).allow, false);
+});
+
 test("exemptions (b) and (c): Rules' self-service ops and standard tb.* ops pass the mode; look-alikes do not", () => {
   for (const op of ["rules_explain", "rule_draft_submit", "draft_status"]) assert.equal(exemptionOf(facts({ product: "rules", op })), "rules-self-service", op);
   for (const op of ["tb.holds_pending", "tb.hold_status"]) assert.equal(exemptionOf(facts({ callerType: "app", callerProduct: "inbox", product: "kanban", op })), "platform-standard-ops", op);
@@ -174,7 +201,7 @@ test("exemptions (b) and (c): Rules' self-service ops and standard tb.* ops pass
   assert.deepEqual([v.decision, v.byMode, modeDetail(v)], ["allow", { mode: "closed", exemption: "rules-self-service" }, { decidedBy: "exemption", mode: "closed", exemption: "rules-self-service" }]);
   assert.deepEqual(
     EXEMPTIONS.map((e) => e.id),
-    ["rules-governance-feed", "rules-self-service", "platform-standard-ops"],
+    ["rules-governance-feed", "inbox-owner-alerts", "rules-self-service", "platform-standard-ops"],
   );
 });
 
@@ -196,7 +223,7 @@ test("mode_set: tighter needs no confirm; looser without confirm is 409 confirm_
     ["closed>permissive:true", "verification>closed:true", "closed>verification:true", "permissive>closed:true"],
   );
   assert.equal(got.mode, "permissive");
-  assert.equal(got.system.length, 3);
+  assert.equal(got.system.length, 4);
   assert.deepEqual([looser("closed", "verification"), looser("verification", "permissive"), looser("permissive", "closed"), looser("closed", "closed")], [true, true, false, false]);
 });
 
@@ -261,11 +288,11 @@ test("rules_explain: an agent sees that the MODE decided (decidedBy, mode name);
   assert.deepEqual(traceDecidedBy(null, { decidedBy: "exemption", mode: "closed" }), { decidedBy: "exemption", mode: "closed" });
 });
 
-// ── 6. migration 0010 ────────────────────────────────────────────────────────────────────────────────────────────
-test("migration 0010 on a 0.4.x-shaped database (0001 to 0007, with rules and decisions): the mode starts Permissive, nothing else changes", async () => {
+// ── 6. migration 0008 ────────────────────────────────────────────────────────────────────────────────────────────
+test("migration 0008 on a 0.4.x-shaped database (0001 to 0007, with rules and decisions): the mode starts Permissive, nothing else changes", async () => {
   const raw = new DatabaseSync(":memory:");
   const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
-  assert.ok(files.includes("0010_default_mode.sql"));
+  assert.ok(files.includes("0008_default_mode.sql"));
   for (const f of files.filter((x) => x < "0008")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
   raw.exec("INSERT INTO rules (id, rev, spec, priority, active, deleted, source, created_at, updated_at) VALUES ('rul_old', 1, '{}', 1, 1, 0, 'owner', 1, 1)");
   const before = raw.prepare("SELECT COUNT(*) AS n FROM rules").get()?.n;

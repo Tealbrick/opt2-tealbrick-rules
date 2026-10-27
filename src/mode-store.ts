@@ -1,4 +1,4 @@
-// The default mode's storage (migrations/0010_default_mode.sql): one row in `settings` and an append-only `mode_changes`
+// The default mode's storage (migrations/0008_default_mode.sql): one row in `settings` and an append-only `mode_changes`
 // history. The gate reads the mode from a per-database cache next to the rules cache (no query per call); `setMode`
 // refreshes it after its write.
 import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
@@ -12,7 +12,7 @@ const modeCache = new WeakMap<Db, DefaultMode>();
 
 /**
  * The current mode; cached until the next `setMode`. A missing row or a value that is not a mode (only a damaged database:
- * migration 0010 inserts the row and a CHECK keeps it valid) reads as `closed` (fail closed, like every other gap in Rules).
+ * migration 0008 inserts the row and a CHECK keeps it valid) reads as `closed` (fail closed, like every other gap in Rules).
  */
 export function currentMode(db: Db): DefaultMode {
   const hit = modeCache.get(db);
