@@ -9,13 +9,14 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { OP } from "#kit";
-import { handlers, manifest, migrationsDir } from "../src/app.ts";
+import { definition, handlers, manifest, migrationsDir } from "../src/app.ts";
 import { type CallFacts, evaluate, NO_MATCH_REASON, order, type Rule, recorded } from "../src/engine.ts";
+import { syncFleet } from "../src/fleet.ts";
 import { gateAnswer, makeHooks } from "../src/hooks.ts";
-import { CLOSED_REASON, type DefaultMode, EXEMPTIONS, exemptionOf, looser, MODES, modeDetail, traceDecidedBy, VERIFICATION_REASON } from "../src/mode.ts";
+import { CLOSED_REASON, composeModeNotes, type DefaultMode, EXEMPTIONS, exemptionOf, looser, MODES, modeDetail, traceDecidedBy, VERIFICATION_REASON } from "../src/mode.ts";
 import { currentMode, invalidateMode, modeHistory, setMode } from "../src/mode-store.ts";
 import { listDecisions, saveRule } from "../src/store.ts";
-import { AGENT_A, APP_INSTANCE, hookCtx, hookReq, migratedDb, OWNER, opCtx, seedCatalog, spec } from "./helpers.ts";
+import { AGENT_A, AGENT_B, APP_INSTANCE, feed, hookCtx, hookReq, migratedDb, OWNER, opCtx, seedCatalog, spec } from "./helpers.ts";
 
 type Db = ReturnType<typeof migratedDb>["db"];
 type Run = (input: unknown, ctx: OpContext) => Promise<any>;
@@ -284,4 +285,28 @@ test("a damaged settings row (missing) reads as Closed: fail closed", () => {
   assert.equal(modeHistory(db).length, 0, "already closed: nothing to record");
   const m: DefaultMode = currentMode(db);
   assert.equal(m, "closed");
+});
+
+// ── 7. the English box names the mode when it proposes an allow rule ───────────────────────────────────────────────
+test("rule_compose: a proposal with an allow rule says what the mode does outside it; a proposal without one does not", async () => {
+  const { db } = migratedDb();
+  const callApp = (async () => ({ status: "ok" as const, output: feed() })) as unknown as OpContext["callApp"];
+  const quiet = { debug() {}, info() {}, warn() {}, error() {} };
+  await definition.events?.agentsChanged?.(
+    [
+      { id: AGENT_A, name: "Hermes", mode: "free", status: "active" },
+      { id: AGENT_B, name: "CEO", mode: "free", status: "active" },
+    ] as never,
+    { db, log: quiet, callApp, statusChanged() {} } as never,
+  );
+  await syncFleet(db, callApp as never);
+  const ctx = opCtx(db, { type: "person", id: OWNER, name: "Martin" }, callApp);
+  setMode(db, { mode: "closed", actor: OWNER });
+  const allow = await run(OP.ruleCompose)({ text: "When someone from team X tags the CEO agent: only work-tagged memories" }, ctx);
+  assert.ok(allow.rules.some((r: { outcome: { decision: string } }) => r.outcome.decision === "allow"), "the parser proposes an allow rule");
+  assert.equal(allow.notes[0], "In Closed mode, calls outside your allow rules are refused.");
+  const hold = await run(OP.ruleCompose)({ text: "Hold Hermes's outward actions" }, ctx);
+  assert.equal(hold.notes.some((n: string) => /mode/.test(n)), false, "no allow rule: no mode note");
+  assert.deepEqual(composeModeNotes([{ outcome: { decision: "allow" } }], "verification"), ["In Verification mode, calls outside your rules wait for your review."]);
+  assert.match(composeModeNotes([{ outcome: { decision: "allow" } }], "permissive")[0] ?? "", /^In Permissive mode, calls outside your rules are allowed anyway/);
 });

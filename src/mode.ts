@@ -115,3 +115,14 @@ export function modeNote(v: Pick<Verdict, "rule" | "byMode" | "decision">): stri
   const word = v.decision === "allow" ? "ALLOW" : v.decision === "hold" ? "HOLD" : "REFUSE";
   return `No rule matches → ${MODE_LABEL[b.mode]} mode would ${word} this call`;
 }
+
+/**
+ * The English box (rule_compose) note for a proposal with an ALLOW rule: what the default mode does with every call the
+ * proposed allow rules do not cover (C373c), so the owner reads the allow rule against the mode. [] when nothing allows.
+ */
+export function composeModeNotes(rules: readonly { outcome: { decision: string } }[], mode: DefaultMode): string[] {
+  if (!rules.some((r) => r.outcome.decision === "allow")) return [];
+  if (mode === "closed") return ["In Closed mode, calls outside your allow rules are refused."];
+  if (mode === "verification") return ["In Verification mode, calls outside your rules wait for your review."];
+  return ["In Permissive mode, calls outside your rules are allowed anyway: an allow rule matters for its narrowing and because it decides before rules with a higher priority number."];
+}

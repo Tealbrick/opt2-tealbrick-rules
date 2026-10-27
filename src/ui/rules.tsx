@@ -3,6 +3,7 @@
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
 import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
+import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
@@ -23,10 +24,30 @@ const MODES = [
 
 /**
  * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). `prefill` = a new
- * rule from a template (Q-9). An existing rule shows its History; "Restore this version" hands over to the page (Q-7).
+ * rule from a template (Q-9). An existing rule shows its History; "Restore this version" hands over to the page (Q-7). With
+ * `onUse` it edits a PROPOSED rule of the English box (`seed`): "Use this rule" hands the rule back and saves nothing (it is
+ * saved as a draft later).
  */
-function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initial: RuleRow | null; prefill?: RuleSpec; dir: Directory; products: readonly string[]; onDone: (saved: boolean) => void; onRestore?: (t: RestoreTarget) => void }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? prefill ?? emptySpec()));
+function Editor({
+  initial,
+  prefill,
+  dir,
+  products,
+  onDone,
+  onRestore,
+  seed,
+  onUse,
+}: {
+  initial: RuleRow | null;
+  prefill?: RuleSpec;
+  dir: Directory;
+  products: readonly string[];
+  onDone: (saved: boolean) => void;
+  onRestore?: (t: RestoreTarget) => void;
+  seed?: RuleSpec;
+  onUse?: (spec: RuleSpec) => void;
+}) {
+  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -50,6 +71,10 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
   const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
   const save = async () => {
     if (busy) return;
+    if (onUse) {
+      onUse(s);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -65,7 +90,7 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
     <Dialog
       open
       kicker="Rule"
-      title={initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
+      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -75,7 +100,7 @@ function Editor({ initial, prefill, dir, products, onDone, onRestore }: { initia
             Cancel
           </Button>
           <Button variant="primary" disabled={busy || !s.title || !s.outcome.reason} onClick={() => void save()}>
-            {busy ? "Saving" : "Save rule"}
+            {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
           </Button>
         </>
       }
@@ -356,7 +381,7 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
   );
 }
 
-export function RulesPage() {
+export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () => void; onOpenDrafts?: () => void }) {
   const dir = useDirectory();
   const [showDeleted, setShowDeleted] = useState(false);
   const load = useCallback(() => run("rules_list", showDeleted ? { includeDeleted: true } : {}), [showDeleted]);
@@ -383,8 +408,14 @@ export function RulesPage() {
           </div>
         }
       />
-      {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       {data?.mode ? <ModeCard state={data.mode} onChanged={reload} /> : null}
+      <Composer
+        dir={dir}
+        onSaved={onDraftSaved}
+        onOpenDrafts={onOpenDrafts}
+        editor={(spec, done) => <Editor initial={null} dir={dir} products={data?.catalog.productIds ?? []} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
+      />
+      {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       <DirectoryErrors dir={dir} />
       {data && !data.holdSupported ? (
         <Notice tone="live">“Hold for my review” rules refuse for now. Holds from rules arrive with the next platform release (spec 0.1.13).</Notice>
