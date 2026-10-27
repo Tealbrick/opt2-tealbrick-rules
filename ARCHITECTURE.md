@@ -94,6 +94,14 @@ Stable and qa1 0.3.2: miniapp-sdk 0.1.31, manifest 0.1.25, conformance 0.1.22, u
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app only where the pin above says 0.1.25 (the plain version 0.2.12 is on the dev channel; its qa1 soak is the gate for stable, C221, PROMOTE-STABLE §7). All RS-3 apps pin SDK 0.1.25 (dev channel; stable after the qa1 soak of the plain version). Core restores the snapshot on an automatic rollback (portal-core#1, E3). This Core is live since 2026-10-16 22:37:58Z (Core 29ae2fe).
 
+## Safety notes from the 0.5.0 review (C373)
+
+- Caller teams are agent facts: an app caller never matches a `callerTeams` rule. Rules' own `fleet/directory_feed` read (exemption `rules-governance-feed`) is never refused or held by a rule that applies to it only because the Governance facts are missing; only a rule that names it (`products: ["fleet"]`, `callerProducts: ["rules"]`) can stop it, and the UI warns on such a rule.
+- The Fleet copy knows whether it was read WITH agent handles (`FleetFacts.agentHandles`, in memory; false after a restart until the first full read). Without them every recipient is unknown (fail closed for recipient rules).
+- Placement: the English box places deny before hold before allow relative to the existing rules (active and inactive). Approval (`draft_decide`) places a draft again against the current rules (`src/placement.ts`); "Allow always" (`src/ui/hold-allow.ts`) goes after every refuse rule that could match, active or not, and before the hold that held the call.
+- The parser never turns a negation into an allow (exact refusal or `unmatched`); the model drafter only adds rules and gets directory names as quoted JSON data.
+- Dependency (S4-6): `bridgeCaps` is advisory. When the bridge advertises `app_workflow_grants`, Rules reads a call without `caller.workflow` as "not a workflow call"; that is safe only if such a bridge always forwards `workflow`.
+
 ## Known gaps
 
 - Narrowing rules that omit write ops still let writes through unnarrowed (open follow-up to F90; not re-checked on 2026-10-17: UNVERIFIED).
