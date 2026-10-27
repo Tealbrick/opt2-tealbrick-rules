@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.5.0",
+  "version": "0.5.0-dev.6",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.1.17"
