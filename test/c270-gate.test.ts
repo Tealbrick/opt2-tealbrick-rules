@@ -80,7 +80,7 @@ test("C270: a deny rule with tools on an app whose op the catalog cannot place a
   assert.equal((await gate(db, { callId: "cal_listed", product: "connect", op: "unknown_dyn", effect: "outward", tool: "gmail_send__first_contact" })).allow, false, "a variant of the listed tool");
   assert.deepEqual(await gate(db, { callId: "cal_other", product: "connect", op: "unknown_dyn", effect: "outward", tool: "slack_post" }), { allow: true }, "quiet: another tool");
   const t = traces(db);
-  assert.deepEqual([t.cal_notool?.detail, t.cal_listed?.detail, t.cal_other?.detail], [{ toolUnknown: true }, { tool: "gmail_send__first_contact" }, { tool: "slack_post" }], "a call with a tool name is not 'unknown'");
+  assert.deepEqual([t.cal_notool?.detail, t.cal_listed?.detail, t.cal_other?.detail], [{ toolUnknown: true }, { tool: "gmail_send__first_contact" }, { ...{ decidedBy: "mode", mode: "permissive" }, tool: "slack_post" }], "a call with a tool name is not 'unknown'");
 });
 
 // ── 2. app callers go through the same gate ────────────────────────────────────────────────────────────────────
@@ -131,10 +131,10 @@ test("C270: callerProducts deny and hold gate an app caller with its product lis
       ["absent_out", "deny", { callerProductUnavailable: true }],
       ["listed_pay", "hold", null],
       ["absent_pay", "hold", { callerProductUnavailable: true }],
-      ["unlisted_out", "allow", null],
-      ["unlisted_pay", "allow", null],
-      ["agent_out", "allow", null],
-      ["agent_pay", "allow", null],
+      ["unlisted_out", "allow", { decidedBy: "mode", mode: "permissive" }],
+      ["unlisted_pay", "allow", { decidedBy: "mode", mode: "permissive" }],
+      ["agent_out", "allow", { decidedBy: "mode", mode: "permissive" }],
+      ["agent_pay", "allow", { decidedBy: "mode", mode: "permissive" }],
     ],
   );
 });
