@@ -166,9 +166,14 @@ export function recipientsOf(target: unknown): string[] | null {
   return [...out];
 }
 
-/** The Fleet facts of each recipient handle (`handle:<h>` and its holders); never the handle itself. Unknown stays null. */
+/**
+ * The Fleet facts of each recipient handle (`handle:<h>` and its holders); never the handle itself. Unknown stays null. A copy read
+ * WITHOUT agent handles (S3-1: older Governance, the window after a 400 to `accept`, a restart) may miss an agent holder of any
+ * handle, so a call that names recipients has UNKNOWN recipients then (deny/hold recipient rules apply, allow ones do not).
+ */
 export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null): RecipientFact[] | null {
   if (handles === null) return null;
+  if (fx.available && !fx.agentHandles && handles.length > 0) return null;
   return handles.map((h) => {
     const key = `handle:${h}`;
     const entry = fx.trust.get(key);

@@ -33,6 +33,8 @@ interface FleetCacheEntry {
   gone: Set<string>;
   okAt: number | null;
   usable: boolean;
+  /** the copy was read WITH agent handles (feed `accept: ["agent_handles"]`); false after a restart until the next full read (S3-1) */
+  agentHandles: boolean;
 }
 const fleetCache = new WeakMap<Db, FleetCacheEntry>();
 /** Count of markFleetStale calls per database: a sync that sees it move while it ran reads once more (dirty flag). */
@@ -534,7 +536,7 @@ export function fleetState(db: Db): FleetSyncState {
  */
 export function dropFleetCopy(db: Db, error: string): void {
   memoryError.set(db, error.slice(0, 280));
-  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false });
+  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false, agentHandles: false });
 }
 
 /** Set the stale flag without counting it (a sync re-arming itself). */
@@ -567,7 +569,7 @@ const add = (map: Map<string, string[]>, k: string, team: string) => {
  * from the same rows, once per sync, here), the last transaction writes teams and the sync row and swaps the in-memory
  * index. A crash in between leaves `usable = 0`: the copy is unavailable (fail closed) and the next read is a full one.
  */
-function* writeSteps(db: Db, model: FleetModel | null, state: { revision: number | null; error: string | null }, now: number): Generator<void, void, void> {
+function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, now: number): Generator<void, void, void> {
   if (!model) {
     db.transaction(() => {
       if (state.error === null) db.prepare("UPDATE fleet_sync SET revision = ?, synced_at = ?, stale = 0, error = NULL, usable = 1 WHERE id = 1").run(state.revision, now);
@@ -628,11 +630,21 @@ function* writeSteps(db: Db, model: FleetModel | null, state: { revision: number
   });
   const usable = state.error === null;
   if (usable) memoryError.delete(db);
-  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable });
+  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable, agentHandles: usable && state.agentHandles === true });
+}
+
+/**
+ * The sync row of a write. `agentHandles` (S3-1): the model was read WITH agent handles (a Governance that answered `accept`).
+ * Absent or false = without: a handle's holders may miss an agent, so recipient facts are unknown (see `FleetFacts.agentHandles`).
+ */
+export interface FleetWriteState {
+  revision: number | null;
+  error: string | null;
+  agentHandles?: boolean;
 }
 
 /** Synchronous write (one go): small models, errors, tests. */
-export function writeFleet(db: Db, model: FleetModel | null, state: { revision: number | null; error: string | null }, now = Date.now()): void {
+export function writeFleet(db: Db, model: FleetModel | null, state: FleetWriteState, now = Date.now()): void {
   for (const g = writeSteps(db, model, state, now); !g.next().done; );
 }
 
@@ -640,7 +652,7 @@ export function writeFleet(db: Db, model: FleetModel | null, state: { revision: 
 export async function writeFleetChunked(
   db: Db,
   model: FleetModel | null,
-  state: { revision: number | null; error: string | null },
+  state: FleetWriteState,
   now = Date.now(),
   pause: () => Promise<void> = () => new Promise((r) => setImmediate(r)),
 ): Promise<void> {
@@ -668,9 +680,15 @@ export interface FleetFacts {
   trust: Map<string, TrustEntry>;
   /** keys with at least one holder that is blocked, departed or removed */
   gone: Set<string>;
+  /**
+   * S3-1: the copy lists the agents' handles (read with `accept: ["agent_handles"]`). False (an older Governance, the 10-minute
+   * window after a 400 to `accept`, or a restart before the first full read): a `handle:` key may miss an agent holder, so the
+   * gate treats every recipient as UNKNOWN (deny/hold recipient rules apply, allow ones do not). Teams and trust stay usable.
+   */
+  agentHandles: boolean;
 }
 
-const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set() });
+const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set(), agentHandles: false });
 
 /**
  * The Fleet facts the gate may use; cached until the next sync (built at write time). `available` is false (and the maps
@@ -682,11 +700,12 @@ export function fleetFacts(db: Db, now = Date.now()): FleetFacts {
   let hit = fleetCache.get(db);
   if (!hit) {
     const st = fleetState(db);
-    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable };
+    // a copy loaded from the database (a restart) does not say whether it has agent handles: not until the next full read
+    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable, agentHandles: false };
     fleetCache.set(db, hit);
   }
   const available = hit.usable && hit.okAt != null && now - hit.okAt <= FLEET_MAX_STALE_MS;
-  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone } : NONE();
+  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone, agentHandles: hit.agentHandles } : NONE();
 }
 
 /** member key → team ids of members that count (empty while unavailable). */

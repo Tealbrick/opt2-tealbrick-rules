@@ -106,7 +106,7 @@ test("recipientsOf: canonical handles only; absent, incomplete, too many or not 
 
 test("recipientFacts maps handles through the feed's holders: teams, trust set, known; an unknown handle is unreviewed", () => {
   const { db } = migratedDb();
-  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null });
+  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null, agentHandles: true });
   const fx = fleetFacts(db);
   assert.deepEqual(recipientFacts(fx, ["slack:U777", "telegram:9", "slack:U666", "telegram:42"]), [
     { teams: ["tm_x"], teamsAny: ["tm_x"], trusts: ["trusted"], allActive: true, known: true },
@@ -119,7 +119,7 @@ test("recipientFacts maps handles through the feed's holders: teams, trust set, 
 
 test("gate: recipients decide; unknown recipients hold with recipientsUnknown; the trace keeps the COUNT, never a handle", async () => {
   const { db } = migratedDb();
-  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null });
+  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null, agentHandles: true });
   saveRule(db, { spec: spec({ title: "C363", priority: 10, match: { agents: [AGENT_A], effects: ["outward"], recipients: { trust: ["unreviewed", "limited", "blocked"] } }, decision: "hold", reason: "Hermes talks freely to trusted people only" }), actor: OWNER });
   const hooks = makeHooks("rules", { holdSupported: true });
   const gate = (callId: string, target: Record<string, unknown>) =>
@@ -165,7 +165,7 @@ test("manifest: every rule schema takes recipients (≥ 1 key); rules_preview ta
   assert.equal(ok(good), true);
   for (const bad of [{}, { teams: [] }, { trust: ["nice"] }, { known: "yes" }, { other: 1 }]) assert.equal(ok({ ...good, match: { recipients: bad } }), false, JSON.stringify(bad));
   const { db } = migratedDb();
-  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null });
+  writeFleet(db, parseFeed(feed()).model, { revision: 7, error: null, agentHandles: true });
   saveRule(db, { spec: spec({ title: "strangers wait", match: { effects: ["outward"], recipients: { known: false } }, decision: "hold", reason: "r" }), actor: OWNER });
   const owner = opCtx(db, { type: "person", id: OWNER }, (async () => ({ status: "ok", output: feed() })) as never);
   const pv = manifest.operations.find((o) => o.id === "rules_preview");

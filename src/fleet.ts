@@ -317,7 +317,8 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     const d = await parseFeedChunked(res.output);
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
-    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null }, now());
+    // S3-1: the copy says whether it lists agent handles (a read without them makes every recipient unknown at the gate)
+    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {
     const code = isObj(e) && typeof e.code === "string" ? e.code : "error";
