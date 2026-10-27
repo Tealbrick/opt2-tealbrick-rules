@@ -11,7 +11,8 @@
 // - who: agent names from the agent directory (case-insensitive, "Hermes's", "the CEO agent", or an `agt_…` id); "agents in
 //   team Dev" (the CALLING agent's team → `callerTeams`); "someone from team X", "members of team X", "team X asks" (who
 //   asked → `onBehalfOf.teams`, a claim that can only narrow, C82); "all agents" = any agent.
-// - where: "in Connect", "on Knowledge", "the Connect app" (product ids from the app catalog, plus a few display names).
+// - where: "in Connect", "on Knowledge", "the Connect app" (product ids from the app catalog, plus a few display names);
+//   the app that MAKES the call: "Evolution's outward actions", "calls from the Evolution app" → `callerProducts`.
 // - what: effects by keyword (send/post/publish → outward, money/pay → money, delete/destroy → destructive, write/change →
 //   write, read → read), and memory narrowing ("only work-tagged memories", "memories tagged work, non-critical",
 //   "talk about work things only").
@@ -123,7 +124,8 @@ const cap = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}
 
 // ── names ───────────────────────────────────────────────────────────────────
 
-type Kind = "agent" | "team" | "app";
+/** `caller` = an app named as the one that makes the call ("Evolution's outward actions" → `callerProducts`) */
+type Kind = "agent" | "team" | "app" | "caller";
 interface Mention {
   kind: Kind;
   id: string;
@@ -183,6 +185,8 @@ function notFound(what: "agent" | "team", name: string, names: readonly string[]
 
 interface Scope {
   agents: string[];
+  /** apps that make the call (`match.callerProducts`, the VERIFIED product of an app caller) */
+  callerProducts: string[];
   callerTeams: string[];
   oboTeams: string[];
 }
@@ -310,18 +314,10 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
   };
   // teams first ("team X" may hold a word that is also an agent name), then apps where a place is named, then agents
   mask(teamForms, "team", (f) => `(?<![\\w@-])(?:the\\s+)?${f}(?:'s)?(?![\\w-])`);
+  // An app named as the one that acts ("Evolution's outward actions", "calls from the Evolution app") → `callerProducts`.
+  mask(appForms, "caller", (f) => `(?:(?<![\\w@-])(?:the\\s+)?${f}(?:\\s+app)?'s|(?<=\\b(?:calls?|actions?|requests?)\\s+(?:made\\s+)?(?:from|by)\\s+)(?:the\\s+)?${f}(?:\\s+app)?)(?![\\w-])`);
   mask(appForms, "app", (f) => `(?:(?<=\\b(?:in|on|via|through|using|with|to|from|into|inside)\\s+(?:the\\s+)?)${f}(?:\\s+app)?|(?<![\\w@-])(?:the\\s+)?${f}\\s+app)(?![\\w-])`);
   mask(agentForms, "agent", (f) => `(?<![\\w@-])(?:the\\s+)?${f}(?:'s|')?(?:\\s+agents?)?(?![\\w-])`);
-  // An app named as the one that acts ("Evolution's outward actions"): Rules cannot match the calling app on this version.
-  // TODO(C373, callerProducts): when match.callerProducts lands (Rules 0.5 base), turn this into `callerProducts: [<app>]`.
-  for (const f of appForms) {
-    const re = new RegExp(`(?<![\\w@-])${esc(f.form)}'s(?![\\w-])`, "gi");
-    if (re.test(s)) {
-      errors.push(`Rules cannot yet match the calls that the app ${quote(f.label)} makes itself. ${ASK_AGENT}`);
-      notes.push("TODO: rules about the app that makes a call (callerProducts) are not in this version.");
-      s = s.replace(re, " @app@ ");
-    }
-  }
   // names that look meant but are not known: never guessed
   const agentNames = env.agents.map((a) => a.name);
   for (const m of s.matchAll(/(?<![\w@-])([A-Za-z][\w-]*)'s\b/g)) {
@@ -352,11 +348,12 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
   const low = s.toLowerCase();
   const kindAt = (i: number) => mentions[i]?.kind;
   // who
-  const own: Scope = { agents: [], callerTeams: [], oboTeams: [] };
+  const own: Scope = { agents: [], callerProducts: [], callerTeams: [], oboTeams: [] };
   for (const m of low.matchAll(TOKEN)) {
     const i = Number(m[1]);
     const men = mentions[i] as Mention;
     if (men.kind === "agent") own.agents.push(men.id);
+    if (men.kind === "caller") own.callerProducts.push(men.id);
     if (men.kind === "team") {
       const before = low.slice(0, m.index);
       const after = low.slice(m.index + m[0].length);
@@ -364,7 +361,7 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
       else own.oboTeams.push(men.id);
     }
   }
-  const hasOwn = own.agents.length + own.callerTeams.length + own.oboTeams.length > 0;
+  const hasOwn = own.agents.length + own.callerProducts.length + own.callerTeams.length + own.oboTeams.length > 0;
   const continues = /^\s*(?:and|also|plus)\b/i.test(sentence);
   let scope = own;
   if (continues && !hasOwn) {
@@ -432,7 +429,7 @@ function readSentence(sentence: string, env: ComposeEnv, agentForms: Form[], tea
   const teamLabel = (id: string) => env.teams.find((t) => t.id === id)?.name ?? id;
   const rules = merged.map((d) => buildRule(d, scope, sentence.trim(), agentLabel, teamLabel));
   for (const r of rules) {
-    if (r.outcome.decision !== "allow" && !r.match.agents && !r.match.callerTeams && !r.match.onBehalfOf && !r.match.effects && !r.match.products)
+    if (r.outcome.decision !== "allow" && !r.match.agents && !r.match.callerProducts && !r.match.callerTeams && !r.match.onBehalfOf && !r.match.effects && !r.match.products)
       notes.push(`${quote(r.title)} matches every call of every agent.`);
   }
   return { ok: true, rules, notes, hint: "", scope: hasOwn ? own : scope };
@@ -442,6 +439,7 @@ function buildRule(d: Directive, scope: Scope, sentence: string, agentLabel: (id
   const uniq = <T extends string>(xs: T[]): T[] => [...new Set(xs)];
   const match: RuleSpec["match"] = {
     ...(scope.agents.length ? { agents: uniq(scope.agents) } : {}),
+    ...(scope.callerProducts.length ? { callerProducts: uniq(scope.callerProducts) } : {}),
     ...(d.products.length ? { products: uniq(d.products) } : {}),
     ...(d.effects.length ? { effects: uniq(d.effects) } : {}),
     ...(scope.callerTeams.length ? { callerTeams: uniq(scope.callerTeams) } : {}),
@@ -449,6 +447,7 @@ function buildRule(d: Directive, scope: Scope, sentence: string, agentLabel: (id
   };
   const who = [
     ...(scope.agents.length ? [uniq(scope.agents).map(agentLabel).join(", ")] : []),
+    ...(scope.callerProducts.length ? [`calls from ${uniq(scope.callerProducts).join(", ")}`] : []),
     ...(scope.callerTeams.length ? [`agents in ${uniq(scope.callerTeams).map(teamLabel).join(", ")}`] : []),
     ...(scope.oboTeams.length ? [`on behalf of ${uniq(scope.oboTeams).map(teamLabel).join(", ")}`] : []),
   ];
@@ -527,7 +526,7 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
 export function describeRule(spec: RuleSpec, agentName: (id: string) => string, teamName: (id: string) => string): string {
   const m = spec.match;
   const who = [
-    m.agents?.length ? `calls by ${m.agents.map(agentName).join(", ")}` : "calls by any agent",
+    m.callerProducts?.length ? `calls from app ${m.callerProducts.join(", ")}` : m.agents?.length ? `calls by ${m.agents.map(agentName).join(", ")}` : "calls by any agent",
     m.callerTeams?.length ? `in team ${m.callerTeams.map(teamName).join(", ")}` : "",
     m.onBehalfOf?.teams?.length ? `on behalf of team ${m.onBehalfOf.teams.map(teamName).join(", ")}` : "",
   ].filter(Boolean);

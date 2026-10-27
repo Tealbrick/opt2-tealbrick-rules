@@ -24,6 +24,8 @@ import {
   type RuleComposeSaveOutput,
   type RuleDraftSubmitInput,
   type RuleDraftSubmitOutput,
+  type RuleRestoreInput,
+  type RuleRestoreOutput,
   type RulesDeleteInput,
   type RulesDeleteOutput,
   type RulesExplainInput,
@@ -40,7 +42,7 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { APP_NAMES, type ComposeEnv, type Drafter, describeRule, parserDrafter, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
-import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec } from "./engine.ts";
+import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { claimFleetFacts, gateAnswer, HOLD_SUPPORTED, makeHooks } from "./hooks.ts";
 import {
@@ -59,6 +61,7 @@ import {
   liveRules,
   markFleetStale,
   pendingDraftCount,
+  restoreRule,
   ruleProblem,
   type Submitter,
   saveRule,
@@ -86,12 +89,6 @@ function person(ctx: OpContext): string {
  * a verified id) with no product, shown to the owner as unverified. The conformance check A12.companion_inbound requires
  * such a caller to be able to run `rule_draft_submit`; a draft is only a proposal the owner must approve (C84).
  */
-/** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
-const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
-function validProduct(p: unknown): p is string {
-  return typeof p === "string" && p.length <= 40 && PRODUCT_ID.test(p);
-}
-
 function identity(ctx: OpContext): Submitter {
   const { type, id, name, product } = ctx.caller;
   if (type !== "app") return { type, id, name };
@@ -177,7 +174,7 @@ export const handlers = {
         rules: rules.map((r) => ({ ...r, problem: ruleProblem(ctx.db, r.spec) || null })),
         holdSupported: HOLD_SUPPORTED,
         defaultDecision: "allow",
-        catalog: { generatedAt: st.generatedAt, syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(), error: st.error, products: catalogOf(ctx.db)?.size ?? 0 },
+        catalog: { generatedAt: st.generatedAt, syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(), error: st.error, products: catalogOf(ctx.db)?.size ?? 0, productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort() },
       };
     },
   }),
@@ -197,6 +194,15 @@ export const handlers = {
   [OP.rulesDelete]: op<RulesDeleteInput, RulesDeleteOutput>({
     async run(input, ctx) {
       return deleteRule(ctx.db, { id: input.id, expectedRev: input.expectedRev, actor: person(ctx) });
+    },
+  }),
+  [OP.ruleRestore]: op<RuleRestoreInput, RuleRestoreOutput>({
+    // Q-7 (C373): same writer checks and actor recording as rules_set; the catalog is read first because the old spec may name apps.
+    async run(input, ctx) {
+      const actor = person(ctx);
+      const target = getRule(ctx.db, input.ruleId).revisions.find((r) => r.rev === input.rev);
+      if (target) await catalogFor(ctx, [target.spec]);
+      return restoreRule(ctx.db, { id: input.ruleId, rev: input.rev, expectedRev: input.expectedRev, actor });
     },
   }),
   [OP.rulesPreview]: op<RulesPreviewInput, RulesPreviewOutput>({
@@ -220,6 +226,8 @@ export const handlers = {
         callerTeams: input.call.caller.type === "agent" ? (fx.teams.get(`agent:${input.call.caller.id}`) ?? []) : [],
         callerTeamsAny: input.call.caller.type === "agent" ? (fx.teamsAny.get(`agent:${input.call.caller.id}`) ?? []) : [],
         fleetAvailable: fx.available,
+        // the dry run's product is typed in by the owner; it passes the same validity rule as a bridge-sent one
+        callerProduct: input.call.caller.type === "app" && validProduct(input.call.caller.product) ? input.call.caller.product : null,
       };
       const v = evaluate(rules, facts);
       return {
@@ -233,6 +241,7 @@ export const handlers = {
         callerTeams: [...new Set([...facts.callerTeams, ...facts.callerTeamsAny])],
         trust: facts.claimTrusts.length ? facts.claimTrusts.reduce(strictest) : null,
         fleetAvailable: facts.fleetAvailable,
+        callerProductUnavailable: v.closedOnProduct,
         steps: explain(rules, facts),
       };
     },
@@ -277,10 +286,12 @@ export const handlers = {
     },
   }),
   [OP.rulesExplain]: op<RulesExplainInput, RulesExplainOutput>({
-    // An agent sees only its own calls' decisions (caller id is bound by the grant, never by input).
+    // A caller sees only its own calls' decisions (the identity is bound by the grant, never by input).
     async run(input, ctx) {
-      // Decisions are recorded under the caller id of the hook call: an agent id, or an app's instance id (the hook call has no product).
-      const { items } = listDecisions(ctx.db, { caller: ctx.caller.id, callId: input.callId, limit: input.limit ?? 10 });
+      // An agent is its agent id. An app is its VERIFIED product (S4-3: any instance of it, so a reinstall keeps its history); rows
+      // recorded without a product (before 0.5.0) and an app with no verified product are read by the verified instance id.
+      const me = ctx.caller.type === "app" ? { appCaller: { product: identity(ctx).product ?? null, instance: ctx.caller.id } } : { caller: ctx.caller.id };
+      const { items } = listDecisions(ctx.db, { ...me, callId: input.callId, limit: input.limit ?? 10 });
       return {
         decisions: items.map((d) => ({
           callId: d.callId,
@@ -293,6 +304,7 @@ export const handlers = {
           ruleId: d.ruleId,
           ruleTitle: d.ruleTitle,
           fleetUnavailable: d.detail?.fleetUnavailable === true,
+          callerProductUnavailable: d.detail?.callerProductUnavailable === true,
         })),
       };
     },

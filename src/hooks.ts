@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { hookResponseProblem } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
 /** Rules' own answer budget, far below the bridge's 2 s hook limit: slower → refuse. */
@@ -58,8 +58,8 @@ export function claimFleetFacts(fx: FleetFacts, claim: Claim | null, live: reado
 }
 
 /**
- * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types do not
- * carry it yet (the pin bump follows the spec release), so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
+ * Spec 0.1.68 (C336 RQ-2, bridge cap `hook_tool`): `call.target.tool` = the dynamic catalog entry name of a dynamic call. The pinned SDK types
+ * (miniapp-sdk 0.1.40, spec 0.1.64) do not carry it yet, so read it structurally. Anything but a non-empty string ≤ 128 chars = absent.
  */
 export function toolOf(req: HookRequest): string | undefined {
   const t = (req.call.target as { tool?: unknown }).tool;
@@ -82,7 +82,26 @@ export function toolFacts(req: HookRequest, db: Db): { tool?: string; dynamic?: 
   return { ...(tool !== undefined ? { tool } : {}), ...(dynamic !== undefined ? { dynamic } : {}) };
 }
 
-/** Facts for one hook call: caller (and its teams), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
+/**
+ * The VERIFIED product of the caller (spec 0.1.45 `HookCallInfo.caller.product`: the calling instance's product from the bridge's
+ * signed config), for an APP caller only. Never read from input, context or a name. Absent (an agent, a bridge older than 0.2.2, a
+ * caller the bridge cannot map) or not a product id: null, which callerProducts rules treat as unverified (fail closed).
+ */
+export function callerProductOf(caller: HookRequest["call"]["caller"]): string | null {
+  return caller.type === "app" && validProduct(caller.product) ? caller.product : null;
+}
+
+/** The reason of a narrowing that comes from another (skipped or earlier) allow rule: with the unavailable facts when there are some, neutral when there are none. */
+export function otherRuleNarrowing(gaps: string): string {
+  return gaps ? `${gaps.charAt(0).toUpperCase()}${gaps.slice(1)}: the narrowing of an allow rule applies` : "The narrowing of an allow rule applies";
+}
+
+/** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows), and a dynamic call without a tool name. */
+export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown">): Record<string, boolean> {
+  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) };
+}
+
+/** Facts for one hook call: caller (and its teams and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
   const { claim, verified } = claimOf(ctx);
@@ -99,6 +118,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
     fleetAvailable: fx.available,
+    callerProduct: callerProductOf(req.call.caller),
   };
 }
 
@@ -167,8 +187,10 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       if (ctx.signal.aborted || clock() - t0 > budget) throw new Error("gate budget exceeded");
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
-      if (recorded(facts, v))
-        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(v.closedOnFleet || v.toolUnknown ? { detail: { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}) } } : {}), durationUs: elapsedUs(t0) });
+      if (recorded(facts, v)) {
+        const unavailable = unavailableDetail(v);
+        recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
+      }
       return answer;
     } catch (e) {
       ctx.log.warn("rules_gate refused (fail closed)", { error: e instanceof Error ? e.message : "unknown", call: req.call.id });
@@ -186,7 +208,8 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const narrowingRuleId = v.narrowingRuleId;
     if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
-      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : "Governance data unavailable: the narrowing of an allow rule applies";
+      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified"].filter(Boolean).join("; ");
+      const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : otherRuleNarrowing(gaps);
       // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
       // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
       // answering unfiltered, so deepDatasets is never put under v 1.
@@ -197,7 +220,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
         ...(v.narrowing.memoryTags ? { memoryTags: v.narrowing.memoryTags as Json } : {}),
         ...(v.narrowing.deepDatasets ? { deepDatasets: v.narrowing.deepDatasets as Json } : {}),
       };
-      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown> }, durationUs: elapsedUs(t0) });
+      recordDecision(ctx.db, { callId: req.call.id, phase: "context", facts, decision: v.decision, answered: "narrow", reason: v.reason, rule: v.rule, detail: { narrowing: v.narrowing as Record<string, unknown>, ...unavailableDetail(v) }, durationUs: elapsedUs(t0) });
     }
     if (clock() - t0 > budget) throw new Error("context budget exceeded");
     return { add };

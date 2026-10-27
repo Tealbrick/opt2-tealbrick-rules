@@ -19,5 +19,8 @@
 .toolbar .rules-search { max-width: calc(var(--tb-s10) * 7); } /* 280px, the mockup's search width */
 .rules-intro { max-width: 62ch; }
 .rules-pri { white-space: nowrap; } /* "priority 90" wraps as one unit, as in the mockup */
+/* Q-7 rule history: one revision per row (head line, who/when, summary, restore), hairline between rows */
+.rules-history { display: grid; gap: var(--tb-s3); margin: 0; padding: 0; list-style: none; }
+.rules-history li { display: grid; gap: var(--tb-s1); padding-bottom: var(--tb-s3); box-shadow: var(--tb-hair-bottom); overflow-wrap: anywhere; }
 .rules-compose { display: grid; gap: var(--tb-s4); align-content: start; }
 .rules-compose h2 { font-size: var(--tb-text-title); }

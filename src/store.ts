@@ -72,18 +72,36 @@ function ruleView(r: Record<string, unknown>): RuleView {
   return { id: String(r.id), rev: Number(r.rev), spec: JSON.parse(String(r.spec)) as RuleSpec, source: String(r.source), createdAt: iso(Number(r.created_at)) as string, updatedAt: iso(Number(r.updated_at)) as string };
 }
 
-export function listRules(db: Db, includeDeleted = false): RuleView[] {
+export function listRules(db: Db, includeDeleted = false): (RuleView & { deleted: boolean })[] {
   const rows = db.prepare(`SELECT * FROM rules ${includeDeleted ? "" : "WHERE deleted = 0"} ORDER BY deleted, priority, updated_at DESC, id`).all();
-  return rows.map(ruleView);
+  return rows.map((r) => ({ ...ruleView(r), deleted: Number(r.deleted) === 1 }));
 }
 
-export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: { rev: number; change: "created" | "updated" | "deleted"; spec: RuleSpec; actor: string; at: string }[] } {
+export type RevisionChange = "created" | "updated" | "deleted" | "restored";
+export interface RevisionView {
+  rev: number;
+  change: RevisionChange;
+  spec: RuleSpec;
+  actor: string;
+  at: string;
+  /** change "restored" only: the revision whose spec this one copied */
+  from?: number;
+}
+
+export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: RevisionView[] } {
   const row = db.prepare("SELECT * FROM rules WHERE id = ?").get(id);
   if (!row) throw new TbError("not_found", "no rule with this id", 404);
   const revisions = db
-    .prepare("SELECT rev, change, spec, actor, at FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
+    .prepare("SELECT rev, change, spec, actor, at, from_rev FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
     .all(id)
-    .map((r) => ({ rev: Number(r.rev), change: String(r.change) as "created" | "updated" | "deleted", spec: JSON.parse(String(r.spec)) as RuleSpec, actor: String(r.actor), at: iso(Number(r.at)) as string }));
+    .map((r) => ({
+      rev: Number(r.rev),
+      change: String(r.change) as RevisionChange,
+      spec: JSON.parse(String(r.spec)) as RuleSpec,
+      actor: String(r.actor),
+      at: iso(Number(r.at)) as string,
+      ...(r.from_rev == null ? {} : { from: Number(r.from_rev) }),
+    }));
   return { rule: ruleView(row), deleted: Number(row.deleted) === 1, revisions };
 }
 
@@ -138,6 +156,38 @@ export function deleteRule(db: Db, input: { id: string; expectedRev?: number; ac
   });
   invalidateRules(db);
   return { id: input.id, rev };
+}
+
+/**
+ * Q-7 (C373): make the spec of an earlier revision the rule's current spec. It is a write like `saveRule`: the same writer
+ * checks (a spec that names an operation the catalog no longer has is refused with the writer's reason), the actor is
+ * recorded, and a NEW revision row (change 'restored', `from_rev` = the copied revision) is added; history is never
+ * rewritten. A deleted rule comes back (counts against MAX_RULES like a new one). Restoring the current revision of a live
+ * rule is refused (nothing would change). `expectedRev` = the current revision the owner saw (stale → revision_conflict).
+ */
+export function restoreRule(db: Db, input: { id: string; rev: number; expectedRev?: number; actor: string }, now = Date.now()): { id: string; rev: number; restoredFrom: number } {
+  const target = db.prepare("SELECT spec FROM rule_revisions WHERE rule_id = ? AND rev = ?").get(input.id, input.rev);
+  if (!db.prepare("SELECT id FROM rules WHERE id = ?").get(input.id)) throw new TbError("not_found", "no rule with this id", 404);
+  if (!target) throw new TbError("not_found", `this rule has no revision ${input.rev}`, 404);
+  const spec = JSON.parse(String(target.spec)) as RuleSpec;
+  checkSpec(db, spec, `revision ${input.rev} can’t be restored: `);
+  const rev = db.transaction(() => {
+    const cur = db.prepare("SELECT rev, deleted FROM rules WHERE id = ?").get(input.id) as Record<string, unknown>;
+    const curRev = Number(cur.rev);
+    const deleted = Number(cur.deleted) === 1;
+    if (input.expectedRev !== undefined && input.expectedRev !== curRev) throw new TbError("revision_conflict", `the rule changed (now revision ${curRev}); reload and try again`, 409);
+    if (!deleted && input.rev === curRev) throw new TbError("input_invalid", `revision ${input.rev} is already the current version`, 400);
+    if (deleted) {
+      const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
+      if (live >= MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules`, 409);
+    }
+    const text = JSON.stringify(spec);
+    db.prepare("UPDATE rules SET rev = ?, spec = ?, priority = ?, active = ?, deleted = 0, updated_at = ? WHERE id = ?").run(curRev + 1, text, spec.priority, spec.active ? 1 : 0, now, input.id);
+    db.prepare("INSERT INTO rule_revisions (rule_id, rev, change, spec, actor, at, from_rev) VALUES (?, ?, 'restored', ?, ?, ?, ?)").run(input.id, curRev + 1, text, input.actor, now, input.rev);
+    return curRev + 1;
+  });
+  invalidateRules(db);
+  return { id: input.id, rev, restoredFrom: input.rev };
 }
 
 // ── drafts ───────────────────────────────────────────────────────────────────
@@ -307,7 +357,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
   const id = `dec_${ulid(now)}`;
   const obo = t.facts.claim ? JSON.stringify({ ...t.facts.claim, verified: t.facts.claimVerified, teams: t.facts.claimTeams, trust: t.facts.claimTrusts }) : null;
   db.prepare(
-    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, caller_mode, caller_product, product, op, effect, decision, answered, reason, rule_id, rule_rev, rule_title, on_behalf_of, detail, duration_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     id,
     t.callId,
@@ -316,6 +366,7 @@ export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string 
     t.facts.caller.type,
     t.facts.caller.id,
     t.facts.caller.mode,
+    t.facts.callerProduct,
     t.facts.target.product,
     t.facts.target.op,
     t.facts.target.effect,
@@ -344,7 +395,8 @@ export interface DecisionView {
   callId: string | null;
   phase: TraceInput["phase"];
   at: string;
-  caller: { type: string; id: string; mode: string | null };
+  /** `product`: the VERIFIED product of an app caller at decision time; null for an agent, an unverified app, and rows recorded before 0.5.0 */
+  caller: { type: string; id: string; mode: string | null; product: string | null };
   target: { product: string; op: string; effect: string; tool?: string };
   decision: Decision;
   answered: Answered;
@@ -365,7 +417,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
     callId: r.call_id == null ? null : String(r.call_id),
     phase: String(r.phase) as DecisionView["phase"],
     at: iso(Number(r.at)) as string,
-    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode) },
+    caller: { type: String(r.caller_type), id: String(r.caller_id), mode: r.caller_mode == null ? null : String(r.caller_mode), product: r.caller_product == null ? null : String(r.caller_product) },
     target: { product: String(r.product), op: String(r.op), effect: String(r.effect), ...(tool !== undefined ? { tool } : {}) },
     decision: String(r.decision) as Decision,
     answered: String(r.answered) as Answered,
@@ -379,7 +431,15 @@ function decisionView(r: Record<string, unknown>): DecisionView {
   };
 }
 
-export function listDecisions(db: Db, q: { callId?: string; caller?: string; decision?: Decision; product?: string; cursor?: string; limit: number }): { items: DecisionView[]; nextCursor: string | null } {
+/**
+ * `appCaller`: an APP reads its own decisions by its VERIFIED product (any instance of it, so a reinstall keeps its history),
+ * and rows recorded without a product (before 0.5.0, or an unverified app) by its instance id. An app with no verified product
+ * passes `product: null` and reads by instance id only.
+ */
+export function listDecisions(
+  db: Db,
+  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; cursor?: string; limit: number },
+): { items: DecisionView[]; nextCursor: string | null } {
   const where: string[] = [];
   const args: unknown[] = [];
   const add = (sql: string, value: unknown) => {
@@ -389,6 +449,16 @@ export function listDecisions(db: Db, q: { callId?: string; caller?: string; dec
   };
   add("call_id = ?", q.callId);
   add("caller_id = ?", q.caller);
+  if (q.appCaller) {
+    const { product, instance } = q.appCaller;
+    if (product) {
+      where.push("caller_type = 'app' AND (caller_product = ? OR (caller_product IS NULL AND caller_id = ?))");
+      args.push(product, instance);
+    } else {
+      where.push("caller_type = 'app' AND caller_id = ?");
+      args.push(instance);
+    }
+  }
   add("decision = ?", q.decision);
   add("product = ?", q.product);
   add("id < ?", q.cursor);

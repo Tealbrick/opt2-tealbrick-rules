@@ -86,6 +86,7 @@ test("“When someone from team X tags the CEO agent: only work-tagged memories,
     claimTrusts: [],
     claimTrustActive: true,
     fleetAvailable: true,
+    callerProduct: null,
   });
   assert.equal(evaluate(rules, facts("money", true)).decision, "deny");
   assert.deepEqual(evaluate(rules, facts("read", true)).narrowing, { memoryTags: { anyOf: ["work"] } });
@@ -129,11 +130,21 @@ test("“Agents in team Dev may not post in connect” → deny {callerTeams: [D
   assert.deepEqual(compose("When someone from the Dev team asks Hermes, hold sends").rules[0]?.match, { agents: [HERMES], effects: ["outward"], onBehalfOf: { teams: ["tm_dev"] } });
 });
 
-test("“Hold Evolution's outward actions”: an acting app needs callerProducts, not in this version → unmatched with a TODO note", () => {
-  const p = compose("Hold Evolution's outward actions");
-  assert.deepEqual(p.rules, []);
-  assert.match(p.unmatched[0]?.hint ?? "", /cannot yet match the calls that the app “evolution” makes itself/);
-  assert.ok(p.notes.some((n) => /TODO/.test(n) && /callerProducts/.test(n)));
+test("“Hold Evolution's outward actions” → hold {callerProducts: [evolution], effects: [outward]} (the app that makes the call)", () => {
+  for (const text of ["Hold Evolution's outward actions", "Hold outward calls from the Evolution app"]) {
+    const p = compose(text);
+    assert.deepEqual(p.unmatched, [], text);
+    assert.deepEqual(
+      p.rules.map((r) => [r.outcome.decision, r.match]),
+      [["hold", { callerProducts: ["evolution"], effects: ["outward"] }]],
+      text,
+    );
+  }
+  assert.equal(describeRule(compose("Hold Evolution's outward actions").rules[0] as RuleSpec, String, String), "Hold for my review: calls from app evolution with effect outward.");
+  // an app does not belong to a team: the writers refuse the mix, so it is never proposed
+  const mixed = compose("Agents in team Dev and Evolution's sends need my approval");
+  assert.deepEqual(mixed.rules, []);
+  assert.match(mixed.unmatched[0]?.hint ?? "", /callerProducts names apps, but callerTeams/);
 });
 
 test("several decisions in one text; “And …” keeps who; or-lists split; same decision merges", () => {

@@ -25,6 +25,7 @@ const facts = (o: Partial<Omit<CallFacts, "caller" | "target">> & { effect?: str
   callerTeamsAny: o.callerTeamsAny ?? o.callerTeams ?? [],
   ...trustFacts(o),
   fleetAvailable: o.fleetAvailable ?? true,
+  callerProduct: o.callerProduct ?? null,
 });
 
 const hooks = makeHooks("rules");

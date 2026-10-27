@@ -2,9 +2,11 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
+import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
+import { TemplatePicker } from "./template-picker.tsx";
 
 const DECISIONS = [
   { value: "allow", label: "Allow" },
@@ -12,17 +14,39 @@ const DECISIONS = [
   { value: "hold", label: "Hold for my review" },
 ];
 const TRUSTS = ["unreviewed", "trusted", "limited", "blocked"] as const;
+/** The dry run's caller choice for "an app" (agents are listed by id). */
+const APP_CALLER = "__app__";
 const MODES = [
   { value: "free" as const, label: "Free" },
   { value: "bound" as const, label: "Bound" },
 ];
 
 /**
- * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). With `onUse` it edits a
- * PROPOSED rule of the English box (`seed`): "Use this rule" hands the rule back and saves nothing (it is saved as a draft later).
+ * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). `prefill` = a new
+ * rule from a template (Q-9). An existing rule shows its History; "Restore this version" hands over to the page (Q-7). With
+ * `onUse` it edits a PROPOSED rule of the English box (`seed`): "Use this rule" hands the rule back and saves nothing (it is
+ * saved as a draft later).
  */
-function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null; dir: Directory; onDone: (saved: boolean) => void; seed?: RuleSpec; onUse?: (spec: RuleSpec) => void }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? emptySpec()));
+function Editor({
+  initial,
+  prefill,
+  dir,
+  products,
+  onDone,
+  onRestore,
+  seed,
+  onUse,
+}: {
+  initial: RuleRow | null;
+  prefill?: RuleSpec;
+  dir: Directory;
+  products: readonly string[];
+  onDone: (saved: boolean) => void;
+  onRestore?: (t: RestoreTarget) => void;
+  seed?: RuleSpec;
+  onUse?: (spec: RuleSpec) => void;
+}) {
+  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -65,7 +89,7 @@ function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null
     <Dialog
       open
       kicker="Rule"
-      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : "New rule"}
+      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -132,6 +156,13 @@ function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null
           onChange={(v) => setMatch({ callerTeams: v })}
         />
         <ChipChoice
+          label="Calls from apps"
+          hint="none = any caller. An app is identified by its verified product, never by its name; an agent never matches. If the product can’t be verified, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
+          value={m.callerProducts}
+          onChange={(v) => setMatch({ callerProducts: v })}
+        />
+        <ChipChoice
           label="On behalf of a member of team (from Governance)"
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={obo.teams}
@@ -169,6 +200,7 @@ function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null
         </section>
       ) : null}
       <Preview candidate={s} dir={dir} />
+      {initial && onRestore ? <RuleHistory ruleId={initial.id} dir={dir} onRestore={onRestore} /> : null}
     </Dialog>
   );
 }
@@ -176,7 +208,11 @@ function Editor({ initial, dir, onDone, seed, onUse }: { initial: RuleRow | null
 /** Dry run: which rule would decide a sample call (with the edited rule included). */
 function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [caller, setCaller] = useState("");
+  const [appProduct, setAppProduct] = useState("");
   const [mode, setMode] = useState<"free" | "bound">("free");
+  const isApp = caller === APP_CALLER;
+  // like the gate: the product is not trimmed; one that is not a product id is no verified product (the dry run sends none)
+  const badProduct = appProduct !== "" && !verifiableProduct(appProduct);
   const [product, setProduct] = useState("knowledge");
   const [op, setOp] = useState("memory_recall");
   const [tool, setTool] = useState("");
@@ -193,7 +229,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       setResult(
         await run("rules_preview", {
           call: {
-            caller: { type: "agent", id, mode },
+            caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}) } : { type: "agent", id, mode },
             target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}) },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
@@ -212,11 +248,24 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       <h3>Try a call (dry run)</h3>
       <div className="rules-form">
         <Field label="Caller">
-          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name }))]} onValueChange={setCaller} />
+          <Select value={caller} options={[{ value: "", label: "First agent" }, ...dir.agents.map((a) => ({ value: a.id, label: a.name })), { value: APP_CALLER, label: "An app" }]} onValueChange={setCaller} />
         </Field>
-        <Field label="Mode">
-          <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
-        </Field>
+        {isApp ? (
+          <Field
+            label="App product"
+            hint={
+              badProduct
+                ? "This is not a product id (lower-case letters, digits, - and _; no spaces), so the dry run treats it as an app whose product can’t be verified."
+                : "Its verified product id, such as knowledge. Leave empty to try an app whose product can’t be verified."
+            }
+          >
+            <TextInput value={appProduct} onChange={(e) => setAppProduct(e.target.value)} />
+          </Field>
+        ) : (
+          <Field label="Mode">
+            <Select value={mode} options={MODES} onValueChange={(v) => setMode(v as "free" | "bound")} />
+          </Field>
+        )}
         <Field label="App">
           <TextInput value={product} onChange={(e) => setProduct(e.target.value)} />
         </Field>
@@ -259,6 +308,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>
           )}
+          {result.callerProductUnavailable ? (
+            <p className="tb-soft">The calling app’s product can’t be verified, so refuse and hold rules that name apps (calls from) apply and allow rules that name them do not.</p>
+          ) : null}
           {result.decision === "hold" && result.answered === "deny" ? (
             <p className="tb-soft">Holds from rules arrive with the next platform release. Until then a hold rule refuses.</p>
           ) : null}
@@ -324,27 +376,36 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
 
 export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () => void; onOpenDrafts?: () => void }) {
   const dir = useDirectory();
-  const load = useCallback(() => run("rules_list", {}), []);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const load = useCallback(() => run("rules_list", showDeleted ? { includeDeleted: true } : {}), [showDeleted]);
   const { data, error, loading, reload } = useLoaded(load);
   const [editing, setEditing] = useState<RuleRow | "new" | null>(null);
   const [deleting, setDeleting] = useState<RuleRow | null>(null);
-  const broken = data?.rules.filter((r) => r.problem).length ?? 0;
+  const [picking, setPicking] = useState(false);
+  const [prefill, setPrefill] = useState<RuleSpec | undefined>(undefined);
+  const [history, setHistory] = useState<RuleRow | null>(null);
+  const [restoring, setRestoring] = useState<RestoreTarget | null>(null);
+  const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
+  const startFromTemplate = <Button onClick={() => setPicking(true)}>Start from a template</Button>;
   return (
     <section className="app-page" aria-label="Rules">
       <Head
         title="Rules"
         lede="The first matching rule decides (lower priority first). No matching rule: allow. Every refusal and hold is recorded with its reason."
         action={
-          <Button variant="primary" onClick={() => setEditing("new")}>
-            New rule
-          </Button>
+          <div className="tb-ctas">
+            {startFromTemplate}
+            <Button variant="primary" onClick={() => setEditing("new")}>
+              New rule
+            </Button>
+          </div>
         }
       />
       <Composer
         dir={dir}
         onSaved={onDraftSaved}
         onOpenDrafts={onOpenDrafts}
-        editor={(spec, done) => <Editor initial={null} dir={dir} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
+        editor={(spec, done) => <Editor initial={null} dir={dir} products={data?.catalog.productIds ?? []} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
       />
       {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       <DirectoryErrors dir={dir} />
@@ -362,10 +423,13 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           App catalog: last read failed ({data.catalog.error}). Rules are checked against the catalog of {when(data.catalog.syncedAt)}.
         </p>
       ) : null}
+      <Switch label="Show deleted rules" checked={showDeleted} onCheckedChange={setShowDeleted} />
       {data === null ? (
         error ? null : <Loading what="rules" />
       ) : data.rules.length === 0 ? (
-        <EmptyState title="No rules yet">Every call is allowed (within each app’s own limits).</EmptyState>
+        <EmptyState title="No rules yet" action={startFromTemplate}>
+          Every call is allowed (within each app’s own limits). A template is a quick start: nothing applies until you save it.
+        </EmptyState>
       ) : (
         <div className="ruled">
           {data.rules.map((r) => (
@@ -375,7 +439,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 {r.spec.title} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
-                {r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
+                {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
                 {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
@@ -386,12 +450,20 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 revision {r.rev} · {day(r.updatedAt)}
               </span>
               <div className="side">
-                <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
-                  Edit
-                </Button>
-                <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
-                  Delete
-                </Button>
+                {r.deleted ? (
+                  <Button size="sm" aria-label={`History of ${r.spec.title}`} onClick={() => setHistory(r)}>
+                    History
+                  </Button>
+                ) : (
+                  <>
+                    <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
+                      Edit
+                    </Button>
+                    <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
+                      Delete
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -400,10 +472,49 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
       {editing ? (
         <Editor
           initial={editing === "new" ? null : editing}
+          prefill={editing === "new" ? prefill : undefined}
           dir={dir}
+          products={data?.catalog.productIds ?? []}
           onDone={(saved) => {
             setEditing(null);
+            setPrefill(undefined);
             if (saved) reload();
+          }}
+          onRestore={(t) => {
+            setEditing(null);
+            setRestoring(t);
+          }}
+        />
+      ) : null}
+      {picking ? (
+        <TemplatePicker
+          dir={dir}
+          products={data?.catalog.productIds ?? []}
+          onClose={() => setPicking(false)}
+          onPick={(spec) => {
+            setPicking(false);
+            setPrefill(spec);
+            setEditing("new");
+          }}
+        />
+      ) : null}
+      {history ? (
+        <HistoryDialog
+          rule={{ id: history.id, title: history.spec.title }}
+          dir={dir}
+          onClose={() => setHistory(null)}
+          onRestore={(t) => {
+            setHistory(null);
+            setRestoring(t);
+          }}
+        />
+      ) : null}
+      {restoring ? (
+        <RestoreDialog
+          target={restoring}
+          onDone={(restored) => {
+            setRestoring(null);
+            if (restored) reload();
           }}
         />
       ) : null}
