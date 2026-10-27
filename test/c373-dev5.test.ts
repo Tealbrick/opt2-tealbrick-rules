@@ -5,7 +5,8 @@ import { test } from "node:test";
 import type { OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { handlers } from "../src/app.ts";
 import { makeHooks } from "../src/hooks.ts";
-import { saveRule } from "../src/store.ts";
+import { setMode } from "../src/mode-store.ts";
+import { listDecisions, pruneDecisions, saveRule, TRACE_KEEP } from "../src/store.ts";
 import { AGENT_A, AGENT_B, APP_INSTANCE, hookCtx, hookReq, migratedDb, OWNER, opCtx, seedCatalog, spec } from "./helpers.ts";
 
 type Run = (input: unknown, ctx: OpContext) => Promise<any>;
@@ -193,4 +194,60 @@ test("RU-1: escapeControls writes the characters out and keeps tab and line brea
   assert.equal(controlProblem("The note", "", true), "");
   // the position counts the characters before it (an astral character is one position in the sentence's eyes: UTF-16 units, documented)
   assert.match(controlProblem("The title", `👨${RLO}`), /at position 3\./);
+});
+
+// ── RU-2: no-match decisions of every non-read effect are recorded ───────────
+test("RU-2: an allowed call that matched no rule is recorded for write, outward, destructive and money with decidedBy mode; reads are not", async () => {
+  const db = migratedDb().db;
+  for (const effect of ["read", "write", "outward", "destructive", "money"]) await gate(db, { callId: `cal_${effect}`, caller: AGENT_A, product: "knowledge", op: "some_op", effect });
+  const rows = listDecisions(db, { limit: 20 }).items;
+  assert.deepEqual(rows.map((r) => r.callId).sort(), ["cal_destructive", "cal_money", "cal_outward", "cal_write"], "the read left no row");
+  for (const r of rows) assert.deepEqual([r.answered, r.ruleId, r.detail], ["allow", null, { decidedBy: "mode", mode: "permissive" }], r.callId ?? "");
+  // an app caller too; and the explain op of the caller reads it back as decided by the mode
+  await gate(db, { callId: "cal_app", app: { product: "evolution" }, product: "kanban", op: "issue_create", effect: "write" });
+  const explained = await run("rules_explain")({ callId: "cal_write" }, agent(db));
+  assert.deepEqual(explained.decisions.map((d: any) => [d.callId, d.decision, d.decidedBy, d.mode, d.ruleId]), [["cal_write", "allow", "mode", "permissive", null]]);
+  // the mode that let it through is the mode in force
+  setMode(db, { mode: "verification", actor: OWNER });
+  await gate(db, { callId: "cal_ver_read", caller: AGENT_A, product: "knowledge", op: "some_op", effect: "read" });
+  await gate(db, { callId: "cal_ver_write", caller: AGENT_A, product: "knowledge", op: "some_op", effect: "write" });
+  const ver = Object.fromEntries(listDecisions(db, { limit: 50 }).items.map((r) => [r.callId, [r.answered, r.detail]]));
+  assert.deepEqual(ver.cal_ver_write, ["hold", { decidedBy: "mode", mode: "verification" }]);
+  assert.deepEqual(ver.cal_ver_read, ["hold", { decidedBy: "mode", mode: "verification" }], "a read the mode held is recorded as before");
+  // a built-in exemption of a write is recorded as an exemption (Closed mode)
+  setMode(db, { mode: "closed", actor: OWNER });
+  await gate(db, { callId: "cal_draft", caller: AGENT_A, product: "rules", op: "rule_draft_submit", effect: "write" });
+  assert.deepEqual(listDecisions(db, { callId: "cal_draft", limit: 1 }).items[0]?.detail, { decidedBy: "exemption", mode: "closed", exemption: "rules-self-service" });
+});
+
+test("RU-2: a rule that decides keeps its trace unchanged (no decidedBy)", async () => {
+  const db = migratedDb().db;
+  saveRule(db, { spec: spec({ title: "No writes", decision: "deny", reason: "no", match: { effects: ["write"] } }), actor: OWNER });
+  await gate(db, { callId: "cal_rule", caller: AGENT_A, product: "knowledge", op: "some_op", effect: "write" });
+  assert.deepEqual(listDecisions(db, { callId: "cal_rule", limit: 1 }).items[0]?.detail, null);
+});
+
+test("RU-2: the extra rows stay inside the retention (newest TRACE_KEEP, 30 days); the periodic prune runs while writes are recorded", async () => {
+  const db = migratedDb().db;
+  const now = Date.now();
+  // TRACE_KEEP + 500 rows in one statement, the oldest first (ids sort by time), all within the window
+  db.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${TRACE_KEEP + 500})
+    INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, product, op, effect, decision, answered, reason, duration_us)
+    SELECT printf('dec_%08d', i), NULL, 'before', ${now - 1000}, 'agent', 'agt_x', 'knowledge', 'some_op', 'write', 'allow', 'allow', 'r', 1 FROM n`);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM decisions").get()?.n), TRACE_KEEP + 500);
+  pruneDecisions(db, now);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM decisions").get()?.n), TRACE_KEEP, "the newest TRACE_KEEP stay");
+  assert.equal(String(db.prepare("SELECT MIN(id) AS m FROM decisions").get()?.m), `dec_${String(501).padStart(8, "0")}`);
+  // old rows go by age
+  db.prepare("UPDATE decisions SET at = ? WHERE id <= 'dec_00000600'").run(now - 31 * 24 * 3600 * 1000);
+  pruneDecisions(db, now);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM decisions").get()?.n), TRACE_KEEP - 100);
+  // recorded writes trigger the prune themselves (every 1000th insert): the log never grows without bound
+  db.exec("DELETE FROM decisions");
+  db.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${TRACE_KEEP})
+    INSERT INTO decisions (id, call_id, phase, at, caller_type, caller_id, product, op, effect, decision, answered, reason, duration_us)
+    SELECT printf('dec_%08d', i), NULL, 'before', ${now - 1000}, 'agent', 'agt_x', 'knowledge', 'some_op', 'write', 'allow', 'allow', 'r', 1 FROM n`);
+  for (let i = 0; i < 2000; i++) await gate(db, { callId: callId(), caller: AGENT_A, product: "knowledge", op: "some_op", effect: "write" });
+  const total = Number(db.prepare("SELECT COUNT(*) AS n FROM decisions").get()?.n);
+  assert.ok(total < TRACE_KEEP + 1000, `pruned while recording (${total})`);
 });

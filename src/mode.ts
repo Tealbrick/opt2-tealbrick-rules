@@ -105,12 +105,13 @@ export function decidedBy(v: Pick<Verdict, "rule" | "byMode">): DecidedBy {
 
 /**
  * Trace detail of a mode decision: `{decidedBy: "mode", mode}` or `{decidedBy: "exemption", mode, exemption}`. Empty for a
- * rule decision and for a plain Permissive allow (those traces stay exactly as before 0.5.0: a row with no rule and no
- * `decidedBy` reads as Permissive).
+ * rule decision. A call that matched no rule names the mode that let it through, also Permissive (QA-C373-RU-2: the no-match
+ * write rows). Rows recorded before this release have no `decidedBy`; a row with no rule and no `decidedBy` still reads as
+ * Permissive (`traceDecidedBy`).
  */
 export function modeDetail(v: Pick<Verdict, "rule" | "byMode">): Record<string, string> {
   const b = v.byMode;
-  if (v.rule || !b || (b.mode === "permissive" && !b.exemption)) return {};
+  if (v.rule || !b) return {};
   return b.exemption ? { decidedBy: "exemption", mode: b.mode, exemption: b.exemption } : { decidedBy: "mode", mode: b.mode };
 }
 

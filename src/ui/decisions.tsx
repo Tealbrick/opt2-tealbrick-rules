@@ -49,7 +49,7 @@ export function DecisionsPage() {
   useEffect(() => load(), [load]);
   return (
     <section className="app-page" aria-label="Decisions">
-      <Head title="Decisions" />
+      <Head title="Decisions" lede="Reads that match no rule are not listed." />
       <div className="toolbar">
         <div className="tb-search rules-search">
           <SearchIcon />
@@ -65,7 +65,7 @@ export function DecisionsPage() {
       {items === null ? (
         error ? null : <Loading what="decisions" />
       ) : items.length === 0 ? (
-        <EmptyState title="No decisions recorded yet">Rules records every outward, destructive or money call, and every call a rule decided.</EmptyState>
+        <EmptyState title="No decisions recorded yet">Rules records every call that is not a read, and every call a rule decided.</EmptyState>
       ) : (
         <div className="ruled">
           {items.map((d) => (

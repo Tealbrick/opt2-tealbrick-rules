@@ -55,8 +55,6 @@ export type RuleSpec = RulesSetInputRuleSpec;
 export type Decision = RuleSpec["outcome"]["decision"];
 export type Effect = "read" | "write" | "outward" | "destructive" | "money";
 
-/** Effects Rules always gates and records, even when no rule names the call (brief C81: outward/destructive/money). */
-export const GATED_EFFECTS: ReadonlySet<string> = new Set(["outward", "destructive", "money"]);
 /** Evolution P1 workflow id (`wfl` claim, `caller.workflow`): `^[a-z][a-z0-9-]{2,39}$`. */
 export const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
 /** The product that runs workflows (Evolving Workflows); a `callerWorkflows` rule must name it in `callerProducts`. */
@@ -583,9 +581,13 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
   });
 }
 
-/** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
+/**
+ * True when Rules must record this call's decision: any call that is not a read (write, outward, destructive, money: QA-C373-RU-2, so
+ * a write that matched no rule is listed with the mode that let it through), or a rule decided it, or a fail-closed gap applied. Reads
+ * that match no rule stay unrecorded (volume).
+ */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown || v.closedOnWorkflow || v.decision !== "allow";
+  return facts.target.effect !== "read" || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown || v.closedOnWorkflow || v.decision !== "allow";
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */

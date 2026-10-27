@@ -469,6 +469,7 @@ describe("RU-1: a stored value with control or invisible characters is shown wri
     noRaw(draft);
     await m.unmount();
     m = await mount(h(decisions.DecisionsPage));
+    assert.match(textOf(m.host), /Reads that match no rule are not listed\./, "QA-C373-RU-2: the page says what it does not list");
     const item = m.host.querySelector(".item") as Element;
     assert.match(textOf(item), /no⟨U\+202E⟩way/);
     assert.match(textOf(item), /rule “Ev⟨U\+200D⟩il”/);
