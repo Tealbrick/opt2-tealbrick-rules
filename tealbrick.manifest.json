@@ -386,6 +386,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -804,6 +816,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -1133,6 +1157,18 @@
                       "maxLength": 40,
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
                   },
                   "recipients": {
                     "type": "object",
@@ -1480,6 +1516,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -1815,6 +1863,12 @@
                     "minLength": 1,
                     "maxLength": 40,
                     "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                  },
+                  "workflow": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 40,
+                    "pattern": "^[a-z][a-z0-9-]{2,39}$"
                   }
                 }
               },
@@ -2036,6 +2090,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -2228,7 +2294,8 @@
           "exemption",
           "modeNote",
           "callerTrust",
-          "recipientsUnknown"
+          "recipientsUnknown",
+          "workflowUnavailable"
         ],
         "properties": {
           "decision": {
@@ -2368,6 +2435,9 @@
             "type": "boolean"
           },
           "recipientsUnknown": {
+            "type": "boolean"
+          },
+          "workflowUnavailable": {
             "type": "boolean"
           },
           "steps": {
@@ -2963,6 +3033,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -3440,6 +3522,18 @@
                       "maxLength": 40,
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
                   },
                   "recipients": {
                     "type": "object",
@@ -3935,7 +4029,8 @@
                 "callerProductUnavailable",
                 "decidedBy",
                 "mode",
-                "recipientsUnknown"
+                "recipientsUnknown",
+                "workflowUnavailable"
               ],
               "properties": {
                 "callId": {
@@ -3991,6 +4086,9 @@
                   "type": "boolean"
                 },
                 "recipientsUnknown": {
+                  "type": "boolean"
+                },
+                "workflowUnavailable": {
                   "type": "boolean"
                 },
                 "decidedBy": {
@@ -4189,6 +4287,18 @@
                       "maxLength": 40,
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
                   },
                   "recipients": {
                     "type": "object",
@@ -4693,6 +4803,18 @@
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
                   },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
+                  },
                   "recipients": {
                     "type": "object",
                     "additionalProperties": false,
@@ -5034,6 +5156,18 @@
                       "maxLength": 40,
                       "pattern": "^[a-z0-9][a-z0-9_-]*$"
                     }
+                  },
+                  "callerWorkflows": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{2,39}$"
+                    },
+                    "description": "C373 D2c: verified workflow id of the calling app (bridge caller.workflow, Evolution P1). Needs callerProducts with evolution. Without the bridge cap app_workflow_grants, deny and hold apply to an evolution call without a workflow; allow never."
                   },
                   "recipients": {
                     "type": "object",

@@ -48,7 +48,7 @@ import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal
 import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, order, type Rule, type RuleSpec, validProduct } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
-import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts } from "./hooks.ts";
+import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
@@ -288,6 +288,9 @@ export const handlers = {
         fleetAvailable: fx.available,
         // the dry run's product is typed in by the owner; it passes the same validity rule as a bridge-sent one
         callerProduct: input.call.caller.type === "app" && validProduct(input.call.caller.product) ? input.call.caller.product : null,
+        // the dry run's workflow is typed in (the schema checks the pattern); the cap is the one the gate sees
+        callerWorkflow: input.call.caller.type === "app" ? (input.call.caller.workflow ?? null) : null,
+        workflowCapVisible: workflowCapVisible(ctx.db),
       };
       // the dry run may try another default mode than the current one (C373c); nothing is stored
       const mode = input.mode ?? currentMode(ctx.db);
@@ -310,6 +313,7 @@ export const handlers = {
         fleetAvailable: facts.fleetAvailable,
         callerProductUnavailable: v.closedOnProduct,
         recipientsUnknown: v.recipientsUnknown,
+        workflowUnavailable: v.closedOnWorkflow,
         steps: explain(rules, facts),
       };
     },
@@ -387,6 +391,7 @@ export const handlers = {
           fleetUnavailable: d.detail?.fleetUnavailable === true,
           callerProductUnavailable: d.detail?.callerProductUnavailable === true,
           recipientsUnknown: d.detail?.recipientsUnknown === true,
+          workflowUnavailable: d.detail?.workflowUnavailable === true,
           // C373c: a rule, or the workspace default mode (a row with neither is a Permissive no-match row)
           ...traceDecidedBy(d.ruleId, d.detail),
         })),
@@ -458,6 +463,8 @@ export const definition: SdkAppDefinition = {
   },
   // Fleet read model: refresh now and every 60 s with an app-initiated companion call (C85), never inside a hook.
   async onStart(ctx) {
+    // C373 D2c: the hook context has no bridgeCaps (SDK 0.1.40); the hooks read this start context's reader per database
+    registerBridgeCaps(ctx.db, (ctx as { bridgeCaps?: () => readonly string[] }).bridgeCaps);
     startFleetTimer(ctx.db, ctx.callApp as CallApp);
     // App catalog from the signed release index (writer checks only; the gate never reads it).
     startCatalogTimer(ctx.db, catalogOpts(ctx.log));

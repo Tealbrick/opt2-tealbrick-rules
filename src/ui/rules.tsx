@@ -2,7 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
-import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
+import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
@@ -184,6 +184,12 @@ function Editor({
           value={m.callerProducts}
           onChange={(v) => setMatch({ callerProducts: v })}
         />
+        <Field
+          label="Calls from workflows"
+          hint="Workflow ids of Evolving Workflows, comma separated; needs evolution in Calls from apps. An agent never matches. If the bridge can’t name the workflow, a refuse or hold rule with this applies to Evolving Workflows and an allow rule does not."
+        >
+          <TextInput value={joinList(m.callerWorkflows)} onChange={(e) => setMatch({ callerWorkflows: list(e.target.value) })} />
+        </Field>
         <ChipChoice
           label="On behalf of a member of team (from Governance)"
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
@@ -246,6 +252,8 @@ function Editor({
 function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [caller, setCaller] = useState("");
   const [appProduct, setAppProduct] = useState("");
+  // C373 D2c: the verified workflow id of the calling app ("" = none); sent only when it is a workflow id, like the bridge does
+  const [workflow, setWorkflow] = useState("");
   const [mode, setMode] = useState<"free" | "bound">("free");
   const isApp = caller === APP_CALLER;
   // like the gate: the product is not trimmed; one that is not a product id is no verified product (the dry run sends none)
@@ -269,7 +277,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
       setResult(
         await run("rules_preview", {
           call: {
-            caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}) } : { type: "agent", id, mode },
+            caller: isApp ? { type: "app", id: "ins_preview", ...(verifiableProduct(appProduct) ? { product: appProduct } : {}), ...(WORKFLOW_ID.test(workflow) ? { workflow } : {}) } : { type: "agent", id, mode },
             target: { product, op, effect, ...(tool.trim() ? { tool: tool.trim() } : {}), ...(recipients.trim() ? { recipients: recipients.trim() === "-" ? [] : (list(recipients) ?? []) } : {}) },
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
@@ -301,6 +309,11 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
             }
           >
             <TextInput value={appProduct} onChange={(e) => setAppProduct(e.target.value)} />
+          </Field>
+        ) : null}
+        {isApp ? (
+          <Field label="Workflow (optional)" hint={workflow !== "" && !WORKFLOW_ID.test(workflow) ? "This is not a workflow id, so the dry run sends no workflow." : "The calling workflow’s id, such as weekly-report. Empty = not a workflow call."}>
+            <TextInput value={workflow} onChange={(e) => setWorkflow(e.target.value)} />
           </Field>
         ) : (
           <Field label="Mode">
@@ -356,6 +369,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           ) : (
             <p className="tb-soft">Governance can’t be read right now, so refuse and hold rules that name teams or trust apply and allow rules that name them do not.</p>
           )}
+          {result.workflowUnavailable ? (
+            <p className="tb-soft">This bridge can’t name the calling workflow, so refuse and hold rules that name workflows apply to Evolving Workflows and allow rules that name them do not.</p>
+          ) : null}
           {result.recipientsUnknown ? (
             <p className="tb-soft">The call’s recipients aren’t known, so refuse and hold rules that name recipients apply and allow rules that name them do not.</p>
           ) : null}

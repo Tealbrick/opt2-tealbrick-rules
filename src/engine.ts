@@ -41,6 +41,12 @@
 //   holder active. Unknown recipients (absent, or `recipientsIncomplete`) fail CLOSED: deny/hold apply (`recipientsUnknown`),
 //   allow never. `[]` (known: no recipients) matches no recipient rule. The facts are Fleet facts (C236 strict path). Handles never
 //   enter CallFacts: only the per-recipient facts do, so a decision or trace can hold the COUNT and never a handle.
+// - Calls from workflows (`callerWorkflows`, 0.5.0, C373 D2c, Evolution P1): the VERIFIED workflow id of an APP caller (bridge
+//   `caller.workflow` = the grant's `wfl`). Agents never match. A rule needs `callerProducts` with `evolution` (the writer refuses it
+//   otherwise; only Evolving Workflows runs workflows), so an unverified product is the product gap above. A call WITHOUT a workflow
+//   (agreed with Evolution): when the bridge cap `app_workflow_grants` is visible, it is not a workflow call (no match); when it is
+//   not visible (caps never read count as not visible), a deny or hold rule APPLIES to an `evolution` caller (`closedOnWorkflow`)
+//   and an allow rule never matches. A call from another verified product without a workflow never matches.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 import { type DefaultMode, type ExemptionId, modeVerdict } from "./mode.ts";
@@ -51,6 +57,12 @@ export type Effect = "read" | "write" | "outward" | "destructive" | "money";
 
 /** Effects Rules always gates and records, even when no rule names the call (brief C81: outward/destructive/money). */
 export const GATED_EFFECTS: ReadonlySet<string> = new Set(["outward", "destructive", "money"]);
+/** Evolution P1 workflow id (`wfl` claim, `caller.workflow`): `^[a-z][a-z0-9-]{2,39}$`. */
+export const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
+/** The product that runs workflows (Evolving Workflows); a `callerWorkflows` rule must name it in `callerProducts`. */
+export const WORKFLOW_PRODUCT = "evolution";
+/** The bridge capability that carries verified workflow ids (Evolution P1). */
+export const WORKFLOW_CAP = "app_workflow_grants";
 /** A product id is `[a-z0-9][a-z0-9_-]*`, at most 40 characters (manifest ProductId). Anything else is no verified product (defence in depth). */
 const PRODUCT_ID = /^[a-z0-9][a-z0-9_-]*$/;
 export function validProduct(p: unknown): p is string {
@@ -131,6 +143,10 @@ export interface CallFacts {
    * canonical): deny/hold recipient rules apply, allow rules do not. `[]` = known: the call names no recipient.
    */
   recipients?: readonly RecipientFact[] | null;
+  /** The VERIFIED workflow id of an APP caller (bridge `caller.workflow`, Evolution P1, a valid id), else null/absent. */
+  callerWorkflow?: string | null;
+  /** The bridge cap `app_workflow_grants` is visible to Rules (slice `bridge.caps`); absent or false = not visible (the strict path). */
+  workflowCapVisible?: boolean;
   /**
    * The raw trust values of everyone who holds the claimed requester's key (contact id, canonical handle or agent id), as a
    * set. `[]` = no claim or facts unavailable. A requester the directory does not know is `["unreviewed"]`.
@@ -170,6 +186,8 @@ export interface Verdict {
   toolUnknown: boolean;
   /** true when the decisive deny/hold rule applied only because the call's recipients were unknown (or an allow rule that narrows was skipped for it) */
   recipientsUnknown: boolean;
+  /** true when the decisive deny/hold rule applied only because the bridge cannot confirm the calling workflow (or an allow rule that narrows was skipped for it) */
+  closedOnWorkflow: boolean;
   /** the rule `narrowing` comes from: the deciding allow rule when it has one, else the first skipped allow rule that contributed */
   narrowingRuleId: string | null;
   /** C373c: set when NO rule matched: the default mode that decided, or the built-in exemption that kept the mode out (src/mode.ts) */
@@ -216,6 +234,11 @@ export function dependsOnProduct(spec: RuleSpec): boolean {
 export const NEEDS_FLEET = "needs Fleet facts, which are unavailable (allow rules do not apply without them)";
 export const NEEDS_PRODUCT = "needs the calling app's verified product, which is unavailable (allow rules do not apply without it)";
 export const NEEDS_RECIPIENTS = "needs the call's recipients, which are unknown (allow rules do not apply without them)";
+export const NEEDS_WORKFLOW = "needs the calling workflow, which this bridge cannot confirm (allow rules do not apply without it)";
+
+export function dependsOnWorkflow(spec: RuleSpec): boolean {
+  return (spec.match.callerWorkflows?.length ?? 0) > 0;
+}
 
 /** One recipient against the sub-criteria: deny/hold see every membership and ANY holder's trust; allow needs every holder active and listed. */
 function recipientMatches(c: NonNullable<RuleSpec["match"]["recipients"]>, r: RecipientFact, strict: boolean): boolean {
@@ -243,6 +266,8 @@ export interface Judged {
   onTool: boolean;
   /** the closed or skipped outcome rests on unknown recipients */
   onRecipients: boolean;
+  /** the closed or skipped outcome rests on a workflow the bridge cannot confirm */
+  onWorkflow: boolean;
 }
 
 /**
@@ -251,7 +276,7 @@ export interface Judged {
  * else was skipped because they are unavailable (`skipped`; its narrowing still applies). `useClaim = false` makes every claim criterion fail.
  */
 export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged {
-  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false, onRecipients: false });
+  const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false, onRecipients: false, onWorkflow: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
   if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
@@ -275,6 +300,7 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
   let onFleet = false;
   let onProduct = false;
   let onRecipients = false;
+  let onWorkflow = false;
   // A fact that may be unavailable: met for a deny/hold rule and never met for an allow rule.
   const gap = (): void => {
     if (strict) closed = true;
@@ -294,6 +320,20 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
       gap();
       onProduct = true;
     } else if (!m.callerProducts.includes(facts.callerProduct)) return no("calling app is not listed");
+  }
+  if (m.callerWorkflows?.length) {
+    // C373 D2c: a workflow is an APP caller's verified id; an agent never matches
+    if (facts.caller.type !== "app") return no("caller is not an app");
+    const w = facts.callerWorkflow ?? null;
+    if (w !== null) {
+      if (!m.callerWorkflows.includes(w)) return no("calling workflow is not listed");
+    } else if (facts.workflowCapVisible === true) return no("not a workflow call");
+    else if (facts.callerProduct !== null && facts.callerProduct !== WORKFLOW_PRODUCT) return no("not a workflow call");
+    else {
+      // no cap: Evolution (or an app whose product is unverified, a gap above) may be calling from a workflow the bridge cannot name
+      gap();
+      onWorkflow = true;
+    }
   }
   if (m.callerTeams?.length) {
     const have = strict ? facts.callerTeamsAny : facts.callerTeams;
@@ -344,8 +384,8 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
       if (why) return no(why);
     }
   }
-  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT, onRecipients && NEEDS_RECIPIENTS].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false, onRecipients };
-  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed, onRecipients };
+  if (skipped) return { why: [onFleet && NEEDS_FLEET, onProduct && NEEDS_PRODUCT, onRecipients && NEEDS_RECIPIENTS, onWorkflow && NEEDS_WORKFLOW].filter(Boolean).join("; "), closed: false, skipped: true, onFleet, onProduct, onTool: false, onRecipients, onWorkflow };
+  return { why: "", closed: closed || toolClosed, skipped: false, onFleet, onProduct, onTool: toolClosed, onRecipients, onWorkflow };
 }
 
 export function mismatch(spec: RuleSpec, facts: CallFacts, useClaim = true): string {
@@ -365,6 +405,7 @@ interface Hit {
   onProduct: boolean;
   onTool: boolean;
   onRecipients: boolean;
+  onWorkflow: boolean;
   /** merged narrowing of the allow rules skipped for unavailable facts (Fleet or product) that precede the decisive rule */
   skippedNarrowing: Narrowing | null;
   skippedRuleId: string | null;
@@ -372,6 +413,7 @@ interface Hit {
   skipFleet: boolean;
   skipProduct: boolean;
   skipRecipients: boolean;
+  skipWorkflow: boolean;
 }
 
 /**
@@ -386,6 +428,7 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
   let skipFleet = false;
   let skipProduct = false;
   let skipRecipients = false;
+  let skipWorkflow = false;
   let worst: Rule | null = null;
   let worstJ: Judged | null = null;
   for (const r of ordered) {
@@ -398,6 +441,7 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
         skipFleet ||= j.onFleet;
         skipProduct ||= j.onProduct;
         skipRecipients ||= j.onRecipients;
+        skipWorkflow ||= j.onWorkflow;
       }
     }
     if (j.why !== "") continue;
@@ -410,15 +454,15 @@ function firstMatch(ordered: readonly Rule[], facts: CallFacts, useClaim: boolea
     }
     const decisive = worst && SEVERITY[worst.spec.outcome.decision] >= SEVERITY[r.spec.outcome.decision] ? worst : r;
     const closed = decisive === worst;
-    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients };
+    return { rule: decisive, closed, onFleet: closed && !!worstJ?.onFleet, onProduct: closed && !!worstJ?.onProduct, onTool: closed && !!worstJ?.onTool, onRecipients: closed && !!worstJ?.onRecipients, onWorkflow: closed && !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow };
   }
-  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients };
+  return { rule: worst, closed: worst !== null, onFleet: !!worstJ?.onFleet, onProduct: !!worstJ?.onProduct, onTool: !!worstJ?.onTool, onRecipients: !!worstJ?.onRecipients, onWorkflow: !!worstJ?.onWorkflow, skippedNarrowing, skippedRuleId, skipFleet, skipProduct, skipRecipients, skipWorkflow };
 }
 
 function verdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
   const rule = hit.rule;
   // No rule matched: the workspace default mode decides (C373c, src/mode.ts); Permissive keeps this allow.
-  if (!rule) return modeVerdict({ decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, recipientsUnknown: hit.skipRecipients, narrowingRuleId: hit.skippedRuleId }, facts, mode);
+  if (!rule) return modeVerdict({ decision: "allow", reason: NO_MATCH_REASON, rule: null, narrowing: hit.skippedNarrowing, viaClaim: false, closedOnFleet: hit.skipFleet, closedOnProduct: hit.skipProduct, toolUnknown: false, recipientsUnknown: hit.skipRecipients, closedOnWorkflow: hit.skipWorkflow, narrowingRuleId: hit.skippedRuleId }, facts, mode);
   const own = rule.spec.outcome.decision === "allow" ? normNarrowing(rule.spec.narrowing) : null;
   const allow = rule.spec.outcome.decision === "allow";
   return {
@@ -431,6 +475,7 @@ function verdictOf(hit: Hit, facts: CallFacts, mode: DefaultMode): Verdict {
     closedOnProduct: (hit.closed && hit.onProduct) || (allow && hit.skipProduct),
     toolUnknown: hit.closed && hit.onTool,
     recipientsUnknown: (hit.closed && hit.onRecipients) || (allow && hit.skipRecipients),
+    closedOnWorkflow: (hit.closed && hit.onWorkflow) || (allow && hit.skipWorkflow),
     narrowingRuleId: allow ? (own ? rule.id : hit.skippedRuleId) : null,
   };
 }
@@ -505,14 +550,14 @@ export function evaluate(ordered: readonly Rule[], facts: CallFacts, mode: Defau
   const base = verdictOf(firstMatch(ordered, facts, false), facts, mode);
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
-  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct, recipientsUnknown: withClaim.recipientsUnknown || base.recipientsUnknown };
+  return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct, recipientsUnknown: withClaim.recipientsUnknown || base.recipientsUnknown, closedOnWorkflow: withClaim.closedOnWorkflow || base.closedOnWorkflow };
 }
 
 /** "matches", or what a closed match rests on: unavailable Fleet facts or app product, and/or a call that names no tool. */
 function closedWhy(j: Judged): string {
   if (!j.closed) return "matches";
   const names = [j.onFleet && "Fleet facts", j.onProduct && "the calling app's verified product"].filter(Boolean).join(" and ");
-  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool", j.onRecipients && "the call's recipients are unknown"].filter(Boolean).join(" and ");
+  const gaps = [names && `${names} ${j.onProduct && !j.onFleet ? "is" : "are"} unavailable`, j.onTool && "the call names no tool", j.onRecipients && "the call's recipients are unknown", j.onWorkflow && "the bridge cannot confirm the calling workflow"].filter(Boolean).join(" and ");
   return `matches: ${gaps}, so this rule applies (fail closed)`;
 }
 
@@ -526,7 +571,7 @@ export function explain(ordered: readonly Rule[], facts: CallFacts): Step[] {
 
 /** True when Rules must record this call's decision: a default-gated effect, or a rule decided it. */
 export function recorded(facts: CallFacts, v: Verdict): boolean {
-  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown || v.decision !== "allow";
+  return GATED_EFFECTS.has(facts.target.effect) || v.rule !== null || v.closedOnFleet || v.closedOnProduct || v.toolUnknown || v.recipientsUnknown || v.closedOnWorkflow || v.decision !== "allow";
 }
 
 /** Datasets pass the narrowing: `datasetsMatch` (local copy until the manifest package carries it, see its TODO). */
@@ -639,6 +684,15 @@ export function specProblem(spec: RuleSpec): string {
     // an app caller has no agent trust: agents that lists only app instances (ins_…) could never match
     if (m.agents?.length && m.agents.every((a) => a.startsWith("ins_"))) return "callerTrust is the trust of a calling agent, but agents lists only apps (ins_…), so the rule would never match";
   }
+  const cw = m.callerWorkflows ?? [];
+  if (cw.length) {
+    const bad = cw.find((w) => typeof w !== "string" || !WORKFLOW_ID.test(w));
+    if (bad !== undefined) return `callerWorkflows has “${String(bad).slice(0, 40)}”, which is not a workflow id (a lower-case letter, then 2 to 39 lower-case letters, digits or -)`;
+    const twice = cw.find((w, i) => cw.indexOf(w) !== i);
+    if (twice !== undefined) return `callerWorkflows lists “${twice}” twice`;
+    // only Evolving Workflows runs workflows: say so in callerProducts (the rule is then never read as "any app")
+    if (!m.callerProducts?.includes(WORKFLOW_PRODUCT)) return `callerWorkflows are workflows of Evolving Workflows: add “${WORKFLOW_PRODUCT}” to callerProducts`;
+  }
   const rc = m.recipients;
   if (rc !== undefined) {
     // C373 D5 (S2): recipients exist only on outward calls, and unknown recipients make a deny/hold APPLY. So a recipients rule
@@ -672,6 +726,12 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
     // a recipients rule cannot apply to a call known to name no recipient; unknown recipients and their facts could apply
     if (m.recipients && facts.recipients?.length === 0) continue;
+    // a workflow rule applies to an app only; a verified workflow must be listed; without one it could apply only on the strict path
+    if (m.callerWorkflows?.length) {
+      if (facts.caller.type !== "app") continue;
+      const w = facts.callerWorkflow ?? null;
+      if (w !== null ? !m.callerWorkflows.includes(w) : facts.workflowCapVisible === true || (facts.callerProduct !== null && facts.callerProduct !== WORKFLOW_PRODUCT)) continue;
+    }
     if (m.callerProducts?.length && (facts.caller.type !== "app" || (facts.callerProduct !== null && !m.callerProducts.includes(facts.callerProduct)))) continue;
     if (dependsOnClaim(sp)) {
       // a claim-dependent rule can apply only with a claim of a listed kind and id; teams and trust are Fleet facts (could apply)

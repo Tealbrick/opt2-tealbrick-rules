@@ -18,6 +18,9 @@ export function run<K extends keyof PersonOps>(op: K, input: In<K>): Promise<Out
  * Same rule as the gate's `validProduct` (src/engine.ts, which the browser build does not load): a product id is `[a-z0-9][a-z0-9_-]*`,
  * at most 40 characters, NOT trimmed. The dry run sends a product only when it passes, like the gate treats a bridge-sent one.
  */
+/** Evolution P1 workflow id (same rule as `WORKFLOW_ID` in src/engine.ts, which the browser build does not load). */
+export const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
+
 export const verifiableProduct = (p: string): boolean => p.length <= 40 && /^[a-z0-9][a-z0-9_-]*$/.test(p);
 
 export const EFFECTS = ["read", "write", "outward", "destructive", "money"] as const;
@@ -77,6 +80,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
   if (m.callerTrust?.length) parts.push(`calling agent's trust ${m.callerTrust.join(", ")}`);
   if (m.callerProducts?.length) parts.push(`calls from app ${m.callerProducts.join(", ")}`);
+  if (m.callerWorkflows?.length) parts.push(`from workflow ${m.callerWorkflows.join(", ")}`);
   const r = m.recipients;
   if (r) {
     const sub = [r.teams?.length ? `in team ${r.teams.map(teamName).join(", ")}` : "", r.trust?.length ? `with trust ${r.trust.join(", ")}` : "", r.known === undefined ? "" : r.known ? "known to Governance" : "unknown to Governance"].filter(Boolean);

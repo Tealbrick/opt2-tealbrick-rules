@@ -353,12 +353,14 @@ export interface TraceInput {
 
 let inserts = 0;
 
-/** The trace's `detail` JSON: the given detail plus the tool name and the recipient count (null = nothing to keep). */
+/** The trace's `detail` JSON: the given detail plus the tool name, the recipient count and the workflow id (null = nothing to keep). */
 function traceDetail(t: TraceInput): string | null {
   const tool = t.facts.target.tool;
   const count = Array.isArray(t.facts.recipients) ? t.facts.recipients.length : undefined;
-  if (!t.detail && tool === undefined && count === undefined) return null;
-  return JSON.stringify({ ...t.detail, ...(tool !== undefined ? { tool } : {}), ...(count !== undefined ? { recipients: count } : {}) });
+  // C373 D2c: the verified workflow id of an app caller (an id, not personal data)
+  const workflow = t.facts.callerWorkflow ?? undefined;
+  if (!t.detail && tool === undefined && count === undefined && workflow === undefined) return null;
+  return JSON.stringify({ ...t.detail, ...(tool !== undefined ? { tool } : {}), ...(count !== undefined ? { recipients: count } : {}), ...(workflow !== undefined ? { workflow } : {}) });
 }
 
 export function recordDecision(db: Db, t: TraceInput, now = Date.now()): string {

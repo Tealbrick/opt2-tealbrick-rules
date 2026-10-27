@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
+import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID } from "./engine.ts";
 import { modeDetail } from "./mode.ts";
 import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
@@ -99,8 +99,8 @@ export function otherRuleNarrowing(gaps: string): string {
 }
 
 /** Trace detail flags: which unavailable facts made a rule apply (or skipped an allow rule that narrows), and a dynamic call without a tool name. */
-export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown" | "recipientsUnknown">): Record<string, boolean> {
-  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}), ...(v.recipientsUnknown ? { recipientsUnknown: true } : {}) };
+export function unavailableDetail(v: Pick<Verdict, "closedOnFleet" | "closedOnProduct" | "toolUnknown" | "recipientsUnknown" | "closedOnWorkflow">): Record<string, boolean> {
+  return { ...(v.closedOnFleet ? { fleetUnavailable: true } : {}), ...(v.closedOnProduct ? { callerProductUnavailable: true } : {}), ...(v.toolUnknown ? { toolUnknown: true } : {}), ...(v.recipientsUnknown ? { recipientsUnknown: true } : {}), ...(v.closedOnWorkflow ? { workflowUnavailable: true } : {}) };
 }
 
 /**
@@ -113,6 +113,37 @@ export function callerTrustFacts(fx: FleetFacts, caller: { type: string; id: str
   const entry = fx.trust.get(`agent:${caller.id}`);
   return { callerTrusts: entry?.trusts ?? ["unreviewed"], callerTrustActive: entry?.allActive ?? true };
 }
+
+/**
+ * C373 D2c (Evolution P1): the VERIFIED workflow id of an APP caller (`HookCallInfo.caller.workflow` = the grant's `wfl`), or null.
+ * The pinned SDK types (spec 0.1.64) do not carry it yet, so it is read structurally (TODO(C373 D2c): use the typed field when the
+ * spec pin has P1). An agent, an absent value or one that is not a workflow id: null.
+ */
+export function workflowOf(caller: HookRequest["call"]["caller"]): string | null {
+  const w = (caller as { workflow?: unknown }).workflow;
+  return caller.type === "app" && typeof w === "string" && WORKFLOW_ID.test(w) ? w : null;
+}
+
+/**
+ * The bridge capabilities (`ctx.bridgeCaps()`, SDK 0.1.37+: the CURRENT verified slice's `bridge.caps`). The SDK hands it to the
+ * start, event, job and op contexts but NOT to the hook context (SDK 0.1.40), so `onStart` registers it per database here and
+ * the hooks read it from memory (no network). Never registered (before the claim, a test, an older SDK) or a throwing reader =
+ * no caps: the strict path.
+ */
+const capsReaders = new WeakMap<Db, () => readonly string[]>();
+export function registerBridgeCaps(db: Db, read: (() => readonly string[]) | undefined): void {
+  if (typeof read === "function") capsReaders.set(db, read);
+}
+export function bridgeCapsOf(db: Db): readonly string[] {
+  try {
+    const caps = capsReaders.get(db)?.();
+    return Array.isArray(caps) ? caps : [];
+  } catch {
+    return [];
+  }
+}
+/** Whether the bridge cap `app_workflow_grants` is visible (C373 D2c): then a call without a workflow is not a workflow call. */
+export const workflowCapVisible = (db: Db): boolean => bridgeCapsOf(db).includes(WORKFLOW_CAP);
 
 /** At most this many recipients per call (CONTRACT-RECIPIENTS: the bridge caps `target.recipients` at 64 and sets `recipientsIncomplete` above). */
 export const MAX_RECIPIENTS = 64;
@@ -163,6 +194,8 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
     ...callerTrustFacts(fx, req.call.caller),
     recipients: recipientFacts(fx, recipientsOf(req.call.target)),
+    callerWorkflow: workflowOf(req.call.caller),
+    workflowCapVisible: workflowCapVisible(db),
     fleetAvailable: fx.available,
     callerProduct: callerProductOf(req.call.caller),
   };
@@ -257,7 +290,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const narrowingRuleId = v.narrowingRuleId;
     if (v.decision === "allow" && (v.narrowing?.memoryTags || v.narrowing?.deepDatasets) && narrowingRuleId) {
       // the reason belongs to the rule that decided; a narrowing that comes from another (skipped) rule says so
-      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified", v.recipientsUnknown && "the recipients are unknown"].filter(Boolean).join("; ");
+      const gaps = [v.closedOnFleet && "Governance data unavailable", v.closedOnProduct && "the calling app's product is unverified", v.recipientsUnknown && "the recipients are unknown", v.closedOnWorkflow && "the calling workflow is unconfirmed"].filter(Boolean).join("; ");
       const reason = v.rule && v.rule.id === narrowingRuleId ? v.reason : otherRuleNarrowing(gaps);
       // `deepDatasets` (spec 0.1.68, SDK-API §18.5) rides next to `memoryTags`; a key no rule set stays absent. `v: 2` EXACTLY
       // when deepDatasets is present, else `v: 1`: a reader without dataset narrowing refuses v 2 (narrowing_unsupported) instead of
