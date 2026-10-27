@@ -350,7 +350,7 @@ test("released migrations 0001 and 0002 are byte-for-byte what 0.2.12 shipped", 
     "0001_init.sql": "6386d3c572cd7a8c678a8b3d4ad18fdf228cc73a865456ab0ac236399b177a32",
     "0002_catalog.sql": "77879e04075f37575b37a285a4f4dfe7243a62756bd946c7a588846058184c79",
   });
-  assert.deepEqual(readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort(), ["0001_init.sql", "0002_catalog.sql", "0003_feed.sql", "0004_feed_sets.sql", "0005_feed_holders.sql"]);
+  assert.deepEqual(readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort(), ["0001_init.sql", "0002_catalog.sql", "0003_feed.sql", "0004_feed_sets.sql", "0005_feed_holders.sql", "0006_revision_restored_from.sql"]);
 });
 
 test("upgrade from a 0.2.12 database: rules, drafts and decisions stay; the old Fleet copy is cleared and unusable; old drafts get a derived source", () => {

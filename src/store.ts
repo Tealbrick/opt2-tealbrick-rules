@@ -72,18 +72,36 @@ function ruleView(r: Record<string, unknown>): RuleView {
   return { id: String(r.id), rev: Number(r.rev), spec: JSON.parse(String(r.spec)) as RuleSpec, source: String(r.source), createdAt: iso(Number(r.created_at)) as string, updatedAt: iso(Number(r.updated_at)) as string };
 }
 
-export function listRules(db: Db, includeDeleted = false): RuleView[] {
+export function listRules(db: Db, includeDeleted = false): (RuleView & { deleted: boolean })[] {
   const rows = db.prepare(`SELECT * FROM rules ${includeDeleted ? "" : "WHERE deleted = 0"} ORDER BY deleted, priority, updated_at DESC, id`).all();
-  return rows.map(ruleView);
+  return rows.map((r) => ({ ...ruleView(r), deleted: Number(r.deleted) === 1 }));
 }
 
-export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: { rev: number; change: "created" | "updated" | "deleted"; spec: RuleSpec; actor: string; at: string }[] } {
+export type RevisionChange = "created" | "updated" | "deleted" | "restored";
+export interface RevisionView {
+  rev: number;
+  change: RevisionChange;
+  spec: RuleSpec;
+  actor: string;
+  at: string;
+  /** change "restored" only: the revision whose spec this one copied */
+  from?: number;
+}
+
+export function getRule(db: Db, id: string): { rule: RuleView; deleted: boolean; revisions: RevisionView[] } {
   const row = db.prepare("SELECT * FROM rules WHERE id = ?").get(id);
   if (!row) throw new TbError("not_found", "no rule with this id", 404);
   const revisions = db
-    .prepare("SELECT rev, change, spec, actor, at FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
+    .prepare("SELECT rev, change, spec, actor, at, from_rev FROM rule_revisions WHERE rule_id = ? ORDER BY rev DESC")
     .all(id)
-    .map((r) => ({ rev: Number(r.rev), change: String(r.change) as "created" | "updated" | "deleted", spec: JSON.parse(String(r.spec)) as RuleSpec, actor: String(r.actor), at: iso(Number(r.at)) as string }));
+    .map((r) => ({
+      rev: Number(r.rev),
+      change: String(r.change) as RevisionChange,
+      spec: JSON.parse(String(r.spec)) as RuleSpec,
+      actor: String(r.actor),
+      at: iso(Number(r.at)) as string,
+      ...(r.from_rev == null ? {} : { from: Number(r.from_rev) }),
+    }));
   return { rule: ruleView(row), deleted: Number(row.deleted) === 1, revisions };
 }
 
@@ -138,6 +156,38 @@ export function deleteRule(db: Db, input: { id: string; expectedRev?: number; ac
   });
   invalidateRules(db);
   return { id: input.id, rev };
+}
+
+/**
+ * Q-7 (C373): make the spec of an earlier revision the rule's current spec. It is a write like `saveRule`: the same writer
+ * checks (a spec that names an operation the catalog no longer has is refused with the writer's reason), the actor is
+ * recorded, and a NEW revision row (change 'restored', `from_rev` = the copied revision) is added; history is never
+ * rewritten. A deleted rule comes back (counts against MAX_RULES like a new one). Restoring the current revision of a live
+ * rule is refused (nothing would change). `expectedRev` = the current revision the owner saw (stale → revision_conflict).
+ */
+export function restoreRule(db: Db, input: { id: string; rev: number; expectedRev?: number; actor: string }, now = Date.now()): { id: string; rev: number; restoredFrom: number } {
+  const target = db.prepare("SELECT spec FROM rule_revisions WHERE rule_id = ? AND rev = ?").get(input.id, input.rev);
+  if (!db.prepare("SELECT id FROM rules WHERE id = ?").get(input.id)) throw new TbError("not_found", "no rule with this id", 404);
+  if (!target) throw new TbError("not_found", `this rule has no revision ${input.rev}`, 404);
+  const spec = JSON.parse(String(target.spec)) as RuleSpec;
+  checkSpec(db, spec, `revision ${input.rev} can’t be restored: `);
+  const rev = db.transaction(() => {
+    const cur = db.prepare("SELECT rev, deleted FROM rules WHERE id = ?").get(input.id) as Record<string, unknown>;
+    const curRev = Number(cur.rev);
+    const deleted = Number(cur.deleted) === 1;
+    if (input.expectedRev !== undefined && input.expectedRev !== curRev) throw new TbError("revision_conflict", `the rule changed (now revision ${curRev}); reload and try again`, 409);
+    if (!deleted && input.rev === curRev) throw new TbError("input_invalid", `revision ${input.rev} is already the current version`, 400);
+    if (deleted) {
+      const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
+      if (live >= MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules`, 409);
+    }
+    const text = JSON.stringify(spec);
+    db.prepare("UPDATE rules SET rev = ?, spec = ?, priority = ?, active = ?, deleted = 0, updated_at = ? WHERE id = ?").run(curRev + 1, text, spec.priority, spec.active ? 1 : 0, now, input.id);
+    db.prepare("INSERT INTO rule_revisions (rule_id, rev, change, spec, actor, at, from_rev) VALUES (?, ?, 'restored', ?, ?, ?, ?)").run(input.id, curRev + 1, text, input.actor, now, input.rev);
+    return curRev + 1;
+  });
+  invalidateRules(db);
+  return { id: input.id, rev, restoredFrom: input.rev };
 }
 
 // ── drafts ───────────────────────────────────────────────────────────────────

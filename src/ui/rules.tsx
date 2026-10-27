@@ -3,7 +3,9 @@
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useState } from "react";
 import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, when } from "./api.ts";
+import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
+import { TemplatePicker } from "./template-picker.tsx";
 
 const DECISIONS = [
   { value: "allow", label: "Allow" },
@@ -16,9 +18,12 @@ const MODES = [
   { value: "bound" as const, label: "Bound" },
 ];
 
-/** Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). */
-function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Directory; onDone: (saved: boolean) => void }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? emptySpec()));
+/**
+ * Rule editor (structured form). Saving passes the revision that was edited (stale → revision_conflict). `prefill` = a new
+ * rule from a template (Q-9). An existing rule shows its History; "Restore this version" hands over to the page (Q-7).
+ */
+function Editor({ initial, prefill, dir, onDone, onRestore }: { initial: RuleRow | null; prefill?: RuleSpec; dir: Directory; onDone: (saved: boolean) => void; onRestore?: (t: RestoreTarget) => void }) {
+  const [s, setS] = useState<RuleSpec>(() => structuredClone(initial?.spec ?? prefill ?? emptySpec()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -57,7 +62,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
     <Dialog
       open
       kicker="Rule"
-      title={initial ? `Edit rule (revision ${initial.rev})` : "New rule"}
+      title={initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -161,6 +166,7 @@ function Editor({ initial, dir, onDone }: { initial: RuleRow | null; dir: Direct
         </section>
       ) : null}
       <Preview candidate={s} dir={dir} />
+      {initial && onRestore ? <RuleHistory ruleId={initial.id} dir={dir} onRestore={onRestore} /> : null}
     </Dialog>
   );
 }
@@ -316,20 +322,29 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
 
 export function RulesPage() {
   const dir = useDirectory();
-  const load = useCallback(() => run("rules_list", {}), []);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const load = useCallback(() => run("rules_list", showDeleted ? { includeDeleted: true } : {}), [showDeleted]);
   const { data, error, loading, reload } = useLoaded(load);
   const [editing, setEditing] = useState<RuleRow | "new" | null>(null);
   const [deleting, setDeleting] = useState<RuleRow | null>(null);
-  const broken = data?.rules.filter((r) => r.problem).length ?? 0;
+  const [picking, setPicking] = useState(false);
+  const [prefill, setPrefill] = useState<RuleSpec | undefined>(undefined);
+  const [history, setHistory] = useState<RuleRow | null>(null);
+  const [restoring, setRestoring] = useState<RestoreTarget | null>(null);
+  const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
+  const startFromTemplate = <Button onClick={() => setPicking(true)}>Start from a template</Button>;
   return (
     <section className="app-page" aria-label="Rules">
       <Head
         title="Rules"
         lede="The first matching rule decides (lower priority first). No matching rule: allow. Every refusal and hold is recorded with its reason."
         action={
-          <Button variant="primary" onClick={() => setEditing("new")}>
-            New rule
-          </Button>
+          <div className="tb-ctas">
+            {startFromTemplate}
+            <Button variant="primary" onClick={() => setEditing("new")}>
+              New rule
+            </Button>
+          </div>
         }
       />
       {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
@@ -348,10 +363,13 @@ export function RulesPage() {
           App catalog: last read failed ({data.catalog.error}). Rules are checked against the catalog of {when(data.catalog.syncedAt)}.
         </p>
       ) : null}
+      <Switch label="Show deleted rules" checked={showDeleted} onCheckedChange={setShowDeleted} />
       {data === null ? (
         error ? null : <Loading what="rules" />
       ) : data.rules.length === 0 ? (
-        <EmptyState title="No rules yet">Every call is allowed (within each app’s own limits).</EmptyState>
+        <EmptyState title="No rules yet" action={startFromTemplate}>
+          Every call is allowed (within each app’s own limits). A template is a quick start: nothing applies until you save it.
+        </EmptyState>
       ) : (
         <div className="ruled">
           {data.rules.map((r) => (
@@ -361,7 +379,7 @@ export function RulesPage() {
                 {r.spec.title} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
-                {r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
+                {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
                 {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
@@ -372,12 +390,20 @@ export function RulesPage() {
                 revision {r.rev} · {day(r.updatedAt)}
               </span>
               <div className="side">
-                <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
-                  Edit
-                </Button>
-                <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
-                  Delete
-                </Button>
+                {r.deleted ? (
+                  <Button size="sm" aria-label={`History of ${r.spec.title}`} onClick={() => setHistory(r)}>
+                    History
+                  </Button>
+                ) : (
+                  <>
+                    <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
+                      Edit
+                    </Button>
+                    <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
+                      Delete
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -386,10 +412,47 @@ export function RulesPage() {
       {editing ? (
         <Editor
           initial={editing === "new" ? null : editing}
+          prefill={editing === "new" ? prefill : undefined}
           dir={dir}
           onDone={(saved) => {
             setEditing(null);
+            setPrefill(undefined);
             if (saved) reload();
+          }}
+          onRestore={(t) => {
+            setEditing(null);
+            setRestoring(t);
+          }}
+        />
+      ) : null}
+      {picking ? (
+        <TemplatePicker
+          dir={dir}
+          onClose={() => setPicking(false)}
+          onPick={(spec) => {
+            setPicking(false);
+            setPrefill(spec);
+            setEditing("new");
+          }}
+        />
+      ) : null}
+      {history ? (
+        <HistoryDialog
+          rule={{ id: history.id, title: history.spec.title }}
+          dir={dir}
+          onClose={() => setHistory(null)}
+          onRestore={(t) => {
+            setHistory(null);
+            setRestoring(t);
+          }}
+        />
+      ) : null}
+      {restoring ? (
+        <RestoreDialog
+          target={restoring}
+          onDone={(restored) => {
+            setRestoring(null);
+            if (restored) reload();
           }}
         />
       ) : null}

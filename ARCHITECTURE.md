@@ -24,9 +24,9 @@ Rule shape: `title`, `active`, `priority` 0 to 1000 (lower first), `match` {agen
 
 ## Operations (from `tealbrick.manifest.json`)
 
-12 operations. No hold families on its own ops (Rules produces holds on other apps with family `policy`).
+13 operations. No hold families on its own ops (Rules produces holds on other apps with family `policy`).
 - Agent (an app with a companion grant may call them too): `rules_explain` (read), `rule_draft_submit` (write; draft only; records who proposed it: `source` {kind `agent` or `app`, product, name}), `draft_status` (read; answers only for drafts the caller itself submitted, any other id is `not_found`, the same as a missing one).
-- Person read: `rules_list`, `rules_get`, `rules_preview` (dry run), `decisions_list`, `drafts_list`, `fleet_status`. Person write: `rules_set`, `rules_delete`, `draft_decide`.
+- Person read: `rules_list`, `rules_get`, `rules_preview` (dry run), `decisions_list`, `drafts_list`, `fleet_status`. Person write: `rules_set`, `rules_delete`, `rule_restore` (C373 Q-7: an earlier revision becomes current as a new `restored` revision; a deleted rule comes back; same writer checks as `rules_set`), `draft_decide`. `rules_list` rows carry `deleted`; `rules_get` revisions carry `change` `restored` with `from`.
 - Writers refuse a rule that can never match (unknown app or op, person-only op, impossible effect, `tools` on a static op or on an app without a dynamic op) using the app catalog. An empty `anyOf` from an owner is refused (C115), for `memoryTags` and for `deepDatasets`.
 - Spec 0.1.68 (C336 RQ-2, with C325 and C330; specs#47): `match.tools` matches the bridge's `target.tool` (case-sensitive; an entry `x` matches `x` and its resolved variants `x__…` only, QA-RULES18-4; an entry containing `__` is refused at save; no other wildcard). Without `target.tool`: a static op never matches; a dynamic op (placed by the cached app catalog, `dynamic` fact; an op the catalog cannot place counts as dynamic) fails closed: deny and hold rules apply, allow rules do not, and `detail.toolUnknown` is recorded; `narrowing.deepDatasets` limits the datasets a data app may read. Both are fields of the rule JSON in the `rules.spec` column, so there is no migration: a stored rule without them reads as before. Rules only emits `deepDatasets` in `rules.narrowing`, with `v: 2` exactly when it is present (else `v: 1`); it never reads or filters dataset rows, and the after hook still redacts by memory tags only (a dataset narrowing is applied by the data app before it reads, SDK-API 18.5). The decision log keeps the tool name in `detail.tool` and shows it as `target.tool`.
 - Dataset ids compare EXACTLY (case-sensitive, no trim). The comparison (`datasetsMatch`, SDK-API 18.5 rules 3 and 4: key absent passes; key present needs a non-empty id list, under `noneOf` as under `anyOf`; then `anyOf` needs every id in it and `noneOf` excludes; no lineage, rule 4a: derived datasets are listed explicitly) is a LOCAL copy in `src/engine.ts` with a TODO: the shared helper is in @opt2-tealbrick/manifest from 0.1.30, and the copy is deleted when Rules pins that release (one mechanism, L1). The pins and the SDK types still carry spec 0.1.62 shapes, so `target.tool` is read structurally (`toolOf` in `src/hooks.ts`, marked `spec 0.1.68`); the pin bump follows the spec release. The pinned SDK exposes no bridge capabilities to an app, so the editor cannot show "needs a bridge with `hook_tool`" (Core and the GUI do).
@@ -43,7 +43,7 @@ None. No keys. Test-only variable `TB_RULES_CATALOG_OFF`.
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0005 (0003 to 0005: `fleet_trust`, `fleet_sync.usable`, `fleet_members.active`, `drafts.source`; they clear the 0.2.x Fleet copy): `rules` (current spec JSON, priority, active, soft delete), `rule_revisions`, `drafts`, `decisions` (trace per call and phase; pruned to 30 days and 100,000 rows), `fleet_teams`, `fleet_members`, `fleet_trust`, `fleet_sync`, `catalog_manifests`, `catalog_sync`.
+- **Stored:** Migrations 0001 to 0006 (0003 to 0005: `fleet_trust`, `fleet_sync.usable`, `fleet_members.active`, `drafts.source`; they clear the 0.2.x Fleet copy; 0006: `rule_revisions.from_rev`, additive, NULL on older rows): `rules` (current spec JSON, priority, active, soft delete), `rule_revisions` (append-only: created, updated, deleted, restored), `drafts`, `decisions` (trace per call and phase; pruned to 30 days and 100,000 rows), `fleet_teams`, `fleet_members`, `fleet_trust`, `fleet_sync`, `catalog_manifests`, `catalog_sync`.
 - **Never stored:** Call inputs and outputs. Traces hold ids, product, op, effect, decision, reason, rule reference and onBehalfOf.
 
 ## External calls and background work
@@ -53,7 +53,7 @@ None. No keys. Test-only variable `TB_RULES_CATALOG_OFF`.
 
 ## Person UI
 
-Rules (editor and dry run), Drafts, Decisions, Teams, Holds, Agents and scopes (`src/ui/App.tsx`).
+Rules (editor and dry run, rule History with restore, "Show deleted rules", "Start from a template"), Drafts, Decisions, Teams, Holds, Agents and scopes (`src/ui/App.tsx`). The rule templates (`src/ui/templates.ts`) are pure data and only prefill the editor; they live under `src/ui` because the UI build serves only that folder.
 
 ## Requirements and runtime hints
 

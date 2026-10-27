@@ -2,6 +2,17 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## Unreleased
+
+### Added
+- Restore a rule revision (C373 Q-7, V1-PARITY P23): person op `rule_restore {ruleId, rev, expectedRev?}` (write, idempotency required) writes the spec of an earlier revision as a NEW revision (change `restored`, `from` = the copied revision, actor recorded). A deleted rule comes back. The spec passes the same writer checks as `rules_set`; a revision that fails them today is refused with the writer's reason. `rules_get` revisions show `restored` and `from`; `rules_list` rows carry `deleted`.
+- Rules page: a History section in the rule editor and a "Show deleted rules" switch (History on a deleted rule), each with "Restore this version" behind a confirm dialog.
+- Rule templates (C373 Q-9, V1-PARITY P27): "Start from a template" in the empty state and next to New rule: hold an agent's outward actions, hold all money actions, block destructive actions for bound agents, hold outward actions of a team (only while Governance teams are known). The owner picks the agent or team, the editor opens prefilled, and the owner saves with `rules_set`. Nothing is active by default.
+- Tests: `test/restore.test.ts`, `test/templates.test.ts`, `test/ui-c373.test.ts`.
+
+### Notes
+- Migration `0006_revision_restored_from.sql` adds `rule_revisions.from_rev` (additive, NULL on older rows).
+
 ## 0.4.1 - 2026-10-25 (not tagged)
 
 ### Changed

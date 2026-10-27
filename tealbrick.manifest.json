@@ -180,6 +180,9 @@
                   "null"
                 ],
                 "maxLength": 600
+              },
+              "deleted": {
+                "type": "boolean"
               }
             }
           },
@@ -485,7 +488,8 @@
                   "enum": [
                     "created",
                     "updated",
-                    "deleted"
+                    "deleted",
+                    "restored"
                   ]
                 },
                 "spec": {
@@ -496,6 +500,10 @@
                 },
                 "at": {
                   "type": "string"
+                },
+                "from": {
+                  "type": "integer",
+                  "minimum": 1
                 }
               }
             }
@@ -1374,6 +1382,61 @@
             "type": "string"
           },
           "rev": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "rule_restore",
+      "title": "Restore a rule revision",
+      "description": "Make an earlier revision of a rule its current version, as a new revision. A deleted rule comes back. The revision passes the same checks as Save rule.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ruleId",
+          "rev"
+        ],
+        "properties": {
+          "ruleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "rev": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expectedRev": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rev",
+          "restoredFrom"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer"
+          },
+          "restoredFrom": {
             "type": "integer"
           }
         }

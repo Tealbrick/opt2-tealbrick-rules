@@ -19,6 +19,8 @@ import {
   type OpId,
   type RuleDraftSubmitInput,
   type RuleDraftSubmitOutput,
+  type RuleRestoreInput,
+  type RuleRestoreOutput,
   type RulesDeleteInput,
   type RulesDeleteOutput,
   type RulesExplainInput,
@@ -52,6 +54,7 @@ import {
   liveRules,
   markFleetStale,
   pendingDraftCount,
+  restoreRule,
   ruleProblem,
   type Submitter,
   saveRule,
@@ -156,6 +159,15 @@ export const handlers = {
   [OP.rulesDelete]: op<RulesDeleteInput, RulesDeleteOutput>({
     async run(input, ctx) {
       return deleteRule(ctx.db, { id: input.id, expectedRev: input.expectedRev, actor: person(ctx) });
+    },
+  }),
+  [OP.ruleRestore]: op<RuleRestoreInput, RuleRestoreOutput>({
+    // Q-7 (C373): same writer checks and actor recording as rules_set; the catalog is read first because the old spec may name apps.
+    async run(input, ctx) {
+      const actor = person(ctx);
+      const target = getRule(ctx.db, input.ruleId).revisions.find((r) => r.rev === input.rev);
+      if (target) await catalogFor(ctx, [target.spec]);
+      return restoreRule(ctx.db, { id: input.ruleId, rev: input.rev, expectedRev: input.expectedRev, actor });
     },
   }),
   [OP.rulesPreview]: op<RulesPreviewInput, RulesPreviewOutput>({
