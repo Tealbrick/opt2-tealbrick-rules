@@ -3,21 +3,27 @@
 // trust in its own tables, and the gate reads only that local copy. Refresh points: every 60 s from a timer once the SDK
 // offers `callApp` outside op handlers (C85, spec 0.1.13; feature-checked), agent events, and person ops when the copy is
 // older than 60 s.
-// Every answer is validated against the vendored schema (src/contracts, a byte copy of the frozen contract, see
-// test/contracts/PROVENANCE.md) and every handle must be canonical (normalizeHandle(h) === h). A mismatch is a REFUSAL:
+// Every answer is validated against the vendored schema (src/contracts: Governance's `fleet.directory_feed/1` schema with the
+// optional agents[].handles, C373 RULES-INTERFACE §3, byte copy, see test/contracts/PROVENANCE.md) and every handle must be
+// canonical (normalizeHandle(h) === h). Rules asks for agent handles (`accept: ["agent_handles"]`); a Governance that does not
+// know `accept` (0.2.x, its input schema refuses unknown fields) answers 400 and Rules reads it again without it (see AGENT_HANDLES). A mismatch is a REFUSAL:
 // the error is recorded (fleet_status shows it), the copy is cleared, nothing of the answer is read (never a partial read).
 // No Governance (no grant, not deployed) or a refused answer → the Fleet facts are UNAVAILABLE: the engine applies deny
 // and hold rules that name Fleet facts and skips allow rules that name them (fail closed, C230).
 
 import { normalizeHandle, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import feedSchema from "./contracts/fleet.directory_feed.1.schema.json" with { type: "json" };
+import feedSchema from "./contracts/fleet.directory_feed.1.agent_handles.schema.json" with { type: "json" };
 import type { Trust } from "./engine.ts";
 import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
 
 export const FLEET_PRODUCT = "fleet";
 export const FLEET_OP = "directory_feed";
 export const REFRESH_MS = 60_000;
+/** The feed extra Rules reads (C373 RULES-INTERFACE §3): agents[].handles, the canonical handles Connect issued to each agent. */
+export const AGENT_HANDLES = "agent_handles";
+/** After a Governance refused `accept` (older than 0.3.0), Rules asks for it again after this long (a Governance update shows within it). */
+export const ACCEPT_RETRY_MS = 10 * 60 * 1000;
 /** The error code of an answer that does not fit the contract (a refusal). */
 export const FEED_INVALID = "feed_invalid";
 /**
@@ -85,7 +91,8 @@ const CAPS = (feedSchema as unknown as FullSchema).$defs.full.properties;
  * - trust: the SET of the holders' raw trust values, and whether every holder is active. Deny/hold match if ANY holder's
  *   trust is listed; allow needs every holder active and listed (a gone holder never satisfies an allow by trust);
  * - a member the producer left out of `contacts`/`agents` has a team key for deny/hold only and no trust (unknown =
- *   `unreviewed` at lookup).
+ *   `unreviewed` at lookup);
+ * - an agent's `handles` (C373 §3, optional) make the agent a holder of each `handle:<h>` key, exactly like a contact's.
  */
 function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   if (!isObj(out)) throw feedInvalid("directory_feed answered no object");
@@ -101,7 +108,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   // Validate in slices (the same schema, each slice a full document with the other arrays empty), then the array caps.
   const teamsIn = Array.isArray(out.teams) ? (out.teams as { id: string; name?: string; members: { kind: string; id: string }[] }[]) : null;
   const contacts = Array.isArray(out.contacts) ? (out.contacts as { id: string; kind: string; status: string; trust: Trust; handles: string[] }[]) : null;
-  const agents = Array.isArray(out.agents) ? (out.agents as { id: string; status: string; trust: Trust }[]) : null;
+  const agents = Array.isArray(out.agents) ? (out.agents as { id: string; status: string; trust: Trust; handles?: string[] }[]) : null;
   // the document without its three big arrays (a missing or non-array member stays as it is, so the schema refuses it)
   const shell = { ...out, ...Object.fromEntries((["teams", "contacts", "agents"] as const).filter((k) => Array.isArray(out[k])).map((k) => [k, []])) } as Json;
   check(shell);
@@ -135,6 +142,13 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   for (const c of contacts) {
     for (const h of c.handles) {
       if (normalizeHandle(h) !== h) throw feedInvalid(`a handle is not canonical (normalizeHandle): ${h.slice(0, 40)}`);
+      if (tick(40)) yield;
+    }
+  }
+  // C373 §3: agents[].handles (only when Rules asked for them; an older Governance never sends them) follow the same rule
+  for (const a of agents) {
+    for (const h of a.handles ?? []) {
+      if (normalizeHandle(h) !== h) throw feedInvalid(`an agent handle is not canonical (normalizeHandle): ${h.slice(0, 40)}`);
       if (tick(40)) yield;
     }
   }
@@ -186,8 +200,11 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   }
   for (const a of agents) {
     known.agent.add(a.id);
-    hold(`agent:${a.id}`, { trust: a.trust, active: a.status !== "removed" && a.trust !== "blocked", teams: agentTeams.get(a.id) ?? none });
-    if (tick()) yield;
+    const h: Holder = { trust: a.trust, active: a.status !== "removed" && a.trust !== "blocked", teams: agentTeams.get(a.id) ?? none };
+    hold(`agent:${a.id}`, h);
+    // C373 D5: an agent that holds a handle is a holder of `handle:<h>` like a contact (recipients, channel-sender claims)
+    for (const handle of a.handles ?? []) hold(`handle:${handle}`, h);
+    if (tick(1 + (a.handles?.length ?? 0))) yield;
   }
 
   const byId = new Map(out2.map((t) => [t.id, t]));
@@ -235,6 +252,17 @@ export async function parseFeedChunked(out: unknown, pause: () => Promise<void> 
 }
 
 const inflight = new WeakMap<Db, Promise<void>>();
+/** When this Governance last refused `accept` (epoch ms; in memory, so a restart asks again). */
+const acceptRefusedAt = new WeakMap<Db, number>();
+/**
+ * Whether the stored copy was read WITH agent handles (in memory). A delta read (`sinceRevision`) is only asked for when the
+ * copy has the shape this read asks for: after a restart, or when `accept` is switched on or off, the next read is a full one
+ * (an "unchanged" answer would keep a copy without the handles). No column, so no migration.
+ */
+const copyWithHandles = new WeakMap<Db, boolean>();
+
+/** A 400 to the read with `accept`: a Governance whose input schema does not know it (0.2.x refuses unknown fields). */
+const refusesAccept = (e: unknown): boolean => isObj(e) && (e.code === "input_invalid" || e.httpStatus === 400);
 
 /**
  * One sync (plus at most two more when `markFleetStale` was called while it ran: the flag the first write cleared is set
@@ -264,13 +292,29 @@ export function syncFleet(db: Db, callApp: CallApp, now: () => number = Date.now
 async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<void> {
   const st = fleetState(db);
   try {
-    const since = st.revision != null && !st.stale && st.usable ? st.revision : null;
-    const res = await callApp(FLEET_PRODUCT, FLEET_OP, since !== null ? { sinceRevision: since } : {});
+    const refused = acceptRefusedAt.get(db);
+    const accept = refused === undefined || now() - refused > ACCEPT_RETRY_MS;
+    const since = st.revision != null && !st.stale && st.usable && copyWithHandles.get(db) === accept ? st.revision : null;
+    const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
+    let withHandles = accept;
+    let res: Awaited<ReturnType<CallApp>>;
+    try {
+      res = await ask(accept);
+      if (accept) acceptRefusedAt.delete(db);
+    } catch (e) {
+      // an older Governance (no `accept` in its input schema): read it the old way now, ask again after ACCEPT_RETRY_MS
+      if (!accept || !refusesAccept(e)) throw e;
+      acceptRefusedAt.set(db, now());
+      withHandles = false;
+      if (since !== null && copyWithHandles.get(db) !== false) throw Object.assign(new Error("Governance refused accept; the next read is a full one"), { code: "accept_refused" });
+      res = await ask(false);
+    }
     if (res.status !== "ok") throw Object.assign(new Error("Governance held the directory read"), { code: "held" });
     const d = await parseFeedChunked(res.output);
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
     await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null }, now());
+    if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {
     const code = isObj(e) && typeof e.code === "string" ? e.code : "error";
     const reason = e instanceof Error ? e.message : "fleet read failed";
