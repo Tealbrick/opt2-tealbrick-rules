@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildCatalog, catalogProblem } from "../src/catalog.ts";
-import { type ComposeEnv, composeRules, placeProposal, placement, priorityWhy } from "../src/compose.ts";
+import { type ComposeEnv, composeRules, placement, placeProposal, priorityWhy } from "../src/compose.ts";
 import { type CallFacts, evaluate, order, type RuleSpec, specProblem } from "../src/engine.ts";
 
 const HERMES = "agt_01J000000000000000000HERMES";

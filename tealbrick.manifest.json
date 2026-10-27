@@ -2899,6 +2899,44 @@
                   "type": "string",
                   "maxLength": 200
                 }
+              },
+              "places": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Pending drafts (review 0.5.0 S3-3): the priority each rule gets if the draft is approved now, placed again against the current rules (active and inactive).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "priority",
+                    "from",
+                    "why"
+                  ],
+                  "properties": {
+                    "priority": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "why": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 600
+                    }
+                  }
+                }
+              },
+              "placeProblem": {
+                "type": "string",
+                "maxLength": 600,
+                "description": "Pending drafts: why the draft cannot be approved now (a rule has no priority left)."
               }
             }
           },
@@ -3389,6 +3427,44 @@
                   "type": "string",
                   "maxLength": 200
                 }
+              },
+              "places": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Pending drafts (review 0.5.0 S3-3): the priority each rule gets if the draft is approved now, placed again against the current rules (active and inactive).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "priority",
+                    "from",
+                    "why"
+                  ],
+                  "properties": {
+                    "priority": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "from": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000
+                    },
+                    "why": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 600
+                    }
+                  }
+                }
+              },
+              "placeProblem": {
+                "type": "string",
+                "maxLength": 600,
+                "description": "Pending drafts: why the draft cannot be approved now (a rule has no priority left)."
               }
             }
           },

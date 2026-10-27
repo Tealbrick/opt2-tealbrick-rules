@@ -5,6 +5,7 @@ import { ulid } from "@opt2-tealbrick/manifest";
 import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { CATALOG_MISSING, catalogOf, catalogProblem } from "./catalog.ts";
 import { type CallFacts, type Decision, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
+import { placeDraft } from "./placement.ts";
 
 /** At most this many live rules (a gate evaluates all of them on every call). */
 export const MAX_RULES = 500;
@@ -327,7 +328,10 @@ export function decideDraft(db: Db, input: { id: string; decision: "approve" | "
     });
     const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
     if (live + json<RuleSpec[]>(row.rules, []).length > MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules; delete some first`, 409);
-    for (const spec of json<RuleSpec[]>(row.rules, [])) ruleIds.push(saveRule(db, { spec, actor: input.actor, source: input.id }, now).id);
+    // S3-3 (review 0.5.0): priorities placed again against the CURRENT rules, active and inactive (src/placement.ts)
+    const plan = placeDraft(json<RuleSpec[]>(row.rules, []), liveRules(db).map((r) => r.spec));
+    if (plan.problem) throw new TbError("draft_no_room", plan.problem, 409);
+    for (const spec of plan.specs) ruleIds.push(saveRule(db, { spec, actor: input.actor, source: input.id }, now).id);
   }
   db.prepare("UPDATE drafts SET status = ?, decided_at = ?, decided_by = ?, rule_ids = ? WHERE id = ? AND status = 'pending'").run(
     input.decision === "approve" ? "approved" : "rejected",

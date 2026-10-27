@@ -52,6 +52,7 @@ import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECI
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
+import { type DraftPlace, placeDraft } from "./placement.ts";
 import {
   type DraftView,
   decideDraft,
@@ -125,9 +126,13 @@ async function catalogFor(ctx: OpContext, specs: readonly RuleSpec[]): Promise<v
 
 const catalogOpts = (log: OpContext["log"]): SyncOptions => ({ log: { warn: (msg, data) => log.warn(msg, data as never) } });
 
-/** Review data for a draft: per rule why it can never match (null = fine), and each named operation's manifest title. */
-function reviewed(ctx: OpContext, d: DraftView): DraftView & { problems: (string | null)[]; opTitles: Record<string, string> } {
-  return { ...d, problems: d.rules.map((s) => ruleProblem(ctx.db, s) || null), opTitles: opTitles(d.rules, catalogOf(ctx.db)) };
+/**
+ * Review data for a draft: per rule why it can never match (null = fine), each named operation's manifest title, and for a PENDING
+ * draft the priority each rule gets when it is approved now (S3-3: placed again against the current rules, active and inactive).
+ */
+function reviewed(ctx: OpContext, d: DraftView): DraftView & { problems: (string | null)[]; opTitles: Record<string, string>; places?: DraftPlace[]; placeProblem?: string } {
+  const plan = d.status === "pending" ? placeDraft(d.rules, liveRules(ctx.db).map((r) => r.spec)) : null;
+  return { ...d, problems: d.rules.map((s) => ruleProblem(ctx.db, s) || null), opTitles: opTitles(d.rules, catalogOf(ctx.db)), ...(plan ? { places: plan.places, ...(plan.problem ? { placeProblem: plan.problem } : {}) } : {}) };
 }
 
 /**
@@ -174,9 +179,8 @@ function composeEnv(ctx: OpContext, shown: readonly { id: string; name: string }
     teams: fleetTeams(ctx.db).map((t) => ({ id: t.id, name: t.name })),
     apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
     problem: writerProblem(ctx.db),
-    existing: liveRules(ctx.db)
-      .filter((r) => r.spec.active)
-      .map((r) => ({ priority: r.spec.priority, decision: r.spec.outcome.decision })),
+    // active AND inactive rules (S3-3): re-activating a rule later must not be weakened by a composed one
+    existing: liveRules(ctx.db).map((r) => ({ priority: r.spec.priority, decision: r.spec.outcome.decision })),
   };
 }
 
