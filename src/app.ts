@@ -185,7 +185,7 @@ function composeEnv(ctx: OpContext, shown: readonly { id: string; name: string }
     apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
     problem: writerProblem(ctx.db),
     // active AND inactive rules (S3-3): re-activating a rule later must not be weakened by a composed one
-    existing: liveRules(ctx.db).map((r) => ({ priority: r.spec.priority, decision: r.spec.outcome.decision })),
+    existing: liveRules(ctx.db).map((r) => ({ priority: r.spec.priority, decision: r.spec.outcome.decision, match: r.spec.match, ...(r.spec.narrowing ? { narrowing: r.spec.narrowing } : {}) })),
   };
 }
 

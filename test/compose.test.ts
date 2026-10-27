@@ -240,7 +240,8 @@ test("S2 placement: a composed allow never runs before an existing refuse/hold; 
   const text = "When someone from team X tags the CEO agent: only work-tagged memories, no money";
   const existing = [
     { priority: 100, decision: "deny" as const },
-    { priority: 5, decision: "allow" as const },
+    // an existing allow with the SAME narrowing: running before the composed allow loses nothing (delta D-2)
+    { priority: 5, decision: "allow" as const, narrowing: { memoryTags: { anyOf: ["work"] } } },
     { priority: 40, decision: "hold" as const },
   ];
   const [deny, allow] = compose(text, { existing }).rules as [RuleSpec, RuleSpec];

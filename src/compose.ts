@@ -25,6 +25,15 @@
 // plain hint. So does anything the parser cannot read ("Ask your agent to draft this rule").
 import { normalizeTag } from "@opt2-tealbrick/manifest";
 import type { Decision, Effect, RuleSpec } from "./engine.ts";
+import { mayOverlap, narrowsAtLeast } from "./placement.ts";
+
+/** An existing rule as the placement sees it. `match` and `narrowing` are optional: without them the rule counts as "could overlap" and "no narrowing" (strict). */
+export interface ExistingRule {
+  priority: number;
+  decision: Decision;
+  match?: RuleSpec["match"];
+  narrowing?: RuleSpec["narrowing"];
+}
 
 export interface ComposeEnv {
   /** agents the owner can name (agent directory) */
@@ -36,7 +45,7 @@ export interface ComposeEnv {
   /** THE writer check ("" = fine): the same function the writers use (schema problems, then `ruleProblem`). Never re-implemented here. */
   problem: (spec: RuleSpec) => string;
   /** the owner's ACTIVE rules (priority and decision): composed rules are placed around them (C373 S2), never ahead of a refuse/hold by an allow */
-  existing?: readonly { priority: number; decision: Decision }[];
+  existing?: readonly ExistingRule[];
 }
 
 /**
@@ -63,12 +72,37 @@ export function placement(existing: ComposeEnv["existing"] = []): { strict: numb
   return { strict, allow, strictMax, allowMin, hold, denyMax, strictRoom };
 }
 
-/** The place of one composed rule, or the hint why it has none. */
-function placeOne(decision: Decision, place: ReturnType<typeof placement>): number | string {
-  if (decision === "allow") return place.allow ?? NO_ROOM;
+/**
+ * The place of one composed rule, or the hint why it has none. An ALLOW WITH A NARROWING (delta D-2) must not end up behind an
+ * existing allow rule that could overlap it and has no narrowing or a wider one: that allow would decide first and the narrowing would
+ * be lost. It goes just before the first such allow, but still after every refuse and hold rule; if there is no slot, it has no place.
+ */
+function placeOne(spec: RuleSpec, place: ReturnType<typeof placement>, existing: ComposeEnv["existing"] = [], composedTop = -1): number | string {
+  const decision = spec.outcome.decision;
+  if (decision === "allow") {
+    if (place.allow === null) return NO_ROOM;
+    const at = place.allow;
+    if (!spec.narrowing) return at;
+    const wider = existing.filter((e) => e.decision === "allow" && e.priority <= at && (!e.match || mayOverlap(e.match, spec.match)) && !narrowsAtLeast(e.narrowing, spec.narrowing));
+    if (wider.length === 0) return at;
+    const first = Math.min(...wider.map((e) => e.priority));
+    // after every refuse and hold rule that could overlap it (existing) and every composed one, strictly before the wider allow
+    const overlapping = existing.filter((e) => e.decision !== "allow" && (!e.match || mayOverlap(e.match, spec.match))).map((e) => e.priority);
+    const lowest = Math.max(composedTop, ...overlapping) + 1;
+    // never a tie with another allow rule that could overlap (a tie is decided by update time)
+    let c = first - 1;
+    while (existing.some((e) => e.decision === "allow" && e.priority === c && (!e.match || mayOverlap(e.match, spec.match)))) c--;
+    return c >= lowest ? c : NO_ROOM_NARROW;
+  }
   if (!place.strictRoom) return NO_ROOM_STRICT;
   if (decision === "hold") return place.hold ?? NO_ROOM_HOLD;
   return place.strict;
+}
+
+/** The highest priority the composed refuse and hold rules get (-1 = none): an allow with a narrowing goes after them. */
+function strictTop(rules: readonly RuleSpec[], place: ReturnType<typeof placement>, prior: readonly RuleSpec[] = []): number {
+  const ats = rules.filter((r) => r.outcome.decision !== "allow").map((r) => placeOne(r, place));
+  return Math.max(-1, ...prior.filter((r) => r.outcome.decision !== "allow").map((r) => r.priority), ...ats.filter((a): a is number => typeof a === "number"));
 }
 
 /** Every drafter's rules get their place from `placement` (a model's own priorities are never kept); an allow with no room goes to unmatched. */
@@ -76,8 +110,9 @@ export function placeProposal(p: Proposal, existing: ComposeEnv["existing"] = []
   const place = placement(existing);
   const rules: RuleSpec[] = [];
   const unmatched = [...p.unmatched];
+  const top = strictTop(p.rules, place);
   for (const r of p.rules) {
-    const at = placeOne(r.outcome.decision, place);
+    const at = placeOne(r, place, existing, top);
     if (typeof at === "string") unmatched.push({ text: r.title, hint: at });
     else rules.push({ ...r, priority: at });
   }
@@ -85,11 +120,14 @@ export function placeProposal(p: Proposal, existing: ComposeEnv["existing"] = []
 }
 const NO_ROOM = "An allow rule must run after your refuse and hold rules, and one of them already has priority 1000 (the last place). Lower its priority first.";
 const NO_ROOM_STRICT = "A refuse or hold rule must run before your allow rules, and one of them already has priority 0 (the first place). Raise its priority first.";
+const NO_ROOM_NARROW = "An allow rule with limits (what the agent may read) must run after your refuse and hold rules but before your wider allow rule, or that allow rule would decide first and the limits would not apply. There is no priority left between them. Change the priority of one of them first.";
 const NO_ROOM_HOLD = "A hold rule must run after your refuse rules (so it never weakens one) and before your allow rules, and there is no priority left between them. Change the priority of one of them first.";
 
 /** Why a composed rule has its priority, for the proposal line. */
 export function priorityWhy(spec: RuleSpec, existing: ComposeEnv["existing"] = []): string {
   const p = placement(existing);
+  if (spec.outcome.decision === "allow" && spec.narrowing && spec.priority < (p.allow ?? 0))
+    return `Priority ${spec.priority}: after your refuse and hold rules, so it never skips them, and before your wider allow rule, so its limits apply.`;
   if (spec.outcome.decision === "allow")
     return p.strictMax === null ? `Priority ${spec.priority}: after the refuse and hold rules of this proposal.` : `Priority ${spec.priority}: after your refuse and hold rules (highest priority ${p.strictMax}), so it never skips them.`;
   if (spec.outcome.decision === "hold" && p.denyMax !== null)
@@ -609,13 +647,14 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
     if (r.ok) {
       const place = placement(env.existing);
       // a sentence whose rules cannot all be placed is not proposed (a partial set would be weaker than the owner said)
-      const noRoom = r.rules.map((x) => placeOne(x.outcome.decision, place)).find((at): at is string => typeof at === "string");
+      const top = strictTop(r.rules, place, out.rules);
+      const noRoom = r.rules.map((x) => placeOne(x, place, env.existing, top)).find((at): at is string => typeof at === "string");
       if (noRoom) {
         out.unmatched.push({ text: sentence, hint: noRoom });
         prev = null;
         continue;
       }
-      for (const x of r.rules) x.priority = placeOne(x.outcome.decision, place) as number;
+      for (const x of r.rules) x.priority = placeOne(x, place, env.existing, top) as number;
       // the writer check per sentence: if one of its rules cannot be saved, none of them is proposed (a partial set would be weaker than the owner said)
       const problems = r.rules.map((x) => env.problem(x)).filter(Boolean);
       if (problems.length) {
