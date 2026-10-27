@@ -294,7 +294,8 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
   try {
     const refused = acceptRefusedAt.get(db);
     const accept = refused === undefined || now() - refused > ACCEPT_RETRY_MS;
-    const since = st.revision != null && !st.stale && st.usable && copyWithHandles.get(db) === accept ? st.revision : null;
+    // a delta read only onto a copy of the same shape (with or without agent handles); else a full read
+    let since = st.revision != null && !st.stale && st.usable && copyWithHandles.get(db) === accept ? st.revision : null;
     const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
     let withHandles = accept;
     let res: Awaited<ReturnType<CallApp>>;
@@ -302,11 +303,13 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
       res = await ask(accept);
       if (accept) acceptRefusedAt.delete(db);
     } catch (e) {
-      // an older Governance (no `accept` in its input schema): read it the old way now, ask again after ACCEPT_RETRY_MS
+      // An older Governance (0.2.x: no `accept` in its input schema, so a 400): read it the old way NOW and ask again after
+      // ACCEPT_RETRY_MS. That read is a FULL one: the stored copy (if any) was read with handles, and an "unchanged" answer to a
+      // delta read would keep agent handles this Governance no longer vouches for.
       if (!accept || !refusesAccept(e)) throw e;
       acceptRefusedAt.set(db, now());
       withHandles = false;
-      if (since !== null && copyWithHandles.get(db) !== false) throw Object.assign(new Error("Governance refused accept; the next read is a full one"), { code: "accept_refused" });
+      since = null;
       res = await ask(false);
     }
     if (res.status !== "ok") throw Object.assign(new Error("Governance held the directory read"), { code: "held" });
