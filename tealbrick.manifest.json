@@ -1403,6 +1403,11 @@
         "properties": {
           "rule": {
             "$ref": "#/$defs/Rule"
+          },
+          "placementWarning": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Non-blocking (delta S4): the rule is saved, and this says when an allow rule runs ahead of a refuse or hold rule that could overlap it. Absent when there is nothing to say."
           }
         },
         "$defs": {

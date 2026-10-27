@@ -94,3 +94,20 @@ export function placeDraft(specs: readonly RuleSpec[], current: readonly RuleSpe
   }
   return { specs: out, places, problem: "" };
 }
+
+/**
+ * S4 (non-blocking): the note `rules_set` returns when a saved ALLOW rule runs ahead of a refuse or hold rule that could overlap it
+ * (their priority is the same or later, active or not). "" = nothing to say. `others` = every other live rule. It is a note, not a
+ * refusal: the owner may want exactly that ("Allow always" does it on purpose), but the owner reads it.
+ */
+export function placementWarning(spec: RuleSpec, others: readonly RuleSpec[]): string {
+  if (spec.outcome.decision !== "allow") return "";
+  const ahead = others
+    .filter((o) => o.outcome.decision !== "allow" && o.priority >= spec.priority && mayOverlap(o.match, spec.match))
+    .sort((a, b) => ORDER[a.outcome.decision] - ORDER[b.outcome.decision] || a.priority - b.priority);
+  if (ahead.length === 0) return "";
+  const word = (o: RuleSpec) => `${o.outcome.decision === "deny" ? "refuse" : "hold"} rule ${q(o.title)} (priority ${o.priority}${o.active ? "" : ", inactive"})`;
+  const named = ahead.slice(0, 3).map(word).join(", ");
+  const more = ahead.length > 3 ? `, and ${ahead.length - 3} more` : "";
+  return `This allow rule (priority ${spec.priority}) runs before your ${named}${more}. For the calls they share, it decides first, so ${ahead.length === 1 ? "that rule no longer refuses or holds them" : "those rules no longer refuse or hold them"}. Raise the priority of this rule if that is wrong.`;
+}

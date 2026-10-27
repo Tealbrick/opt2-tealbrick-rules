@@ -46,7 +46,7 @@ import {
   type RulesSetOutput,
 } from "#kit";
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
-import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
+import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, MAX_COMPOSED_RULES, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
@@ -54,7 +54,7 @@ import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECI
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
-import { type DraftPlace, placeDraft } from "./placement.ts";
+import { type DraftPlace, placeDraft, placementWarning } from "./placement.ts";
 import { previewRecent } from "./recent.ts";
 import {
   type DraftView,
@@ -253,9 +253,17 @@ export function mergeModelDraft(parsed: Proposal, drafted: Proposal, existing: C
     extra.push(r);
   }
   for (const u of drafted.unmatched) if (!unmatched.some((x) => x.text === u.text)) unmatched.push(u);
-  const placed = placeProposal({ rules: [...parsed.rules, ...extra], notes: [...parsed.notes, ...drafted.notes], unmatched: [...unmatched, ...refused] }, existing);
+  // S4: the cap of MAX_COMPOSED_RULES drops MODEL additions first. The parser's rules are placed and kept whole, then the model's
+  // rules fill what is left of the cap (in their own order), so a model refuse or hold rule can never push a parser rule out.
+  const notes = [...parsed.notes, ...drafted.notes];
+  const mine = placeProposal({ rules: parsed.rules, notes, unmatched: [...unmatched, ...refused] }, existing);
+  const room = Math.max(0, MAX_COMPOSED_RULES - mine.rules.length);
+  const theirs = placeProposal({ rules: extra, notes: [], unmatched: [] }, existing);
+  const kept = theirs.rules.slice(0, room);
+  const capped = theirs.rules.slice(room).map((r) => ({ text: r.title, hint: `A draft holds at most ${MAX_COMPOSED_RULES} rules. Write the rest as a second rule.` }));
+  const placed: Proposal = { rules: [...mine.rules, ...kept].sort((a, b) => a.priority - b.priority), notes: mine.notes, unmatched: [...mine.unmatched, ...theirs.unmatched, ...capped] };
   const vetted = vetProposal(placed, () => "");
-  return { proposal: vetted, added: vetted.rules.length - Math.min(parsed.rules.length, vetted.rules.length), refused };
+  return { proposal: vetted, added: kept.length, refused };
 }
 
 /** `product.op` of every dynamic operation the catalog lists (the "Allow always" link asks for one tool on these). */
@@ -307,7 +315,10 @@ export const handlers = {
     async run(input, ctx) {
       const actor = person(ctx);
       await catalogFor(ctx, [input.rule]);
-      return { rule: saveRule(ctx.db, { id: input.id, expectedRev: input.expectedRev, spec: input.rule, actor }) };
+      const rule = saveRule(ctx.db, { id: input.id, expectedRev: input.expectedRev, spec: input.rule, actor });
+      // S4: a note (never a refusal) when this allow rule now runs ahead of a refuse or hold rule that could overlap it
+      const note = placementWarning(rule.spec, liveRules(ctx.db).filter((r) => r.id !== rule.id).map((r) => r.spec));
+      return { rule, ...(note ? { placementWarning: note } : {}) };
     },
   }),
   [OP.rulesDelete]: op<RulesDeleteInput, RulesDeleteOutput>({
