@@ -80,3 +80,21 @@ test("S3-3: drafts_list shows the final priority (and why) of each rule of a pen
   assert.deepEqual(row.places, [{ priority: 51, from: 20, why: "Moved from priority 20 to 51: after “no sends” (priority 50), so it never skips it." }]);
   assert.equal(row.placeProblem, undefined);
 });
+
+test("S3-3 + D12: an “Allow always” allow goes after every refuse rule that could match (inactive ones too), and ahead of the hold", async () => {
+  const { allowPlan } = await import("../src/ui/hold-allow.ts");
+  const q = { product: "connect", op: "buzz_dm", hold: "hld_01J0000000000000000000HOLD", agent: AGENT_A };
+  const rule = (title: string, decision: "allow" | "deny" | "hold", priority: number, match: RuleSpec["match"], active = true) => ({ spec: { ...spec({ title, priority, match, decision }), active } });
+  const held = rule("hold sends", "hold", 60, { effects: ["outward"] });
+  const paused = rule("paused deny", "deny", 40, { products: ["connect"] }, false);
+  const plan = allowPlan(q, [held, paused], "Hermes", false);
+  assert.equal(plan.spec.priority, 59, "before the hold that held it");
+  // the inactive deny at 70 could match: the allow goes after it (the hold then still runs first, with a warning)
+  const late = allowPlan(q, [held, rule("paused deny", "deny", 70, { products: ["connect"] }, false)], "Hermes", false);
+  assert.equal(late.spec.priority, 71);
+  assert.ok(late.warnings.some((w) => /still runs first/.test(w)));
+  // a deny by a catalog tool covers its "__" variants
+  const tq = { ...q, tool: "gmail_send__first_contact" };
+  const tooled = allowPlan(tq, [held, rule("no gmail", "deny", 80, { products: ["connect"], tools: ["gmail_send"] })], "Hermes", true);
+  assert.equal(tooled.spec.priority, 81);
+});

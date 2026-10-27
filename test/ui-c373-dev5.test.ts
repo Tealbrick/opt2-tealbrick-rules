@@ -290,9 +290,13 @@ describe("D12: allowPlan and readAllowQuery (pure)", () => {
   it("a refuse or hold rule that cannot match this call does not move the rule", () => {
     const other = [row("a", spec("Other app", "deny", 900, { products: ["knowledge"] })), row("b", spec("Other agent", "deny", 800, { agents: ["agt_01J0000000000000000000000B"] })), row("c", spec("Inactive", "deny", 700)), HOLD_RULE];
     const plan = holdAllow.allowPlan(q, other.map((r) => (r.id === "c" ? { ...r, spec: { ...r.spec, active: false } } : r)), "Front desk", false);
-    assert.equal(plan.spec.priority, 39);
-    assert.deepEqual(plan.warnings, []);
-    assert.equal(plan.blocked, null);
+    // review 0.5.0 S3-3: an INACTIVE refuse rule that could match counts (re-activating it must not be skipped): after it, with the warning
+    assert.equal(plan.spec.priority, 701);
+    assert.ok(plan.warnings.some((w) => /still runs first/.test(w)));
+    const activeOnly = holdAllow.allowPlan(q, other.filter((r) => r.id !== "c"), "Front desk", false);
+    assert.equal(activeOnly.spec.priority, 39);
+    assert.deepEqual(activeOnly.warnings, []);
+    assert.equal(activeOnly.blocked, null);
   });
   it("without a hold rule (Verification mode) the usual place for an allow rule; a matching refuse rule still goes first", () => {
     assert.equal(holdAllow.allowPlan(q, [], "Front desk", false).spec.priority, 20);

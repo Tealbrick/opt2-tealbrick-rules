@@ -72,7 +72,7 @@ export function couldMatch(m: Match, q: AllowQuery): boolean {
     if (m.callerProducts?.length || m.callerWorkflows?.length) return false;
   } else if (m.callerProducts?.length && !m.callerProducts.includes(q.callerProduct as string)) return false;
   // a tool rule matches the named tool and its "x__…" variants; a call without a tool name is not excluded (a dynamic call without one fails closed)
-  if (m.tools?.length && q.tool && !m.tools.includes(q.tool)) return false;
+  if (m.tools?.length && q.tool && !m.tools.some((x) => q.tool === x || (q.tool as string).startsWith(`${x}__`))) return false;
   return true;
 }
 
@@ -101,9 +101,10 @@ export const FALLBACK_PRIORITY = 20;
  * effect, so the rule is placed here from the rules that could match this call. `rules` = the owner's live rules.
  */
 export function allowPlan(query: AllowQuery, rules: readonly Pick<RuleRow, "spec">[], who: string, dynamic: boolean): AllowPlan {
-  const live = rules.map((r) => r.spec).filter((s) => s.active && couldMatch(s.match, query));
+  const live = rules.map((r) => r.spec).filter((s) => couldMatch(s.match, query));
+  // refuse rules count active OR inactive (review 0.5.0 S3-3: re-activating one later must not be skipped by this allow); holds: active ones
   const denies = live.filter((s) => s.outcome.decision === "deny");
-  const holds = live.filter((s) => s.outcome.decision === "hold");
+  const holds = live.filter((s) => s.active && s.outcome.decision === "hold");
   const deny = denies.reduce<RuleSpec | null>((a, s) => (a === null || s.priority > a.priority ? s : a), null);
   const hold = holds.reduce<RuleSpec | null>((a, s) => (a === null || s.priority < a.priority ? s : a), null);
   let priority = hold ? hold.priority - 1 : FALLBACK_PRIORITY;
