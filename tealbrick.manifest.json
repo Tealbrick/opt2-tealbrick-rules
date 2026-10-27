@@ -5412,27 +5412,6 @@
     }
   ],
   "needsAgentDirectory": true,
-  "settings": {
-    "steps": [],
-    "modelRoles": [
-      {
-        "role": "utility",
-        "required": false,
-        "usedBy": [
-          "app"
-        ],
-        "help": "Optional. Helps draft rules you type in plain English when Rules' own reader cannot read them. It never decides a call."
-      },
-      {
-        "role": "reasoning",
-        "required": false,
-        "usedBy": [
-          "app"
-        ],
-        "help": "Optional. Helps draft rules you type in plain English when Rules' own reader cannot read them. It never decides a call."
-      }
-    ]
-  },
   "skills": [
     {
       "id": "use-rules",
