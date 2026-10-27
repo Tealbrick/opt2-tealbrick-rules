@@ -14,6 +14,9 @@
 .rules-group { display: grid; gap: var(--tb-s4); padding-top: var(--tb-s4); box-shadow: var(--tb-hair-top); }
 .rules-group h3, .rules-preview h3 { font-size: var(--tb-text-title); }
 .rules-preview { display: grid; gap: var(--tb-s4); align-content: start; }
+/* C373c: the default mode card at the top of the Rules page */
+.rules-mode { display: grid; gap: var(--tb-s4); align-content: start; }
+.rules-mode h3 { font-size: var(--tb-text-title); }
 .rules-trace { display: grid; gap: var(--tb-s1); margin: 0; color: var(--tb-ink-soft); font-size: var(--tb-text-label); }
 .rules-show { width: 200px; }
 .toolbar .rules-search { max-width: calc(var(--tb-s10) * 7); } /* 280px, the mockup's search width */

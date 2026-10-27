@@ -32,4 +32,12 @@ If Rules cannot read Governance, a deny or hold rule that names teams or trust a
 
 Who is calling: an app is identified by its verified product, never by its name, and an agent by its agent id. A name is only a label. If you are an app, `rules__rules_explain` shows the decisions of every instance of your product, because the product is your identity (two live instances of the same product see the same history; other products and agents never see yours). You can check one of your drafts with `rules__draft_status` (`draftId`); it answers only for drafts you submitted.
 
-When there is no matching rule, a call is allowed. Who asked ("on behalf of") is a claim; rules about it can only make a decision stricter, never wider.
+When no rule matches a call, the workspace default mode decides. The owner chooses it:
+
+- **Permissive**: the call runs.
+- **Verification**: the call is held for the owner. The refusal reads `Needs owner review: no rule covers this call (Verification mode)` and carries a `holdId`. Poll `tb_hold_status`; after approval, repeat the same call once with the same input. If you need this kind of call often, draft an allow rule for the owner (below).
+- **Closed**: the call is refused with `Rules: no rule allows this call (Closed mode)`. Do not retry. Tell the owner, and offer to draft an allow rule with `rules__rule_draft_submit`.
+
+In every mode `rules__rules_explain`, `rules__rule_draft_submit` and `rules__draft_status` stay open to you. `rules__rules_explain` says `decidedBy: "mode"` and the mode name when the mode decided a call, and `decidedBy: "rule"` when a rule did. You cannot change the mode; only the owner can, on the Rules page.
+
+Who asked ("on behalf of") is a claim; rules about it can only make a decision stricter, never wider.

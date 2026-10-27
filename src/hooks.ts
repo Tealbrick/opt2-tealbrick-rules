@@ -6,6 +6,8 @@ import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
 import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct } from "./engine.ts";
+import { modeDetail } from "./mode.ts";
+import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
 
 /** Rules' own answer budget, far below the bridge's 2 s hook limit: slower → refuse. */
@@ -226,13 +228,14 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const t0 = clock();
     try {
       const facts = factsOf(req, ctx.db);
-      const v = evaluate(liveRules(ctx.db), facts);
+      // the default mode decides a call no rule matches (C373c); cached like the rules, no query per call
+      const v = evaluate(liveRules(ctx.db), facts, currentMode(ctx.db));
       const { answer, answered } = gateAnswer(v, opts.holdSupported ?? HOLD_SUPPORTED);
       if (ctx.signal.aborted || clock() - t0 > budget) throw new Error("gate budget exceeded");
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
       if (recorded(facts, v)) {
-        const unavailable = unavailableDetail(v);
+        const unavailable = { ...unavailableDetail(v), ...modeDetail(v) };
         recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
       }
       return answer;
@@ -245,6 +248,8 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
   async function rules_context(req: HookRequest, ctx: HookContext): Promise<{ add: Record<string, Json> }> {
     const t0 = clock();
     const facts = factsOf(req, ctx.db);
+    // No default mode here (C373c): a call reaches this phase only when the gate allowed it or the owner approved its hold,
+    // and it must carry the same narrowing it would carry in Permissive mode (skipped allow rules' narrowing included).
     const v = evaluate(liveRules(ctx.db), facts);
     const add: Record<string, Json> = {};
     if (v.rule) add[`${product}.matched`] = { v: 1, ruleId: v.rule.id, rev: v.rule.rev, decision: v.decision };

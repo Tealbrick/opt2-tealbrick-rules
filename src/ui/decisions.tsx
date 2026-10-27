@@ -2,6 +2,7 @@
 import { Button, EmptyState, Field, Notice, SearchIcon, Select, Swatch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type DecisionRow, errorText, run, shortId, when } from "./api.ts";
+import { modeTraceText } from "./mode.tsx";
 import { DecisionTag, Head, LoadError, Loading, useAgentNames } from "./shared.tsx";
 
 type DecisionFilter = "" | "allow" | "deny" | "hold";
@@ -77,6 +78,7 @@ export function DecisionsPage() {
               <p>
                 {d.reason}
                 {d.ruleTitle ? ` · rule “${d.ruleTitle}” rev ${d.ruleRev}` : ""}
+                {modeTraceText(d.detail)}
                 {d.onBehalfOf ? ` · on behalf of ${JSON.stringify(d.onBehalfOf)}` : ""}
                 {d.detail?.callerProductUnavailable === true ? " · the calling app’s product could not be verified, so this rule applied strictly" : ""}
                 {d.callId ? (

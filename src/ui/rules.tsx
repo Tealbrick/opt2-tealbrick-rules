@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import { day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
+import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
 
@@ -256,6 +257,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [handle, setHandle] = useState("");
   // C373 D5: recipients of the tried call, comma separated ("" = the bridge sent none: unknown)
   const [recipients, setRecipients] = useState("");
+  const [tryMode, setTryMode] = useState<Mode | "">("");
   const [result, setResult] = useState<Out<"rules_preview"> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -272,6 +274,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
             ...(handle ? { onBehalfOf: { kind: handle.includes(":") || handle.startsWith("npub1") ? "channel_sender" : "person", id: handle } } : {}),
           },
           ...(candidate?.title && candidate.outcome.reason ? { candidate } : {}),
+          ...(tryMode ? { mode: tryMode } : {}),
         }),
       );
     } catch (e) {
@@ -322,6 +325,9 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <Field label="On behalf of (optional)">
           <TextInput value={handle} placeholder="slack:U123 or psn_…" onChange={(e) => setHandle(e.target.value)} />
         </Field>
+        <Field label="Default mode" hint="What decides a call no rule covers. Try another mode to compare; nothing changes.">
+          <Select value={tryMode} options={[{ value: "", label: "The current mode" }, ...MODE_ORDER.map((m) => ({ value: m, label: MODE_TITLE[m] }))]} onValueChange={(v) => setTryMode(v as Mode | "")} />
+        </Field>
       </div>
       <div className="tb-ctas">
         <Button onClick={() => void go()} disabled={busy}>
@@ -340,6 +346,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
             <span>{result.reason}</span>
             {result.ruleTitle ? <span className="tb-hint">by “{result.ruleTitle}”</span> : null}
           </div>
+          {result.modeNote ? <p className="tb-soft">{result.modeNote}</p> : null}
           {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
           {result.fleetAvailable ? (
             <p className="tb-hint">
@@ -435,7 +442,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
     <section className="app-page" aria-label="Rules">
       <Head
         title="Rules"
-        lede="The first matching rule decides (lower priority first). No matching rule: allow. Every refusal and hold is recorded with its reason."
+        lede="The first matching rule decides (lower priority first). No matching rule: the default mode decides. Every refusal and hold is recorded with its reason."
         action={
           <div className="tb-ctas">
             {startFromTemplate}
@@ -445,6 +452,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           </div>
         }
       />
+      {data?.mode ? <ModeCard state={data.mode} onChanged={reload} /> : null}
       <Composer
         dir={dir}
         onSaved={onDraftSaved}
@@ -472,7 +480,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         error ? null : <Loading what="rules" />
       ) : data.rules.length === 0 ? (
         <EmptyState title="No rules yet" action={startFromTemplate}>
-          Every call is allowed (within each app’s own limits). A template is a quick start: nothing applies until you save it.
+          {noRulesText(data.mode?.mode)}
         </EmptyState>
       ) : (
         <div className="ruled">
@@ -513,6 +521,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           ))}
         </div>
       )}
+      {data?.system ? <SystemLines lines={data.system} /> : null}
       {editing ? (
         <Editor
           initial={editing === "new" ? null : editing}
