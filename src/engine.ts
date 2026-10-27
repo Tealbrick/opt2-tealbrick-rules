@@ -641,15 +641,15 @@ export function specProblem(spec: RuleSpec): string {
   }
   const rc = m.recipients;
   if (rc !== undefined) {
-    // C373 D5: recipients exist only on outward calls. A rule needs `effects` with outward or `products`, else a deny/hold would
-    // apply to every call whose recipients are unknown (every read and write); effects without outward could never see recipients.
+    // C373 D5 (S2): recipients exist only on outward calls, and unknown recipients make a deny/hold APPLY. So a recipients rule
+    // must name `effects` EXACTLY ["outward"]: with no effects, products only, or another effect next to outward it would hold or
+    // refuse every read and write (their recipients are always unknown).
     if (!rc || typeof rc !== "object" || (rc.teams === undefined && rc.trust === undefined && rc.known === undefined)) return "recipients needs teams, trust or known (an empty object would name nobody)";
     if (rc.teams !== undefined && rc.teams.length === 0) return "recipients.teams needs at least one team";
     if (rc.trust !== undefined && rc.trust.length === 0) return "recipients.trust needs at least one trust value";
     if (rc.trust?.some((t) => !(TRUSTS as readonly string[]).includes(t))) return "recipients.trust values are unreviewed, trusted, limited or blocked";
     if (rc.known !== undefined && typeof rc.known !== "boolean") return "recipients.known is true or false";
-    if (m.effects?.length && !m.effects.includes("outward")) return "recipients come only with outward calls: add outward to effects (other calls have no recipients, so a refuse or hold rule would apply to every one of them)";
-    if (!m.effects?.length && !m.products?.length) return "recipients need effects with outward or the apps (products): without either, a refuse or hold rule would apply to every call whose recipients are unknown";
+    if (m.effects?.length !== 1 || m.effects[0] !== "outward") return "recipients need effects exactly [outward]: only outward calls have recipients, and any other call’s recipients are unknown, so a refuse or hold rule would apply to every one of them";
   }
   return "";
 }

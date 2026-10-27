@@ -421,7 +421,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -839,7 +839,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -1169,7 +1169,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -1515,7 +1515,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -2071,7 +2071,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -2998,7 +2998,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -3476,7 +3476,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -4225,7 +4225,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -4728,7 +4728,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",
@@ -5070,7 +5070,7 @@
                         "type": "boolean"
                       }
                     },
-                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects with outward, or products. Unknown recipients: deny and hold apply, allow does not."
+                    "description": "C373 D5: the recipients of an outward call (bridge target.recipients). Needs effects exactly [outward]. Unknown recipients: deny and hold apply, allow does not."
                   },
                   "onBehalfOf": {
                     "type": "object",

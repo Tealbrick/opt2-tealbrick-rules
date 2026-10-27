@@ -202,7 +202,7 @@ function Editor({
         </Field>
         <ChipChoice
           label="Recipients in teams (from Governance)"
-          hint="none = any. Who an outward call goes to (needs Effect outward or an app). Refuse or hold: one matching recipient is enough; allow: every recipient must match. If the recipients aren’t known, a refuse or hold rule with this applies and an allow rule does not."
+          hint="none = any. Who an outward call goes to (needs Effect outward, and no other effect). Refuse or hold: one matching recipient is enough; allow: every recipient must match. If the recipients aren’t known, a refuse or hold rule with this applies and an allow rule does not."
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={rcp.teams}
           onChange={(v) => setRcp({ teams: v })}

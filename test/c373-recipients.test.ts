@@ -143,16 +143,19 @@ test("gate: recipients decide; unknown recipients hold with recipientsUnknown; t
   assert.equal(validateAgainstSchema(manifest.operations.find((o) => o.id === "rules_explain")?.output as never, ex).ok, true);
 });
 
-test("writers: recipients need teams, trust or known, outward (or products); empty lists and impossible effects are refused", () => {
+test("writers: recipients need teams, trust or known and effects exactly [outward] (S2); empty lists and other effects are refused", () => {
   const p = (match: Rule["spec"]["match"]) => specProblem(spec({ match }));
   assert.equal(p({ effects: ["outward"], recipients: { trust: ["trusted"] } }), "", "quiet on good");
-  assert.equal(p({ products: ["connect"], recipients: { known: false } }), "");
-  assert.equal(p({ effects: ["outward", "write"], recipients: { teams: ["tm_x"] } }), "");
+  assert.equal(p({ effects: ["outward"], products: ["connect"], recipients: { known: false } }), "");
+  // S2: effects exactly [outward]; products only, no effects or another effect next to outward would catch reads and writes
+  const EXACT = /^recipients need effects exactly \[outward\]/;
+  assert.match(p({ products: ["connect"], recipients: { known: false } }), EXACT);
+  assert.match(p({ effects: ["outward", "write"], recipients: { teams: ["tm_x"] } }), EXACT);
+  assert.match(p({ recipients: { known: false } }), EXACT);
   assert.match(p({ effects: ["outward"], recipients: {} }), /^recipients needs teams, trust or known/);
   assert.equal(p({ effects: ["outward"], recipients: { teams: [] } }), "recipients.teams needs at least one team");
   assert.equal(p({ effects: ["outward"], recipients: { trust: [] } }), "recipients.trust needs at least one trust value");
-  assert.match(p({ effects: ["read"], products: ["connect"], recipients: { known: false } }), /^recipients come only with outward calls/);
-  assert.match(p({ recipients: { known: false } }), /^recipients need effects with outward or the apps/);
+  assert.match(p({ effects: ["read"], products: ["connect"], recipients: { known: false } }), EXACT);
 });
 
 test("manifest: every rule schema takes recipients (≥ 1 key); rules_preview takes target.recipients and answers recipientsUnknown", async () => {
