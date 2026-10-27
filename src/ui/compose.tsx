@@ -4,7 +4,7 @@
 import { callOp } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, Card, Field, Notice, Textarea } from "@opt2-tealbrick/ui";
 import { type ReactNode, useRef, useState } from "react";
-import { errorText, matchText, narrowingText, type Out, type RuleSpec, run } from "./api.ts";
+import { errorText, matchText, narrowingText, type Out, type RuleSpec, run, safeText } from "./api.ts";
 import { DecisionTag, type Directory } from "./shared.tsx";
 
 type Proposal = Out<"rule_compose">;
@@ -117,15 +117,15 @@ export function Composer({
                 {rules.map((r, i) => (
                   <li key={JSON.stringify(r)}>
                     <b>
-                      {r.title} <DecisionTag decision={r.outcome.decision} rule /> <span className="tb-hint">priority {r.priority}</span>
+                      {safeText(r.title)} <DecisionTag decision={r.outcome.decision} rule /> <span className="tb-hint">priority {r.priority}</span>
                     </b>
-                    <span>{changed.has(i) || !p.lines[i] ? `${matchText(r, dir.teamName, dir.agentName)}${narrowingText(r.narrowing)}` : p.lines[i]}</span>
-                    <span className="tb-hint">Reason: {r.outcome.reason}</span>
+                    <span>{changed.has(i) || !p.lines[i] ? `${matchText(r, dir.teamName, dir.agentName)}${narrowingText(r.narrowing)}` : safeText(p.lines[i] ?? "")}</span>
+                    <span className="tb-hint">Reason: {safeText(r.outcome.reason)}</span>
                     <span className="tb-row">
-                      <Button size="sm" aria-label={`Edit ${r.title}`} onClick={() => setEditing(i)} disabled={busy !== null}>
+                      <Button size="sm" aria-label={`Edit ${safeText(r.title)}`} onClick={() => setEditing(i)} disabled={busy !== null}>
                         Edit
                       </Button>
-                      <Button size="sm" aria-label={`Remove ${r.title}`} onClick={() => remove(i)} disabled={busy !== null}>
+                      <Button size="sm" aria-label={`Remove ${safeText(r.title)}`} onClick={() => remove(i)} disabled={busy !== null}>
                         Remove
                       </Button>
                     </span>

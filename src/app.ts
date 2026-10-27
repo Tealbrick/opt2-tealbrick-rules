@@ -40,6 +40,8 @@ import {
   type RulesListOutput,
   type RulesPreviewInput,
   type RulesPreviewOutput,
+  type RulesPreviewRecentInput,
+  type RulesPreviewRecentOutput,
   type RulesSetInput,
   type RulesSetOutput,
 } from "#kit";
@@ -53,6 +55,7 @@ import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } fro
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
 import { type DraftPlace, placeDraft } from "./placement.ts";
+import { previewRecent } from "./recent.ts";
 import {
   type DraftView,
   decideDraft,
@@ -73,8 +76,10 @@ import {
   ruleProblem,
   type Submitter,
   saveRule,
+  writerProblem as storedWriterProblem,
   submitDraft,
 } from "./store.ts";
+import { escapeControls } from "./text-guard.ts";
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];
 export const migrationsDir = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -165,7 +170,7 @@ const writerProblem =
   (spec: RuleSpec): string => {
     const v = validateAgainstSchema(RULE_SCHEMA, spec as unknown as Json);
     if (!v.ok) return `the rule does not fit the rule schema: ${v.errors.slice(0, 2).map((e) => `${e.path || "/"} ${e.message}`).join("; ")}`;
-    return ruleProblem(db, spec);
+    return storedWriterProblem(db, spec);
   };
 
 /** Names the owner can use in an English rule: agents (directory), Governance teams (Fleet copy), apps (catalog). */
@@ -214,6 +219,13 @@ async function draftRules(ctx: OpContext, text: string, env: ComposeEnv): Promis
   }
 }
 
+/** `product.op` of every dynamic operation the catalog lists (the "Allow always" link asks for one tool on these). */
+const dynamicOpIds = (db: Db): string[] =>
+  [...(catalogOf(db) ?? [])]
+    .flatMap(([product, p]) => [...p.ops].filter(([, o]) => o.dynamic).map(([id]) => `${product}.${id}`))
+    .sort()
+    .slice(0, 1000);
+
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
   const dynamic = isDynamicOp(db, product, op);
   return dynamic === undefined ? {} : { dynamic };
@@ -234,7 +246,15 @@ export const handlers = {
         defaultDecision: ({ permissive: "allow", verification: "hold", closed: "deny" } as const)[currentMode(ctx.db)],
         mode: modeState(ctx.db),
         system: EXEMPTIONS.map((e) => ({ ...e })),
-        catalog: { generatedAt: st.generatedAt, syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(), error: st.error, products: catalogOf(ctx.db)?.size ?? 0, productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort() },
+        catalog: {
+          generatedAt: st.generatedAt,
+          syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(),
+          error: st.error,
+          products: catalogOf(ctx.db)?.size ?? 0,
+          productIds: [...(catalogOf(ctx.db)?.keys() ?? [])].sort(),
+          dynamicOps: dynamicOpIds(ctx.db),
+          skipped: st.skipped,
+        },
       };
     },
   }),
@@ -271,7 +291,7 @@ export const handlers = {
       await freshFleet(ctx);
       if (input.candidate) {
         await catalogFor(ctx, [input.candidate]);
-        const p = ruleProblem(ctx.db, input.candidate);
+        const p = storedWriterProblem(ctx.db, input.candidate);
         if (p) throw new TbError("input_invalid", p, 400);
       }
       const rules: Rule[] = order([...liveRules(ctx.db), ...(input.candidate ? [{ id: "candidate", rev: 0, spec: input.candidate, updatedAt: Date.now() }] : [])]);
@@ -320,6 +340,16 @@ export const handlers = {
         workflowUnavailable: v.closedOnWorkflow,
         steps: explain(rules, facts),
       };
+    },
+  }),
+  [OP.rulesPreviewRecent]: op<RulesPreviewRecentInput, RulesPreviewRecentOutput>({
+    // D11 (C373): the unsaved rule over the last recorded gate decisions (what they keep, nothing else); stores nothing.
+    async run(input, ctx) {
+      person(ctx);
+      await catalogFor(ctx, [input.rule]);
+      const p = storedWriterProblem(ctx.db, input.rule);
+      if (p) throw new TbError("input_invalid", p, 400);
+      return previewRecent(ctx.db, { candidate: input.rule, replaces: input.ruleId, limit: input.limit }, currentMode(ctx.db)) as RulesPreviewRecentOutput;
     },
   }),
   [OP.decisionsList]: op<DecisionsListInput, DecisionsListOutput>({
@@ -411,7 +441,7 @@ export const handlers = {
   }),
   [OP.ruleDraftSubmit]: op<RuleDraftSubmitInput, RuleDraftSubmitOutput>({
     // Creates a DRAFT only; the owner approves it in the UI (C84). Rules never calls a model to decide; a model may only help draft.
-    redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
+    redact: (input) => `rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${escapeControls(input.text.slice(0, 200), true)}`,
     async run(input, ctx) {
       await catalogFor(ctx, input.rules);
       const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: identity(ctx) });
@@ -434,7 +464,7 @@ export const handlers = {
   }),
   [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({
     // The owner's own English rule as a pending DRAFT (source owner). It applies only through draft_decide (C84).
-    redact: (input) => `owner rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${input.text.slice(0, 200)}`,
+    redact: (input) => `owner rule draft (${input.rules.length} rule${input.rules.length === 1 ? "" : "s"}): ${escapeControls(input.text.slice(0, 200), true)}`,
     async run(input, ctx) {
       const actor = person(ctx);
       await catalogFor(ctx, input.rules);

@@ -134,7 +134,7 @@ test("gate: recipients decide; unknown recipients hold with recipientsUnknown; t
   assert.deepEqual(row("cal_stranger")?.detail, { recipients: 2 });
   assert.deepEqual(row("cal_unknown")?.detail, { recipientsUnknown: true });
   assert.deepEqual(row("cal_incomplete")?.detail, { recipientsUnknown: true });
-  assert.deepEqual(row("cal_ok")?.detail, { recipients: 2 });
+  assert.deepEqual(row("cal_ok")?.detail, { ...{ decidedBy: "mode", mode: "permissive" }, recipients: 2 }, "no rule matched: the mode that let it through is named (QA-C373-RU-2)");
   const all = JSON.stringify(listDecisions(db, { limit: 50 }).items);
   for (const h of ["slack:U777", "telegram:42", "slack:U666", NPUB]) assert.ok(!all.includes(h), `no handle in any decision row: ${h}`);
   // rules_explain tells the agent the recipients were unknown

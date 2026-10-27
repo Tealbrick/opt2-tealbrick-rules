@@ -1,10 +1,11 @@
 // Rules page: the rule list, the rule editor (a form in a Dialog, saving passes the revision that was edited) and the
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
-import { useCallback, useState } from "react";
-import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
+import { type AllowPlan, allowPlan, readAllowQuery } from "./hold-allow.ts";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
@@ -43,6 +44,7 @@ function Editor({
   onRestore,
   seed,
   onUse,
+  fromHold,
 }: {
   initial: RuleRow | null;
   prefill?: RuleSpec;
@@ -52,8 +54,14 @@ function Editor({
   onRestore?: (t: RestoreTarget) => void;
   seed?: RuleSpec;
   onUse?: (spec: RuleSpec) => void;
+  /** D12: the rule was prepared by "Allow always" on a hold card (its priority and why; Save waits for the one tool of a dynamic operation) */
+  fromHold?: AllowPlan;
 }) {
-  const [s, setS] = useState<RuleSpec>(() => structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec()));
+  // a stored legacy value with a control or invisible character opens WRITTEN OUT (⟨U+202E⟩), so the owner reads it and saves a clean rule
+  const [s, setS] = useState<RuleSpec>(() => {
+    const spec = structuredClone(seed ?? initial?.spec ?? prefill ?? emptySpec());
+    return { ...spec, title: safeText(spec.title), ...(spec.description === undefined ? {} : { description: safeText(spec.description, true) }), outcome: { ...spec.outcome, reason: safeText(spec.outcome.reason) } };
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const m = s.match;
@@ -83,8 +91,10 @@ function Editor({
   };
   const setTags = (patch: Lists) => setNarrowing("memoryTags", { ...tags, ...patch });
   const setSets = (patch: Lists) => setNarrowing("deepDatasets", { ...sets, ...patch });
+  // D12: an allow rule for a dynamic operation (many tools) must name ONE tool before it can be saved; never "any tool"
+  const needTool = !!fromHold?.needTool && !m.tools?.length;
   const save = async () => {
-    if (busy) return;
+    if (busy || needTool || fromHold?.blocked) return;
     if (onUse) {
       onUse(s);
       return;
@@ -104,7 +114,7 @@ function Editor({
     <Dialog
       open
       kicker="Rule"
-      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : prefill ? "New rule from a template" : "New rule"}
+      title={onUse ? "Edit proposed rule" : initial ? `Edit rule (revision ${initial.rev})` : fromHold ? "Allow always" : prefill ? "New rule from a template" : "New rule"}
       onClose={() => onDone(false)}
       busy={busy}
       size="lg"
@@ -113,7 +123,7 @@ function Editor({
           <Button onClick={() => onDone(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={busy || !s.title || !s.outcome.reason} onClick={() => void save()}>
+          <Button variant="primary" disabled={busy || needTool || !!fromHold?.blocked || !s.title || !s.outcome.reason} onClick={() => void save()}>
             {onUse ? "Use this rule" : busy ? "Saving" : "Save rule"}
           </Button>
         </>
@@ -126,6 +136,28 @@ function Editor({
       ) : null}
       <DirectoryErrors dir={dir} />
       {cutsOffGovernance(s) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
+      {fromHold ? (
+        <div className="tb-stack">
+          <Notice tone="live">
+            This rule is not saved yet. It allows this one operation for this caller, every time. {fromHold.why}
+          </Notice>
+          {fromHold.blocked ? (
+            <Notice tone="needs-you" role="alert">
+              {fromHold.blocked}
+            </Notice>
+          ) : null}
+          {fromHold.warnings.map((w) => (
+            <Notice key={w} tone="needs-you" role="alert">
+              {w}
+            </Notice>
+          ))}
+          {needTool ? (
+            <Notice tone="needs-you" role="alert">
+              This app runs many tools; choose the one tool to always allow. Type its name in Tools below. Save stays off until you do.
+            </Notice>
+          ) : null}
+        </div>
+      ) : null}
       <div className="rules-form">
         <Field label="Title">
           <TextInput value={s.title} maxLength={120} onChange={(e) => setS({ ...s, title: e.target.value })} />
@@ -243,14 +275,54 @@ function Editor({
           </div>
         </section>
       ) : null}
-      <Preview candidate={s} dir={dir} />
+      <Preview candidate={s} ruleId={initial?.id} dir={dir} />
       {initial && onRestore ? <RuleHistory ruleId={initial.id} dir={dir} onRestore={onRestore} /> : null}
     </Dialog>
   );
 }
 
+/** QA-C373-RU-3: "1 app manifest could not be read: knowledge 0.3.1." (up to 5 named). */
+export function skippedText(skipped: readonly { product: string; version: string }[]): string {
+  const named = skipped.slice(0, 5).map((s) => safeText(`${s.product} ${s.version}`));
+  const more = skipped.length > named.length ? `, and ${skipped.length - named.length} more` : "";
+  return `${skipped.length} app ${skipped.length === 1 ? "manifest" : "manifests"} could not be read: ${named.join(", ")}${more}.`;
+}
+
+/** How many rows "Check against recent calls" lists (the answer counts all of them). */
+const RECENT_SHOWN = 20;
+
+/** D11: the calls the unsaved rule would have matched: time, caller, app and operation, before → after. */
+function RecentCalls({ result, dir }: { result: Out<"rules_preview_recent">; dir: Directory }) {
+  const shown = result.rows.slice(0, RECENT_SHOWN);
+  return (
+    <div className="tb-stack" role="status" aria-label="Recent calls">
+      {result.cannotCheck ? (
+        <Notice tone="live">{result.cannotCheck}</Notice>
+      ) : (
+        <p>
+          Of the last {result.checked} recorded {result.checked === 1 ? "call" : "calls"}, this rule would have matched {result.matched}. The decision would change for {result.changed}.
+        </p>
+      )}
+      {shown.length ? (
+        <ol className="rules-trace tb-list">
+          {shown.map((r) => (
+            <li key={r.id}>
+              <span className="tb-hint">{when(r.at)}</span> · {r.caller.type === "agent" ? dir.agentName(r.caller.id) : (r.caller.product ?? "an app whose product can’t be verified")} · {r.target.product}.{r.target.op}
+              {r.target.tool ? ` (${r.target.tool})` : ""} · <strong>{r.before.decision}</strong> ({safeText(r.before.by)}) → <strong>{r.after.decision}</strong> ({safeText(r.after.by)}){r.changed ? "" : ", no change"}
+            </li>
+          ))}
+        </ol>
+      ) : result.cannotCheck ? null : (
+        <p className="tb-soft">None of the recorded calls would have matched this rule.</p>
+      )}
+      {result.rows.length > shown.length ? <p className="tb-hint">Showing the newest {shown.length} of {result.rows.length}.</p> : null}
+      <p className="tb-hint">{result.note}</p>
+    </div>
+  );
+}
+
 /** Dry run: which rule would decide a sample call (with the edited rule included). */
-function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
+function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: string; dir: Directory }) {
   const [caller, setCaller] = useState("");
   const [appProduct, setAppProduct] = useState("");
   // C373 D2c: the verified workflow id of the calling app ("" = none); sent only when it is a workflow id, like the bridge does
@@ -270,6 +342,24 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
   const [result, setResult] = useState<Out<"rules_preview"> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // D11: the unsaved rule over the last recorded calls (rules_preview_recent); nothing is stored
+  const [recent, setRecent] = useState<Out<"rules_preview_recent"> | null>(null);
+  const [recentError, setRecentError] = useState("");
+  const [recentBusy, setRecentBusy] = useState(false);
+  const ready = !!candidate?.title && !!candidate.outcome.reason;
+  const checkRecent = async () => {
+    if (!candidate || !ready || recentBusy) return;
+    setRecentBusy(true);
+    setRecentError("");
+    try {
+      setRecent(await run("rules_preview_recent", { rule: candidate, ...(ruleId ? { ruleId } : {}), limit: 200 }));
+    } catch (e) {
+      setRecent(null);
+      setRecentError(errorText(e));
+    } finally {
+      setRecentBusy(false);
+    }
+  };
   const go = async () => {
     setError("");
     setBusy(true);
@@ -347,7 +437,18 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <Button onClick={() => void go()} disabled={busy}>
           {busy ? "Running" : "Run dry run"}
         </Button>
+        {candidate ? (
+          <Button onClick={() => void checkRecent()} disabled={!ready || recentBusy}>
+            {recentBusy ? "Checking" : "Check against recent calls"}
+          </Button>
+        ) : null}
       </div>
+      {recentError ? (
+        <Notice tone="needs-you" role="alert">
+          {recentError}
+        </Notice>
+      ) : null}
+      {recent ? <RecentCalls result={recent} dir={dir} /> : null}
       {error ? (
         <Notice tone="needs-you" role="alert">
           {error}
@@ -357,8 +458,8 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
         <div className="tb-stack" role="status">
           <div className="tb-row">
             <DecisionTag decision={result.answered} />
-            <span>{result.reason}</span>
-            {result.ruleTitle ? <span className="tb-hint">by “{result.ruleTitle}”</span> : null}
+            <span>{safeText(result.reason)}</span>
+            {result.ruleTitle ? <span className="tb-hint">by “{safeText(result.ruleTitle)}”</span> : null}
           </div>
           {result.modeNote ? <p className="tb-soft">{result.modeNote}</p> : null}
           {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
@@ -385,7 +486,7 @@ function Preview({ candidate, dir }: { candidate?: RuleSpec; dir: Directory }) {
           <ol className="rules-trace tb-list">
             {result.steps.map((st) => (
               <li key={st.ruleId}>
-                <strong>{st.title}</strong>: {st.why}
+                <strong>{safeText(st.title)}</strong>: {st.why}
               </li>
             ))}
           </ol>
@@ -436,7 +537,7 @@ function DeleteDialog({ rule, onDone }: { rule: RuleRow; onDone: (deleted: boole
         </Notice>
       ) : null}
       <p>
-        The rule “{rule.spec.title}” stops applying at once. Its history stays.
+        The rule “{safeText(rule.spec.title)}” stops applying at once. Its history stays.
       </p>
     </Dialog>
   );
@@ -453,6 +554,27 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
   const [prefill, setPrefill] = useState<RuleSpec | undefined>(undefined);
   const [history, setHistory] = useState<RuleRow | null>(null);
   const [restoring, setRestoring] = useState<RestoreTarget | null>(null);
+  // D12: "Allow always" from a hold card opens Rules with a query; it is read once and removed from the URL, so a reload does not reopen it
+  const [incoming] = useState(() => readAllowQuery(globalThis.location.search));
+  const [linkNotice, setLinkNotice] = useState(incoming.kind === "bad" ? incoming.notice : "");
+  const [fromHold, setFromHold] = useState<AllowPlan | undefined>(undefined);
+  const opened = useRef(false);
+  useEffect(() => {
+    if (incoming.kind === "none") return;
+    const { pathname, hash } = globalThis.location;
+    globalThis.history.replaceState(globalThis.history.state, "", `${pathname}${hash}`);
+  }, [incoming]);
+  // the rule needs the owner's rules (its place) and the catalog (is the operation dynamic?), and the agent names (its title)
+  useEffect(() => {
+    if (incoming.kind !== "ok" || opened.current || !data || dir.loading) return;
+    opened.current = true;
+    const q = incoming.query;
+    const who = q.agent ? dir.agentName(q.agent) : (q.callerProduct as string);
+    const plan = allowPlan(q, data.rules.filter((r) => !r.deleted), who, (data.catalog.dynamicOps ?? []).includes(`${q.product}.${q.op}`));
+    setFromHold(plan);
+    setPrefill(plan.spec);
+    setEditing("new");
+  }, [incoming, data, dir]);
   const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
   const startFromTemplate = <Button onClick={() => setPicking(true)}>Start from a template</Button>;
   return (
@@ -476,6 +598,16 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         onOpenDrafts={onOpenDrafts}
         editor={(spec, done) => <Editor initial={null} dir={dir} products={data?.catalog.productIds ?? []} seed={spec} onUse={(next) => done(next)} onDone={() => done(null)} />}
       />
+      {linkNotice ? (
+        <Notice tone="needs-you" role="alert">
+          <span className="tb-row">
+            <span>{linkNotice}</span>
+            <Button size="sm" onClick={() => setLinkNotice("")}>
+              Dismiss
+            </Button>
+          </span>
+        </Notice>
+      ) : null}
       {error ? <LoadError message={error} retrying={loading} onRetry={reload} /> : null}
       <DirectoryErrors dir={dir} />
       {data && !data.holdSupported ? (
@@ -486,6 +618,11 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           <strong>{broken === 1 ? "1 rule never matches:" : `${broken} rules never match:`}</strong> {broken === 1 ? "it names" : "they name"} an app or operation that the app doesn’t declare. Edit or
           delete {broken === 1 ? "it" : "them"}; until then {broken === 1 ? "it protects" : "they protect"} nothing.
         </Notice>
+      ) : null}
+      {data?.catalog.skipped?.length ? (
+        <p className="tb-hint">
+          {skippedText(data.catalog.skipped)} Rules naming an operation of {data.catalog.skipped.length === 1 ? "it" : "them"} may be refused until {data.catalog.skipped.length === 1 ? "it is" : "they are"} readable.
+        </p>
       ) : null}
       {data?.catalog.error ? (
         <p className="tb-hint">
@@ -505,31 +642,31 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
             <div className="item" key={r.id}>
               <Swatch group="control" />
               <h3>
-                {r.spec.title} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
+                {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
                 {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
-                {matchText(r.spec, dir.teamName, dir.agentName)} → {r.spec.outcome.reason}
+                {matchText(r.spec, dir.teamName, dir.agentName)} → {safeText(r.spec.outcome.reason)}
                 {narrowingText(r.spec.narrowing)}
               </p>
-              {r.problem ? <p>Never matches: {r.problem}</p> : null}
+              {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}
               {!r.deleted && cutsOffGovernance(r.spec) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
               <span className="meta">
                 revision {r.rev} · {day(r.updatedAt)}
               </span>
               <div className="side">
                 {r.deleted ? (
-                  <Button size="sm" aria-label={`History of ${r.spec.title}`} onClick={() => setHistory(r)}>
+                  <Button size="sm" aria-label={`History of ${safeText(r.spec.title)}`} onClick={() => setHistory(r)}>
                     History
                   </Button>
                 ) : (
                   <>
-                    <Button size="sm" aria-label={`Edit ${r.spec.title}`} onClick={() => setEditing(r)}>
+                    <Button size="sm" aria-label={`Edit ${safeText(r.spec.title)}`} onClick={() => setEditing(r)}>
                       Edit
                     </Button>
-                    <Button size="sm" variant="danger" aria-label={`Delete ${r.spec.title}`} onClick={() => setDeleting(r)}>
+                    <Button size="sm" variant="danger" aria-label={`Delete ${safeText(r.spec.title)}`} onClick={() => setDeleting(r)}>
                       Delete
                     </Button>
                   </>
@@ -544,11 +681,13 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         <Editor
           initial={editing === "new" ? null : editing}
           prefill={editing === "new" ? prefill : undefined}
+          fromHold={editing === "new" ? fromHold : undefined}
           dir={dir}
           products={data?.catalog.productIds ?? []}
           onDone={(saved) => {
             setEditing(null);
             setPrefill(undefined);
+            setFromHold(undefined);
             if (saved) reload();
           }}
           onRestore={(t) => {
@@ -571,7 +710,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
       ) : null}
       {history ? (
         <HistoryDialog
-          rule={{ id: history.id, title: history.spec.title }}
+          rule={{ id: history.id, title: safeText(history.spec.title) }}
           dir={dir}
           onClose={() => setHistory(null)}
           onRestore={(t) => {

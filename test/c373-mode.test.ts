@@ -62,7 +62,8 @@ for (const mode of MODES) {
       const none = evaluate(RULES, facts({ ...base, product: "ghostapp", op: "unknown_op", effect: "write" }), mode);
       const want = { permissive: ["allow", NO_MATCH_REASON], verification: ["hold", VERIFICATION_REASON], closed: ["deny", CLOSED_REASON] }[mode];
       assert.deepEqual([none.decision, none.reason, none.rule, none.byMode], [...want, null, { mode, exemption: null }], `${callerType}: no match`);
-      assert.equal(recorded(facts({ ...base, effect: "write" }), none), mode !== "permissive", "a mode refusal or hold is recorded; a Permissive write is not");
+      assert.equal(recorded(facts({ ...base, effect: "write" }), none), true, "a write that matched no rule is recorded in every mode (QA-C373-RU-2)");
+      assert.equal(recorded(facts({ ...base, effect: "read" }), none), mode !== "permissive", "a read is recorded only when the mode refused or held it");
     }
   });
 }
@@ -99,7 +100,7 @@ test("gate: Verification holds a no-match call (family policy) and Closed refuse
   // an app (companion) caller and an Evolution-style engine call reach the same gate
   assert.deepEqual(await gate(db, { callId: "cal_app", app: { product: "evolution" }, product: "kanban", op: "issue_create", effect: "write" }), { allow: false, reason: "Rules: no rule allows this call (Closed mode)" });
   const t = traces(db);
-  assert.equal(t.cal_p, undefined, "a Permissive write is not recorded (as before)");
+  assert.deepEqual([t.cal_p?.answered, t.cal_p?.ruleId, t.cal_p?.detail], ["allow", null, { decidedBy: "mode", mode: "permissive" }], "QA-C373-RU-2: a Permissive write that matched no rule is recorded with the mode");
   assert.deepEqual([t.cal_v?.answered, t.cal_v?.ruleId, t.cal_v?.detail], ["hold", null, { decidedBy: "mode", mode: "verification" }]);
   assert.deepEqual([t.cal_c?.answered, t.cal_c?.detail], ["deny", { decidedBy: "mode", mode: "closed" }]);
   assert.deepEqual([t.cal_app?.answered, t.cal_app?.caller.product], ["deny", "evolution"]);

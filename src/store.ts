@@ -6,6 +6,7 @@ import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { CATALOG_MISSING, catalogOf, catalogProblem } from "./catalog.ts";
 import { type CallFacts, type Decision, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
 import { placeDraft } from "./placement.ts";
+import { controlProblem, escapeControls, textProblem } from "./text-guard.ts";
 
 /** At most this many live rules (a gate evaluates all of them on every call). */
 export const MAX_RULES = 500;
@@ -113,9 +114,18 @@ export function ruleProblem(db: Db, spec: RuleSpec): string {
   return specProblem(spec) || catalogProblem(spec, catalogOf(db));
 }
 
+/**
+ * What a WRITER refuses ("" = fine): the text checks (control and invisible characters, QA-C373-RU-1), then `ruleProblem`. Readers
+ * (`rules_list`, the Rules page flag) use `ruleProblem` alone: a stored legacy rule with such a character still matches, so it is
+ * never flagged "never matches"; it is shown escaped and cannot be saved again until the owner removes the character.
+ */
+export function writerProblem(db: Db, spec: RuleSpec): string {
+  return textProblem(spec) || ruleProblem(db, spec);
+}
+
 /** Writer strict (L24): refuse a spec with a problem. `label` prefixes the message (drafts name the rule). */
 function checkSpec(db: Db, spec: RuleSpec, label = ""): void {
-  const p = ruleProblem(db, spec);
+  const p = writerProblem(db, spec);
   if (p === CATALOG_MISSING) throw new TbError("catalog_unavailable", p, 503);
   if (p) throw new TbError("input_invalid", `${label}${p}`, 400);
 }
@@ -266,8 +276,10 @@ function draftView(r: Record<string, unknown>): DraftView {
 }
 
 export function submitDraft(db: Db, input: { text: string; note?: string; rules: RuleSpec[]; by: Submitter }, now = Date.now()): DraftView {
+  const text = controlProblem("The draft text", input.text, true) || controlProblem("The note", input.note ?? "", true);
+  if (text) throw new TbError("input_invalid", text, 400);
   input.rules.forEach((spec, i) => {
-    checkSpec(db, spec, `rule ${i + 1} (“${spec.title}”): `);
+    checkSpec(db, spec, `rule ${i + 1} (“${escapeControls(spec.title)}”): `);
   });
   // The cap counts per identity AND type. All unverified apps (no verified product, so no identity but an instance id that a
   // reinstall changes) share ONE cap, so a reinstall cannot reset it. A draft stored before 0.3.0 has no `source` and counts there.
@@ -322,9 +334,9 @@ export function decideDraft(db: Db, input: { id: string; decision: "approve" | "
   if (input.decision === "approve") {
     // A draft whose rule could never match is not applied (it would look like protection and protect nothing, L3).
     json<RuleSpec[]>(row.rules, []).forEach((spec, i) => {
-      const p = ruleProblem(db, spec);
+      const p = writerProblem(db, spec);
       if (p === CATALOG_MISSING) throw new TbError("catalog_unavailable", p, 503);
-      if (p) throw new TbError("draft_never_matches", `This draft cannot be applied: rule ${i + 1} (“${spec.title}”): ${p}. Reject it and ask the agent for a corrected draft.`, 409);
+      if (p) throw new TbError("draft_never_matches", `This draft cannot be applied: rule ${i + 1} (“${escapeControls(spec.title)}”): ${p}. Reject it and ask the agent for a corrected draft.`, 409);
     });
     const live = Number(db.prepare("SELECT COUNT(*) AS n FROM rules WHERE deleted = 0").get()?.n ?? 0);
     if (live + json<RuleSpec[]>(row.rules, []).length > MAX_RULES) throw new TbError("too_many_rules", `at most ${MAX_RULES} rules; delete some first`, 409);
@@ -455,7 +467,7 @@ function decisionView(r: Record<string, unknown>): DecisionView {
  */
 export function listDecisions(
   db: Db,
-  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; cursor?: string; limit: number },
+  q: { callId?: string; caller?: string; appCaller?: { product: string | null; instance: string }; decision?: Decision; product?: string; phase?: TraceInput["phase"]; cursor?: string; limit: number },
 ): { items: DecisionView[]; nextCursor: string | null } {
   const where: string[] = [];
   const args: unknown[] = [];
@@ -478,6 +490,7 @@ export function listDecisions(
   }
   add("decision = ?", q.decision);
   add("product = ?", q.product);
+  add("phase = ?", q.phase);
   add("id < ?", q.cursor);
   const rows = db.prepare(`SELECT * FROM decisions ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...args, q.limit + 1);
   const items = rows.slice(0, q.limit).map(decisionView);

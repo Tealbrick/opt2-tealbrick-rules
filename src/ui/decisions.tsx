@@ -1,7 +1,7 @@
 // Decisions page: the log of what Rules decided (newest first), filtered by call id or by decision.
 import { Button, EmptyState, Field, Notice, SearchIcon, Select, Swatch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type DecisionRow, errorText, run, shortId, when } from "./api.ts";
+import { type DecisionRow, errorText, run, safeText, shortId, when } from "./api.ts";
 import { modeTraceText } from "./mode.tsx";
 import { DecisionTag, Head, LoadError, Loading, useAgentNames } from "./shared.tsx";
 
@@ -49,7 +49,7 @@ export function DecisionsPage() {
   useEffect(() => load(), [load]);
   return (
     <section className="app-page" aria-label="Decisions">
-      <Head title="Decisions" />
+      <Head title="Decisions" lede="Reads that match no rule are not listed." />
       <div className="toolbar">
         <div className="tb-search rules-search">
           <SearchIcon />
@@ -65,7 +65,7 @@ export function DecisionsPage() {
       {items === null ? (
         error ? null : <Loading what="decisions" />
       ) : items.length === 0 ? (
-        <EmptyState title="No decisions recorded yet">Rules records every outward, destructive or money call, and every call a rule decided.</EmptyState>
+        <EmptyState title="No decisions recorded yet">Rules records every call that is not a read, and every call a rule decided.</EmptyState>
       ) : (
         <div className="ruled">
           {items.map((d) => (
@@ -76,10 +76,10 @@ export function DecisionsPage() {
                 {d.target.tool ? ` (${d.target.tool})` : ""} <Tag>{d.target.effect}</Tag>
               </h3>
               <p>
-                {d.reason}
-                {d.ruleTitle ? ` · rule “${d.ruleTitle}” rev ${d.ruleRev}` : ""}
+                {safeText(d.reason)}
+                {d.ruleTitle ? ` · rule “${safeText(d.ruleTitle)}” rev ${d.ruleRev}` : ""}
                 {modeTraceText(d.detail)}
-                {d.onBehalfOf ? ` · on behalf of ${JSON.stringify(d.onBehalfOf)}` : ""}
+                {d.onBehalfOf ? ` · on behalf of ${safeText(JSON.stringify(d.onBehalfOf))}` : ""}
                 {d.detail?.callerProductUnavailable === true ? " · the calling app’s product could not be verified, so this rule applied strictly" : ""}
                 {d.callId ? (
                   <>

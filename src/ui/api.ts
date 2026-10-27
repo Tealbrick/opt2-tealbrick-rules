@@ -53,6 +53,20 @@ export function day(isoTime: string | null): string {
 export function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
+/**
+ * QA-C373-RU-1: a stored value (a legacy rule or draft, or an agent's name) may hold a Unicode control (Cc) or format (Cf)
+ * character, such as U+202E (right-to-left override) or U+200D (zero-width joiner). It is shown WRITTEN OUT as ⟨U+202E⟩, never
+ * drawn. `multiline` keeps tab and line break. Same answer as `escapeControls` in src/text-guard.ts (a test pins them).
+ */
+export function safeText(s: string, multiline = false): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) as number;
+    out += /[\p{Cc}\p{Cf}]/u.test(ch) && !(multiline && (cp === 9 || cp === 10)) ? `⟨U+${cp.toString(16).toUpperCase().padStart(4, "0")}⟩` : ch;
+  }
+  return out;
+}
+
 /** "a, b ,c" → ["a","b","c"]; empty → undefined (= any). */
 export function list(s: string): string[] | undefined {
   const xs = s
@@ -91,7 +105,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (o?.ids?.length) parts.push(`on behalf of ${o.ids.join(", ")}`);
   if (o?.kinds?.length) parts.push(`requester kind ${o.kinds.join(", ")}`);
   if (o?.trust?.length) parts.push(`requester trust ${o.trust.join(", ")}`);
-  return parts.length ? parts.join("; ") : "every call";
+  return safeText(parts.length ? parts.join("; ") : "every call");
 }
 
 /** S2-2 (review 0.5.0): the warning on a refuse/hold rule that can stop Rules' own Governance read (fleet `directory_feed`). */

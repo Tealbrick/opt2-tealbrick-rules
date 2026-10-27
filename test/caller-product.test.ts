@@ -417,7 +417,7 @@ test("the writers apply it: rules_set, a draft from an agent and approving a sto
     Object.values(o).forEach(walk);
   };
   walk(manifest);
-  assert.equal(sets.length, 10, "rules_list, rules_get, rules_set (in, out), preview candidate, drafts_list, draft_decide, rule_draft_submit, rule_compose (out), rule_compose_save (in)");
+  assert.equal(sets.length, 11, "rules_list, rules_get, rules_set (in, out), preview candidate, rules_preview_recent, drafts_list, draft_decide, rule_draft_submit, rule_compose (out), rule_compose_save (in)");
   for (const s of sets) assert.deepEqual((s as Record<string, unknown>).callerProducts, { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 40, pattern: "^[a-z0-9][a-z0-9_-]*$" } });
   const input = manifest.operations.find((o) => o.id === "rules_set")?.input as Parameters<typeof validateAgainstSchema>[0];
   const withProducts = (callerProducts: unknown) => ({ rule: { ...good, match: { callerProducts } } }) as Json;
