@@ -2,6 +2,7 @@
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
 import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { readMark } from "./access-model.ts";
 import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
@@ -698,6 +699,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
               <h3>
                 {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
                 {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
+                {readMark(r.spec) ? <> <Tag status="live">Access</Tag></> : null}
                 {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
                 {!r.deleted && emptyLists(r.spec.match).length ? <> <Tag status="needs-you">empty list</Tag></> : null}
                 {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}

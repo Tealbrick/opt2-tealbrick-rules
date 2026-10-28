@@ -43,3 +43,8 @@
   .item { grid-template-columns: auto minmax(0, 1fr); }
   .item > .side { grid-column: 2; grid-row: auto; justify-content: flex-start; }
 }
+
+/* C374 Access page: what a setting does per effect */
+.access-outcomes { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.access-outcomes li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.access-effect { min-width: 9em; }

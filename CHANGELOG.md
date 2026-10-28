@@ -2,7 +2,18 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## Unreleased
+## 0.5.1 - unreleased
+
+### Added
+- Access page (C374, Martin 2026-10-28: "which agent / app goes how deep, to which specific things / tools"): one row per agent and per app. "Set access" picks how deep it may go (Nothing, Read only, Read and change, Also outward, Also money, Everything), what happens beyond that (hold for the owner or refuse), and optionally only some apps and only some tools of connected services. The setting is saved as ordinary rules (`rules_set`, priorities 900 and up, after the owner's own rules; `src/ui/access-model.ts`); the page reads it back from them, flags a hand edit, "Check" runs the real dry run (`rules_preview`) per effect, and "Remove" deletes the rules. Rules' own agent ops and Inbox's owner DMs stay allowed inside a setting. No new operation, no migration.
+- The Rules list tags rules of an access setting "Access".
+
+### Changed
+- Switching to Closed mode asks first and warns that calls between apps stop too when no rule allows them (QA S3 on dev.6).
+- `requires.bridge` is 0.2.11 (the manifest declares `settings.modelRoles`; bridge 0.2.7 refused it, QA dev.5 S2).
+- `upgradeFrom` is `<0.5.1`.
+
+## Unreleased (0.5.0 notes)
 
 ### Added
 - The owner's English rule box (C373, journey J3): a "Write a rule in plain English" box at the top of the Rules page. "Show rules" calls the new person op `rule_compose {text}` (read, no state), which returns `{drafter, rules, lines, notes, unmatched}`: proposed structured rules, one readable line each, notes, and the words it could not read with a plain hint. The owner can edit a proposed rule in the structured editor ("Use this rule" saves nothing) or remove it; "Save for approval" calls the new person op `rule_compose_save {text, rules, note?}` (write, idempotency required) and stores a pending draft with `source.kind` `owner`. Nothing applies before the owner approves it on the Drafts page (`draft_decide`, C84).
