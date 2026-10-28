@@ -233,11 +233,16 @@ describe("C373c: default mode on the Rules page", () => {
     await m.unmount();
   });
 
-  it("a tighter mode changes at once (no confirm) and the page reloads", async () => {
+  it("Closed asks first and warns that calls between apps stop too (S3); Switch sends no confirm flag and the page reloads", async () => {
     reset();
     const m = await mount(h(rules.RulesPage));
     const lists = callsOf("rules_list").length;
     await click(radio(modeCard(m.host), "Closed"));
+    const d = dialog("Switch to Closed mode?");
+    assert.match(textOf(d), /calls that apps make to each other/);
+    assert.match(textOf(d), /Access page/);
+    assert.equal(callsOf("mode_set").length, 0, "nothing sent before the confirm");
+    await click(button(d, "Switch to Closed"));
     assert.deepEqual(callsOf("mode_set").map((c) => c.input), [{ mode: "closed" }]);
     noDialog("Switch to Closed mode?");
     assert.ok(callsOf("rules_list").length > lists, "reloaded");

@@ -17,6 +17,9 @@ export const MODE_TEXT: Record<Mode, string> = {
   verification: "No rule matches: the call waits for your review (in the app’s Holds and in Inbox).",
   closed: "No rule matches: the call is refused.",
 };
+/** S3 (QA, dev.6): Closed also refuses the calls apps make to each other; the owner reads this before the switch. */
+export const CLOSED_WARNING =
+  "Closed also refuses calls that apps make to each other when no rule allows them, for example Governance reading Connect or Evolving Workflows running a step. Allow those apps first on the Access page (or with an allow rule), or they stop working.";
 /** A move to a looser mode needs a confirm (the server refuses it without one: 409 confirm_required). */
 export const isLooser = (from: Mode, to: Mode): boolean => MODE_ORDER.indexOf(to) < MODE_ORDER.indexOf(from);
 
@@ -43,7 +46,7 @@ function ConfirmLooser({ from, to, onDone }: { from: Mode; to: Mode; onDone: (ch
     setBusy(true);
     setError("");
     try {
-      await run("mode_set", { mode: to, confirm: true });
+      await run("mode_set", isLooser(from, to) ? { mode: to, confirm: true } : { mode: to });
       onDone(true);
     } catch (e) {
       setError(errorText(e));
@@ -77,9 +80,12 @@ function ConfirmLooser({ from, to, onDone }: { from: Mode; to: Mode; onDone: (ch
       <p>
         {to === "permissive"
           ? "Calls that no rule covers will run without your review."
-          : "Calls that no rule covers will wait for your review instead of being refused."}{" "}
+          : to === "closed"
+            ? "Calls that no rule covers will be refused."
+            : "Calls that no rule covers will wait for your review instead of being refused."}{" "}
         Rules that match still decide as before.
       </p>
+      {to === "closed" ? <Notice tone="needs-you">{CLOSED_WARNING}</Notice> : null}
     </Dialog>
   );
 }
@@ -92,7 +98,7 @@ export function ModeCard({ state, onChanged }: { state: ModeState; onChanged: ()
   const pick = async (to: Mode) => {
     if (busy || to === state.mode) return;
     setError("");
-    if (isLooser(state.mode, to)) {
+    if (isLooser(state.mode, to) || to === "closed") {
       setAsking(to);
       return;
     }

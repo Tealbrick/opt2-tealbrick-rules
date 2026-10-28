@@ -3,6 +3,7 @@
 import { useSession } from "@opt2-tealbrick/miniapp-sdk/client";
 import { AppShell, appArt, appColour, Button, Notice, STANDARD_PAGES, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
+import { AccessPage } from "./access.tsx";
 import { errorText, run } from "./api.ts";
 import { DecisionsPage } from "./decisions.tsx";
 import { DraftsPage } from "./drafts.tsx";
@@ -16,9 +17,10 @@ const STILLS = new URL("./stills/", import.meta.url).href;
 
 /** Shell page id → path under the base `/a/rules/`: Rules is the launch page (manifest `ui.launchPath`), Agents & scopes is `ui.configurePath`. */
 const STANDARD = standardRoutes("rules");
-const ROUTES = { rules: STANDARD.rules ?? "", drafts: "drafts", decisions: "decisions", teams: "teams", holds: STANDARD.holds ?? "holds", agents: STANDARD.agents ?? "configure" };
+const ROUTES = { rules: STANDARD.rules ?? "", access: "access", drafts: "drafts", decisions: "decisions", teams: "teams", holds: STANDARD.holds ?? "holds", agents: STANDARD.agents ?? "configure" };
 const OWN_PAGES = [
   { id: "rules", label: "Rules" },
+  { id: "access", label: "Access" },
   { id: "drafts", label: "Drafts" },
   { id: "decisions", label: "Decisions" },
   { id: "teams", label: "Teams" },
@@ -101,7 +103,9 @@ export function App() {
         ) : null
       }
     >
-      {!signedIn ? null : nav.page === "drafts" ? (
+      {!signedIn ? null : nav.page === "access" ? (
+        <AccessPage />
+      ) : nav.page === "drafts" ? (
         <DraftsPage onChange={refreshPending} />
       ) : nav.page === "decisions" ? (
         <DecisionsPage />
