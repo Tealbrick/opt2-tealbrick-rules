@@ -2,7 +2,7 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## 0.5.1 - unreleased
+## 0.5.1-dev.1 - unreleased
 
 ### Added
 - Access page (C374, Martin 2026-10-28: "which agent / app goes how deep, to which specific things / tools"): one row per agent and per app. "Set access" picks how deep it may go (Nothing, Read only, Read and change, Also outward, Also money, Everything), what happens beyond that (hold for the owner or refuse), and optionally only some apps and only some tools of connected services. The setting is saved as ordinary rules (`rules_set`, priorities 900 and up, after the owner's own rules; `src/ui/access-model.ts`); the page reads it back from them, flags a hand edit, "Check" runs the real dry run (`rules_preview`) per effect, and "Remove" deletes the rules. Rules' own agent ops and Inbox's owner DMs stay allowed inside a setting. No new operation, no migration.
