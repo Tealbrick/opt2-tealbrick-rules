@@ -192,8 +192,12 @@ test("background: onStart runs the Fleet read model with the app-initiated callA
     return { status: "ok" as const, output: DIRECTORY };
   };
   const quiet = { debug() {}, info() {}, warn() {}, error() {} };
+  // the sync yields between chunks: wait for its result, not for a fixed time (a loaded machine needs more than 20 ms)
+  const until = async (ok: () => boolean) => {
+    for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 10));
+  };
   await definition.onStart?.({ db, log: quiet, callApp, statusChanged() {} } as never);
-  await new Promise((r) => setTimeout(r, 20));
+  await until(() => fleetIndex(db).has(`agent:${AGENT_A}`));
   assert.equal(calls, 1, "onStart syncs at once (then every 60 s)");
   assert.deepEqual(fleetIndex(db).get(`agent:${AGENT_A}`), ["tm_x"]);
   await definition.events?.agentsChanged?.([], { db, log: quiet, callApp, statusChanged() {} } as never);

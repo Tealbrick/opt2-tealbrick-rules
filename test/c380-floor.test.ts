@@ -221,7 +221,42 @@ test("S1-1: the floor table cannot be read: the gate refuses, it does not pass",
   assert.deepEqual(await gate(broken, { caller: AGENT_B }), { allow: false, reason: FAIL_CLOSED });
 });
 
-test("fallback read (Governance refuses accept with 400): adds a stop, never lifts one, and does not confirm a revision", async () => {
+test("review #34: a full valid read with no lifecycle facts (rollback, Governance ignores accept, empty directory) cannot lift a lifecycle stop, and confirms no revision", async () => {
+  const blind = (over: Record<string, unknown>) => answer(floorFeed({ revision: 6, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }], ...over }));
+  const { db } = await stopped();
+  await syncFleet(db, blind({}));
+  assert.ok(refusedAsFloor(await gate(db)), "A stays");
+  assert.equal(floorState(db).feedRevision, 7);
+  await syncFleet(db, blind({ revision: 8, agents: [] }));
+  assert.ok(refusedAsFloor(await gate(db)), "an empty directory does not lift it either");
+  assert.ok(refusedAsFloor(await gate(restarted(db))));
+  // the next read with lifecycle facts does
+  await syncFleet(db, answer(floorFeed({ revision: 9, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
+  assert.equal((await gate(db)).allow, true);
+  assert.equal(floorState(db).feedRevision, 9);
+});
+
+test("review #34: a read with no lifecycle facts still decides what it can see: an unblocked agent and a returned contact are lifted (Rules dev on Governance 0.3.2)", async () => {
+  const { db } = migratedDb();
+  const row = (trust: string) => ({ id: AGENT_B, status: "active", trust, owner: null });
+  const contact = (status: string) => ({ id: "ct_x", kind: "person", status, trust: "trusted", handles: ["slack:U12"] });
+  await syncFleet(db, answer(feed({ teams: [], contacts: [contact("departed")], agents: [row("blocked")] })));
+  assert.ok(refusedAsFloor(await gate(db, { caller: AGENT_B })));
+  assert.ok(refusedAsFloor(await withTarget(db, TO(["slack:U12"]), { caller: AGENT_A })));
+  assert.equal(floorState(db).feedRevision, null, "nothing to confirm");
+  await syncFleet(db, answer(feed({ revision: 8, teams: [], contacts: [contact("active")], agents: [row("trusted")] })));
+  assert.equal((await gate(db, { caller: AGENT_B })).allow, true);
+  assert.equal((await withTarget(db, TO(["slack:U12"]), { caller: AGENT_A })).allow, true);
+});
+
+test("review #34: a blocked entry that a blind read made a lifecycle stop keeps the lifecycle stop", async () => {
+  const { db } = await stopped();
+  await syncFleet(db, answer(floorFeed({ revision: 8, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "blocked", owner: null }] })));
+  await syncFleet(db, answer(floorFeed({ revision: 9, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }] })));
+  assert.ok(refusedAsFloor(await gate(db)), "it was leaving, and no read with lifecycle facts said otherwise");
+});
+
+test("fallback read (Governance refuses accept with 400): adds a stop, never lifts a lifecycle stop, and does not confirm a revision", async () => {
   const { db } = await stopped();
   const calls: Json[] = [];
   let n = 0;
@@ -510,6 +545,27 @@ test("floor_clear (A31): owner only; one holder with its handles, or all; record
   assert.deepEqual(rows.map((r) => [r.actor, r.holder, r.entries]), [[OWNER, "contact:ct_left", 3], [OWNER, null, 1]]);
   const person = manifest.operations.find((o) => o.id === "floor_clear") as { audience: string };
   assert.equal(person.audience, "person");
+});
+
+test("review #34: after floor_clear Governance does not read a confirmed revision, and the next read is a full one, so a listed entry comes back whatever the revision", async () => {
+  const { db } = await stopped();
+  const asked: Json[] = [];
+  const listing: CallApp = async (_p, _o, input) => {
+    asked.push(input);
+    const since = (input as { sinceRevision?: number }).sinceRevision;
+    return { status: "ok", output: since === 7 ? { v: 1, revision: 7, unchanged: true } : floorFeed() };
+  };
+  await syncFleet(db, listing);
+  assert.equal(asked.at(-1) && (asked.at(-1) as { sinceRevision?: number }).sinceRevision, 7, "the normal read is a delta read");
+  await run(OP.floorClear)({ confirm: true }, ownerCtx(db));
+  const st = await run(OP.floorStatus)({}, callerCtx(db, { type: "app", id: APP_INSTANCE, name: "G", product: "fleet", listed: true }));
+  assert.equal(st.feedRevision, null, "not a claim that Rules has this change");
+  assert.equal(st.entries, 0);
+  assert.equal((await gate(db)).allow, true);
+  await syncFleet(db, listing);
+  assert.equal((asked.at(-1) as { sinceRevision?: number }).sinceRevision, undefined, "a full read");
+  assert.ok(refusedAsFloor(await gate(db)), "comes back");
+  assert.equal(floorState(db).feedRevision, 7);
 });
 
 test("floor_list: the owner reads the entries while Governance is gone", async () => {

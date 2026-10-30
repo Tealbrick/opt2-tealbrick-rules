@@ -78,6 +78,8 @@ export interface ParsedFeed {
   model: FleetModel;
   /** C380: who the company floor stops, from this answer ([] for "unchanged", which leaves the floor as it is) */
   floor: FloorEntry[];
+  /** C380: at least one row carried `floor`: the answer has lifecycle facts. Absent on every row (a Governance that ignored `accept`, an empty directory): it cannot lift a lifecycle stop */
+  floorAware: boolean;
 }
 
 /** An effective lifecycle that always stops the row, whatever `floor` says. `archived` is not here: a card already gone (`no_card`) is `archived` with `floor: false`. */
@@ -126,7 +128,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   if (out.unchanged === true) {
     check(out as Json);
-    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [] };
+    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false };
   }
   // Validate in slices (the same schema, each slice a full document with the other arrays empty), then the array caps.
   const teamsIn = Array.isArray(out.teams) ? (out.teams as { id: string; name?: string; members: { kind: string; id: string }[] }[]) : null;
@@ -259,6 +261,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   for (const [id, ts] of agentTeams) if (!known.agent.has(id)) place(`agent:${id}`, ts, none);
   // C380: the floor rows of this answer. A handle two holders share is listed when either is stopped; `blocked` names it first.
   const floorRows = new Map<string, FloorEntry>();
+  let floorAware = false;
   const stop = (e: FloorEntry) => {
     const key = `${e.kind}:${e.id}`;
     const was = floorRows.get(key);
@@ -266,6 +269,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   for (const [isContact, list] of [[true, contacts], [false, agents]] as const) {
     for (const row of list) {
+      if (row.floor !== undefined) floorAware = true;
       const code = floorCode(row, isContact);
       if (code === null) continue;
       const holder = `${isContact ? "contact" : "agent"}:${row.id}`;
@@ -274,7 +278,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
       if (tick(1 + (row.handles?.length ?? 0))) yield;
     }
   }
-  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()] };
+  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware };
 }
 
 /** Read an answer in one go (small answers, tests). */
@@ -359,8 +363,8 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
     // S3-1: the copy says whether it lists agent handles (a read without them makes every recipient unknown at the gate)
-    // C380 S1-1: only a full valid read changes the floor. The fallback read without `accept` asked for no lifecycle facts, so it can add a stop and never lift one.
-    const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, mode: withHandles ? ("replace" as const) : ("add" as const) } };
+    // C380 S1-1: only a full valid read changes the floor, and only an answer with lifecycle facts can lift a lifecycle stop (the fallback read without `accept` has none)
+    const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware } };
     await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, ...floor }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {

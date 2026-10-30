@@ -4,8 +4,9 @@
 // stop. So:
 //  - Only a full valid read of the feed changes these rows, in the same transaction that makes the read the current copy.
 //    A refusal, an invalid answer, an expiry, an outage, a crash or an "unchanged" answer never touches them.
-//  - A read that could not ask for lifecycle facts (the fallback for a Governance that refuses `accept`) only ADDS: it cannot
-//    know who stopped being listed.
+//  - A read with no lifecycle facts (a Governance that ignores `accept`, an older release after a rollback, the fallback for one that refuses
+//    `accept`, an empty directory) is BLIND: it cannot lift a lifecycle stop, because it does not know about one. It decides only the stops it can
+//    see: trust `blocked` and a departed contact. Such a stop on a lifecycle-only entry stays until a read with lifecycle facts, or the owner's Clear.
 //  - The gate reads `floorIndex` and never asks `fleetFacts().available`.
 //  - The way out, when Governance is gone or compromised, is the owner's person op `floor_clear`.
 // A read of the table that fails throws, and the gate answers FAIL_CLOSED: no copy that can be read means a refusal, never an allow.
@@ -23,12 +24,14 @@ export interface FloorEntry {
   /** `agent:<id>` or `contact:<id>`: the entry's owner in the feed */
   holder: string;
 }
-/** How one valid read changes the floor. `replace`: a read that asked for lifecycle facts. `add`: the fallback read without `accept`. */
+/** How one valid read changes the floor. `aware`: the answer carried `floor` on at least one row, so it speaks for every kind of stop. */
 export interface FloorRead {
   entries: readonly FloorEntry[];
   revision: number;
-  mode: "replace" | "add";
+  aware: boolean;
 }
+/** The stops a read with no lifecycle facts can see, so it may also lift them. Every other code is a lifecycle stop. */
+const VISIBLE_WITHOUT_LIFECYCLE: ReadonlySet<string> = new Set(["blocked", "departed"]);
 
 const keyOf = (kind: string, id: string): string => `${kind}:${id}`;
 
@@ -54,15 +57,16 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
   for (const r of db.prepare("SELECT kind, id, code, holder FROM floor_entries").all()) current.set(keyOf(String(r.kind), String(r.id)), { code: String(r.code), holder: String(r.holder) });
   const next = new Map(read.entries.map((e) => [keyOf(e.kind, e.id), e]));
   const out = new Map<string, string>();
-  if (read.mode === "replace") {
-    const del = db.prepare("DELETE FROM floor_entries WHERE kind = ? AND id = ?");
-    for (const key of current.keys()) {
-      if (next.has(key)) continue;
+  const del = db.prepare("DELETE FROM floor_entries WHERE kind = ? AND id = ?");
+  for (const [key, was] of current) {
+    // a blind read neither lifts nor rewrites a lifecycle stop
+    if (!read.aware && !VISIBLE_WITHOUT_LIFECYCLE.has(was.code)) {
+      out.set(key, was.code);
+      next.delete(key);
+    } else if (!next.has(key)) {
       const at = key.indexOf(":");
       del.run(key.slice(0, at), key.slice(at + 1));
     }
-  } else {
-    for (const [key, v] of current) out.set(key, v.code);
   }
   const put = db.prepare("INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, id) DO UPDATE SET code = excluded.code, holder = excluded.holder");
   for (const [key, e] of next) {
@@ -71,7 +75,7 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
     if (was?.code !== e.code || was.holder !== e.holder) put.run(e.kind, e.id, e.code, e.holder, read.revision, now);
   }
   // Governance reads this revision before it says "Rules has this change" (S2-9), so a read that could not see lifecycle facts does not move it
-  if (read.mode === "replace") db.prepare("UPDATE floor_state SET feed_revision = ?, read_at = ? WHERE id = 1").run(read.revision, now);
+  if (read.aware) db.prepare("UPDATE floor_state SET feed_revision = ?, read_at = ? WHERE id = 1").run(read.revision, now);
   return out;
 }
 
@@ -136,15 +140,18 @@ export function floorRows(db: Db, limit: number): FloorRow[] {
 }
 
 /**
- * The owner's way out: one holder with its handles, or (`holder` null) everything. Recorded in `floor_clears`. Governance is not told:
- * if it still lists the entry, the entry comes back at the next full read, so an owner who no longer trusts Governance also pauses or
- * removes it (a refused read then changes nothing here). Answers how many entries were lifted.
+ * The owner's way out: one holder with its handles, or (`holder` null) everything. Recorded in `floor_clears`. Governance is not told: if it still
+ * lists the entry, the entry comes back at the next read, which is forced to be a full one (`stale`), so what the owner reads on the page is what happens,
+ * restart or not. An owner who no longer trusts Governance also pauses or removes it: a refused read then changes nothing here. `feed_revision` is
+ * forgotten until that read (S2-9): Governance must not read "Rules has this change" while the entry is lifted. Answers how many entries were lifted.
  */
 export function clearFloor(db: Db, input: { holder: string | null; actor: string }, now = Date.now()): number {
   const n = db.transaction(() => {
     const res = input.holder === null ? db.prepare("DELETE FROM floor_entries").run() : db.prepare("DELETE FROM floor_entries WHERE holder = ?").run(input.holder);
     const count = Number(res.changes ?? 0);
     db.prepare("INSERT INTO floor_clears (id, at, actor, holder, entries) VALUES (?, ?, ?, ?, ?)").run(`flc_${ulid(now)}`, now, input.actor, input.holder, count);
+    db.prepare("UPDATE floor_state SET feed_revision = NULL WHERE id = 1").run();
+    db.prepare("UPDATE fleet_sync SET stale = 1 WHERE id = 1").run();
     return count;
   });
   cache.delete(db);

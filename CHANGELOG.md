@@ -11,6 +11,7 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`
 
 ### Changed
 - `directory_feed` is read with `accept: ["agent_handles", "lifecycle"]`. Schema `fleet.directory_feed.1.lifecycle` (spec 0.1.89).
+- A rollback of Governance to a release with no lifecycle facts does not lift a lifecycle stop: the owner clears it on the Rules page.
 - **On update:** entries Governance already marks blocked, and departed contacts, start to be refused at the first read of the feed. List them before any promotion.
 
 ## 0.6.0 - unreleased
