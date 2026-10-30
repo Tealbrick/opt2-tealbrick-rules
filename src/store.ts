@@ -38,6 +38,11 @@ interface FleetCacheEntry {
   usable: boolean;
   /** the copy was read WITH agent handles (feed `accept: ["agent_handles"]`); false after a restart until the next full read (S3-1) */
   agentHandles: boolean;
+  /** C380 T2-a: the roles, like `idx` and `idxAny` for teams (member key → role ids) */
+  roles: Map<string, string[]>;
+  rolesAny: Map<string, string[]>;
+  /** the copy was read WITH roles (feed `accept: ["roles"]` answered with a `roles` list); false after a restart until the next full read */
+  rolesKnown: boolean;
 }
 const fleetCache = new WeakMap<Db, FleetCacheEntry>();
 /** Count of markFleetStale calls per database: a sync that sees it move while it ran reads once more (dirty flag). */
@@ -524,6 +529,8 @@ export interface TrustEntry {
 export interface FleetModel {
   teams: FleetTeam[];
   trust: Map<string, TrustEntry>;
+  /** C380 T2-a: roles, in the shape of a team (keys of every holder, keys of the holders that count). Absent = none read. */
+  roles?: FleetTeam[];
 }
 
 export interface FleetSyncState {
@@ -557,7 +564,7 @@ export function fleetState(db: Db): FleetSyncState {
  */
 export function dropFleetCopy(db: Db, error: string): void {
   memoryError.set(db, error.slice(0, 280));
-  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false, agentHandles: false });
+  fleetCache.set(db, { idx: new Map(), idxAny: new Map(), trust: new Map(), gone: new Set(), okAt: null, usable: false, agentHandles: false, roles: new Map(), rolesAny: new Map(), rolesKnown: false });
 }
 
 /** Set the stale flag without counting it (a sync re-arming itself). */
@@ -606,7 +613,7 @@ function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, n
     return;
   }
   db.transaction(() => {
-    db.exec("DELETE FROM fleet_members; DELETE FROM fleet_trust;");
+    db.exec("DELETE FROM fleet_members; DELETE FROM fleet_trust; DELETE FROM fleet_role_members;");
     db.prepare("UPDATE fleet_sync SET usable = 0, stale = 1 WHERE id = 1").run();
   });
   const idx = new Map<string, string[]>();
@@ -641,12 +648,29 @@ function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, n
     batch.push(() => tr.run(k, [...v.trusts].sort().join(","), v.allActive ? 1 : 0));
     yield* flush(false);
   }
+  // C380 T2-a: roles go in the same way as teams, in their own tables
+  const roleIdx = new Map<string, string[]>();
+  const roleIdxAny = new Map<string, string[]>();
+  const rm = db.prepare("INSERT OR IGNORE INTO fleet_role_members (role_id, member_key, active) VALUES (?, ?, ?)");
+  for (const role of model.roles ?? []) {
+    const active = new Set(role.activeKeys);
+    for (const k of role.keys) {
+      const on = active.has(k);
+      add(roleIdxAny, k, role.id);
+      if (on) add(roleIdx, k, role.id);
+      batch.push(() => rm.run(role.id, k, on ? 1 : 0));
+      yield* flush(false);
+    }
+  }
   yield* flush(true);
   let floorNext: Map<string, string> | null = null;
   db.transaction(() => {
     db.exec("DELETE FROM fleet_teams;");
     const t = db.prepare("INSERT INTO fleet_teams (id, name, people, agents) VALUES (?, ?, ?, ?)");
     for (const team of model.teams) t.run(team.id, team.name, team.people, team.agents);
+    db.exec("DELETE FROM fleet_roles;");
+    const ro = db.prepare("INSERT INTO fleet_roles (id, name, people, agents) VALUES (?, ?, ?, ?)");
+    for (const role of model.roles ?? []) ro.run(role.id, role.name, role.people, role.agents);
     if (state.error === null) db.prepare("UPDATE fleet_sync SET revision = ?, synced_at = ?, stale = 0, error = NULL, usable = 1 WHERE id = 1").run(state.revision, now);
     else db.prepare("UPDATE fleet_sync SET revision = NULL, stale = 1, error = ?, usable = 0 WHERE id = 1").run(state.error);
     // C380 S1-1: the floor changes here and nowhere else in a sync: in the transaction that makes a full valid read current, so a crash leaves
@@ -656,7 +680,7 @@ function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, n
   if (floorNext) commitFloor(db, floorNext);
   const usable = state.error === null;
   if (usable) memoryError.delete(db);
-  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable, agentHandles: usable && state.agentHandles === true });
+  fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable, agentHandles: usable && state.agentHandles === true, roles: roleIdx, rolesAny: roleIdxAny, rolesKnown: usable && state.rolesKnown === true });
 }
 
 /**
@@ -667,6 +691,8 @@ export interface FleetWriteState {
   revision: number | null;
   error: string | null;
   agentHandles?: boolean;
+  /** C380 T2-a: the model was read WITH roles (the answer to `accept: ["roles"]` carried a `roles` list, even an empty one) */
+  rolesKnown?: boolean;
   /** C380: the floor rows of a full valid read. Absent on a failure and on an "unchanged" answer: both leave the floor as it is */
   floor?: FloorRead;
 }
@@ -688,7 +714,15 @@ export async function writeFleetChunked(
   for (let r = g.next(); !r.done; r = g.next()) await pause();
 }
 
-export const emptyFleet = (): FleetModel => ({ teams: [], trust: new Map() });
+export const emptyFleet = (): FleetModel => ({ teams: [], trust: new Map(), roles: [] });
+
+/** The roles of the last read (id, name, how many people and agents hold each), for the rule editor. */
+export function fleetRoles(db: Db): { id: string; name: string; people: number; agents: number }[] {
+  return db
+    .prepare("SELECT id, name, people, agents FROM fleet_roles ORDER BY name, id")
+    .all()
+    .map((r) => ({ id: String(r.id), name: String(r.name), people: Number(r.people), agents: Number(r.agents) }));
+}
 
 export function fleetTeams(db: Db): { id: string; name: string; people: number; agents: number }[] {
   return db
@@ -708,6 +742,16 @@ export interface FleetFacts {
   trust: Map<string, TrustEntry>;
   /** keys with at least one holder that is blocked, departed or removed */
   gone: Set<string>;
+  /** C380 T2-a: member key → role ids, holders that COUNT only (allow rules); empty while unavailable */
+  roles: Map<string, string[]>;
+  /** member key → role ids, EVERY holder incl. blocked, departed, removed (deny and hold rules) */
+  rolesAny: Map<string, string[]>;
+  /**
+   * C380 T2-a: the copy was read WITH roles. False (an older Governance that does not know `roles`, the fallback read after a 400 to
+   * `accept`, a restart or an update before the first full read): nobody is known to hold any role, so a rule that names roles reads it as
+   * unavailable: deny and hold apply, allow does not. Teams and trust stay usable.
+   */
+  rolesKnown: boolean;
   /**
    * S3-1: the copy lists the agents' handles (read with `accept: ["agent_handles"]`). False (an older Governance, the 10-minute
    * window after a 400 to `accept`, or a restart before the first full read): a `handle:` key may miss an agent holder, so the
@@ -716,7 +760,7 @@ export interface FleetFacts {
   agentHandles: boolean;
 }
 
-const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set(), agentHandles: false });
+const NONE = (): FleetFacts => ({ available: false, teams: new Map(), teamsAny: new Map(), trust: new Map(), gone: new Set(), agentHandles: false, roles: new Map(), rolesAny: new Map(), rolesKnown: false });
 
 /**
  * The Fleet facts the gate may use; cached until the next sync (built at write time). `available` is false (and the maps
@@ -729,11 +773,11 @@ export function fleetFacts(db: Db, now = Date.now()): FleetFacts {
   if (!hit) {
     const st = fleetState(db);
     // a copy loaded from the database (a restart) does not say whether it has agent handles: not until the next full read
-    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable, agentHandles: false };
+    hit = { ...loadFleet(db), okAt: st.syncedAt, usable: st.usable, agentHandles: false, rolesKnown: false };
     fleetCache.set(db, hit);
   }
   const available = hit.usable && hit.okAt != null && now - hit.okAt <= FLEET_MAX_STALE_MS;
-  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone, agentHandles: hit.agentHandles } : NONE();
+  return available ? { available, teams: hit.idx, teamsAny: hit.idxAny, trust: hit.trust, gone: hit.gone, agentHandles: hit.agentHandles, roles: hit.roles, rolesAny: hit.rolesAny, rolesKnown: hit.rolesKnown } : NONE();
 }
 
 /** member key → team ids of members that count (empty while unavailable). */
@@ -741,7 +785,7 @@ export function fleetIndex(db: Db, now = Date.now()): Map<string, string[]> {
   return fleetFacts(db, now).teams;
 }
 
-function loadFleet(db: Db): Pick<FleetCacheEntry, "idx" | "idxAny" | "trust" | "gone"> {
+function loadFleet(db: Db): Pick<FleetCacheEntry, "idx" | "idxAny" | "trust" | "gone" | "roles" | "rolesAny"> {
   const idx = new Map<string, string[]>();
   const idxAny = new Map<string, string[]>();
   for (const r of db.prepare("SELECT team_id, member_key, active FROM fleet_members").all()) {
@@ -755,5 +799,11 @@ function loadFleet(db: Db): Pick<FleetCacheEntry, "idx" | "idxAny" | "trust" | "
     trust.set(k, { trusts: String(r.trusts).split(",") as Trust[], allActive: Number(r.all_active) === 1 });
     if (Number(r.all_active) !== 1) gone.add(k);
   }
-  return { idx, idxAny, trust, gone };
+  const roles = new Map<string, string[]>();
+  const rolesAny = new Map<string, string[]>();
+  for (const r of db.prepare("SELECT role_id, member_key, active FROM fleet_role_members").all()) {
+    add(rolesAny, String(r.member_key), String(r.role_id));
+    if (Number(r.active) === 1) add(roles, String(r.member_key), String(r.role_id));
+  }
+  return { idx, idxAny, trust, gone, roles, rolesAny };
 }

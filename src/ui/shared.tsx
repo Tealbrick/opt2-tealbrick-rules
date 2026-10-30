@@ -3,7 +3,7 @@
 import { callOp } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, Chip, ChipGroup, Notice, Tag } from "@opt2-tealbrick/ui";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { DECISION_LABEL, DECISION_STATUS, errorText, run, type Team } from "./api.ts";
+import { DECISION_LABEL, DECISION_STATUS, errorText, type Role, run, type Team } from "./api.ts";
 import type { Agent } from "./standard.tsx";
 
 /** Load state that keeps the error: a failed load is shown as an error with Try again, never as an empty list. */
@@ -76,8 +76,11 @@ export function DecisionTag({ decision, rule }: { decision: keyof typeof DECISIO
 export interface Directory {
   agents: readonly Agent[];
   teams: readonly Team[];
+  /** the flat roles of Governance (C380 T2-a) */
+  roles: readonly Role[];
   agentName: (id: string) => string;
   teamName: (id: string) => string;
+  roleName: (id: string) => string;
   /** plain messages of what could not be loaded (RUL-14); names fall back to ids meanwhile */
   errors: readonly string[];
   /** false = Rules cannot rely on its Governance copy (C236); null = not known (still loading, or fleet_status failed) */
@@ -86,6 +89,9 @@ export interface Directory {
   reload: () => void;
 }
 
+/** What the owner reads for a role id that Governance does not list (archived, or gone). */
+export const UNLISTED_ROLE = "a role that is archived or gone";
+
 /** The exact wording the Lead asked for (C236). */
 export const FLEET_UNAVAILABLE_TEXT = "Governance data unavailable — team rules apply strictly";
 
@@ -93,6 +99,7 @@ export const FLEET_UNAVAILABLE_TEXT = "Governance data unavailable — team rule
 export function useDirectory(): Directory {
   const [agents, setAgents] = useState<readonly Agent[]>([]);
   const [teams, setTeams] = useState<readonly Team[]>([]);
+  const [roles, setRoles] = useState<readonly Role[]>([]);
   const [errors, setErrors] = useState<readonly string[]>([]);
   const [fleetAvailable, setFleetAvailable] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,6 +114,7 @@ export function useDirectory(): Directory {
       else errs.push(`Couldn’t load your agents, so their names show as ids. ${errorText(a.reason)}`);
       if (t.status === "fulfilled") {
         setTeams(t.value.teams);
+        setRoles(t.value.roles ?? []);
         setFleetAvailable(t.value.available);
       } else {
         setFleetAvailable(null);
@@ -119,7 +127,9 @@ export function useDirectory(): Directory {
   useEffect(reload, [reload]);
   const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? id, [agents]);
   const teamName = useCallback((id: string) => teams.find((t) => t.id === id)?.name ?? id, [teams]);
-  return { agents, teams, agentName, teamName, errors, fleetAvailable, loading, reload };
+  // A role the list does not have is archived or gone (Governance leaves an archived role out): say that, never its id. While the list loads, or when it could not be read, say only "a role".
+  const roleName = useCallback((id: string) => roles.find((r) => r.id === id)?.name ?? (loading || fleetAvailable === null ? "a role" : UNLISTED_ROLE), [roles, loading, fleetAvailable]);
+  return { agents, teams, roles, agentName, teamName, roleName, errors, fleetAvailable, loading, reload };
 }
 
 /** Why the directory is incomplete, with Try again. */

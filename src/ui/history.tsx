@@ -43,7 +43,7 @@ export function RuleHistory({ ruleId, dir, onRestore }: { ruleId: string; dir: D
                   <span title={r.actor}>{shortId(r.actor)}</span> · {when(r.at)}
                 </span>
                 <span className="tb-soft">
-                  {safeText(r.spec.title)} · {DECISION_LABEL[r.spec.outcome.decision]} · {matchText(r.spec, dir.teamName, dir.agentName)} → {safeText(r.spec.outcome.reason)}
+                  {safeText(r.spec.title)} · {DECISION_LABEL[r.spec.outcome.decision]} · {matchText(r.spec, dir.teamName, dir.agentName, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
                   {r.spec.active ? "" : " · inactive"}
                 </span>
                 {current && !data.deleted ? null : (

@@ -356,11 +356,11 @@ test("markFleetStale while a sync is in flight → one more sync (a full read); 
   };
   const plain = await run(false);
   assert.equal(plain.inputs.length, 1);
-  assert.deepEqual(plain.inputs[0], { accept: ["agent_handles", "lifecycle"], sinceRevision: 7 });
+  assert.deepEqual(plain.inputs[0], { accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 7 });
   assert.equal(plain.stale, false);
   const marked = await run(true);
   assert.equal(marked.inputs.length, 2, "the mark made during the read triggers one more");
-  assert.deepEqual(marked.inputs[1], { accept: ["agent_handles", "lifecycle"] }, "and it is a full read");
+  assert.deepEqual(marked.inputs[1], { accept: ["agent_handles", "lifecycle", "roles"] }, "and it is a full read");
   assert.equal(marked.stale, false);
 });
 

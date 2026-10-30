@@ -69,6 +69,7 @@ import {
   deleteRule,
   draftStatusFor,
   fleetFacts,
+  fleetRoles,
   fleetState,
   fleetTeams,
   getDraft,
@@ -189,6 +190,7 @@ function composeEnv(ctx: OpContext, shown: readonly { id: string; name: string }
   return {
     agents,
     teams: fleetTeams(ctx.db).map((t) => ({ id: t.id, name: t.name })),
+    roles: fleetRoles(ctx.db).map((r) => ({ id: r.id, name: r.name })),
     apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
     problem: writerProblem(ctx.db),
     // active AND inactive rules (S3-3): re-activating a rule later must not be weakened by a composed one
@@ -380,6 +382,9 @@ export const handlers = {
         ...claimFleetFacts(fx, claim),
         callerTeams: input.call.caller.type === "agent" ? (fx.teams.get(`agent:${input.call.caller.id}`) ?? []) : [],
         callerTeamsAny: input.call.caller.type === "agent" ? (fx.teamsAny.get(`agent:${input.call.caller.id}`) ?? []) : [],
+        callerRoles: input.call.caller.type === "agent" ? (fx.roles?.get(`agent:${input.call.caller.id}`) ?? []) : [],
+        callerRolesAny: input.call.caller.type === "agent" ? (fx.rolesAny?.get(`agent:${input.call.caller.id}`) ?? []) : [],
+        rolesKnown: fx.rolesKnown,
         ...callerTrustFacts(fx, input.call.caller),
         recipients: recipientFacts(fx, previewRecipients(typedRecipients, recipientsIncomplete)),
         fleetAvailable: fx.available,
@@ -408,6 +413,7 @@ export const handlers = {
         narrowing: v.narrowing,
         teams: [...new Set([...facts.claimTeams, ...facts.claimTeamsAny])],
         callerTeams: [...new Set([...facts.callerTeams, ...facts.callerTeamsAny])],
+        callerRoles: [...new Set([...(facts.callerRoles ?? []), ...(facts.callerRolesAny ?? [])])],
         trust: facts.claimTrusts.length ? facts.claimTrusts.reduce(strictest) : null,
         callerTrust: facts.callerTrusts?.length ? facts.callerTrusts.reduce(strictest) : null,
         fleetAvailable: facts.fleetAvailable,
@@ -464,6 +470,7 @@ export const handlers = {
         syncedAt: st.syncedAt == null ? null : new Date(st.syncedAt).toISOString(),
         error: st.error,
         teams,
+        roles: fleetRoles(ctx.db),
       };
     },
   }),
@@ -536,7 +543,8 @@ export const handlers = {
       const { drafter, proposal: p } = await draftRules(ctx, input.text, env);
       const agentName = (id: string) => env.agents.find((a) => a.id === id)?.name ?? id;
       const teamName = (id: string) => fleetTeams(ctx.db).find((t) => t.id === id)?.name ?? id;
-      return { drafter, rules: p.rules, lines: p.rules.map((r) => `${describeRule(r, agentName, teamName)} ${priorityWhy(r, env.existing)}`), notes: [...composeModeNotes(p.rules, currentMode(ctx.db)), ...p.notes].slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
+      const roleName = (id: string) => fleetRoles(ctx.db).find((r) => r.id === id)?.name ?? id;
+      return { drafter, rules: p.rules, lines: p.rules.map((r) => `${describeRule(r, agentName, teamName, roleName)} ${priorityWhy(r, env.existing)}`), notes: [...composeModeNotes(p.rules, currentMode(ctx.db)), ...p.notes].slice(0, 100), unmatched: p.unmatched.slice(0, 100) };
     },
   }),
   [OP.ruleComposeSave]: op<RuleComposeSaveInput, RuleComposeSaveOutput>({

@@ -119,7 +119,7 @@ export function Composer({
                     <b>
                       {safeText(r.title)} <DecisionTag decision={r.outcome.decision} rule /> <span className="tb-hint">priority {r.priority}</span>
                     </b>
-                    <span>{changed.has(i) || !p.lines[i] ? `${matchText(r, dir.teamName, dir.agentName)}${narrowingText(r.narrowing)}` : safeText(p.lines[i] ?? "")}</span>
+                    <span>{changed.has(i) || !p.lines[i] ? `${matchText(r, dir.teamName, dir.agentName, undefined, dir.roleName)}${narrowingText(r.narrowing)}` : safeText(p.lines[i] ?? "")}</span>
                     <span className="tb-hint">Reason: {safeText(r.outcome.reason)}</span>
                     <span className="tb-row">
                       <Button size="sm" aria-label={`Edit ${safeText(r.title)}`} onClick={() => setEditing(i)} disabled={busy !== null}>

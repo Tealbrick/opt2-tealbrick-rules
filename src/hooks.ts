@@ -136,7 +136,7 @@ export function actingIdsOf(context: Record<string, unknown>): string[] {
 
 /** The Fleet facts of the acting agents (key `agent:<id>`): every membership and the trust set; an agent the directory does not know is `unreviewed`. */
 export function actingFacts(fx: FleetFacts, ids: readonly string[]): ActingFact[] {
-  return ids.map((id) => ({ id, teamsAny: fx.teamsAny.get(`agent:${id}`) ?? [], trusts: fx.available ? (fx.trust.get(`agent:${id}`)?.trusts ?? ["unreviewed"]) : [] }));
+  return ids.map((id) => ({ id, teamsAny: fx.teamsAny.get(`agent:${id}`) ?? [], rolesAny: fx.rolesAny?.get(`agent:${id}`) ?? [], trusts: fx.available ? (fx.trust.get(`agent:${id}`)?.trusts ?? ["unreviewed"]) : [] }));
 }
 
 /**
@@ -322,6 +322,9 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     ...claimFleetFacts(fx, claim, live),
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
+    callerRoles: callerKey ? (fx.roles?.get(callerKey) ?? []) : [],
+    callerRolesAny: callerKey ? (fx.rolesAny?.get(callerKey) ?? []) : [],
+    rolesKnown: fx.rolesKnown,
     ...callerTrustFacts(fx, req.call.caller),
     acting: req.call.caller.type === "app" ? actingFacts(fx, actingIdsOf(ctx)) : [],
     recipients: recipientFacts(fx, recipientsOf(req.call.target)),

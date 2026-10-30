@@ -63,7 +63,7 @@ export function DraftsPage({ onChange }: { onChange: () => void }) {
                         {d.problems?.[i] ? <Tag status="needs-you">never matches</Tag> : null}
                       </b>
                       <span>
-                        {matchText(r, dir.teamName, dir.agentName, d.opTitles ?? {})} → {safeText(r.outcome.reason)}
+                        {matchText(r, dir.teamName, dir.agentName, d.opTitles ?? {}, dir.roleName)} → {safeText(r.outcome.reason)}
                         {narrowingText(r.narrowing)}
                       </span>
                       {d.problems?.[i] ? <span>Never matches: {safeText(d.problems[i] ?? "")}</span> : null}

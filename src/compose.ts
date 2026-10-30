@@ -42,6 +42,8 @@ export interface ComposeEnv {
   teams: readonly { id: string; name: string }[];
   /** apps from the catalog: product id plus extra display names */
   apps: readonly { id: string; names?: readonly string[] }[];
+  /** Governance roles (the Fleet copy). Absent = not checked. A drafter may not invent a role id: a rule by role that names an unknown one protects no one (C380 T2-a). */
+  roles?: readonly { id: string; name: string }[];
   /** THE writer check ("" = fine): the same function the writers use (schema problems, then `ruleProblem`). Never re-implemented here. */
   problem: (spec: RuleSpec) => string;
   /** the owner's ACTIVE rules (priority and decision): composed rules are placed around them (C373 S2), never ahead of a refuse/hold by an allow */
@@ -173,7 +175,7 @@ const EFFECT_WORD: Record<Effect, string> = { read: "reads", write: "writes", ou
  * A rule that names an agent, team or app the owner's directory does not list ("" = fine). The parser only ever uses listed
  * names; a model drafter could invent one, and a rule about an id nobody has would look like protection and protect nothing.
  */
-export function namesProblem(spec: RuleSpec, env: Pick<ComposeEnv, "agents" | "teams" | "apps">): string {
+export function namesProblem(spec: RuleSpec, env: Pick<ComposeEnv, "agents" | "teams" | "apps" | "roles">): string {
   const m = spec.match;
   const agents = new Set(env.agents.map((a) => a.id));
   const teams = new Set(env.teams.map((t) => t.id));
@@ -182,6 +184,11 @@ export function namesProblem(spec: RuleSpec, env: Pick<ComposeEnv, "agents" | "t
   if (agent !== undefined) return `it names an agent Rules does not know (${quote(cap(agent, 64))})`;
   const team = [...(m.callerTeams ?? []), ...(m.onBehalfOf?.teams ?? [])].find((t) => !teams.has(t));
   if (team !== undefined) return `it names a team Rules does not know (${quote(cap(team, 64))})`;
+  if (env.roles !== undefined) {
+    const known = new Set(env.roles.map((r) => r.id));
+    const role = (m.callerRoles ?? []).find((r) => !known.has(r));
+    if (role !== undefined) return `it names a role Rules does not know (${quote(cap(role, 64))})`;
+  }
   const app = [...(m.products ?? []), ...(((m as { callerProducts?: string[] }).callerProducts) ?? [])].find((a) => !apps.has(a));
   if (app !== undefined) return `it names an app Rules does not know (${quote(cap(app, 40))})`;
   return "";
@@ -191,7 +198,7 @@ export function namesProblem(spec: RuleSpec, env: Pick<ComposeEnv, "agents" | "t
  * Writer checks on a proposal from ANY drafter: a rule with a problem (the writer check, then, with `env`, unknown names) is
  * taken out and listed in `unmatched` with the problem; at most MAX_COMPOSED_RULES rules stay.
  */
-export function vetProposal(p: Proposal, problem: (spec: RuleSpec) => string, env?: Pick<ComposeEnv, "agents" | "teams" | "apps">): Proposal {
+export function vetProposal(p: Proposal, problem: (spec: RuleSpec) => string, env?: Pick<ComposeEnv, "agents" | "teams" | "apps" | "roles">): Proposal {
   const rules: RuleSpec[] = [];
   const unmatched = [...p.unmatched];
   for (const spec of p.rules) {
@@ -680,11 +687,12 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
 }
 
 /** One readable line per rule: decision, who, what, narrowing. */
-export function describeRule(spec: RuleSpec, agentName: (id: string) => string, teamName: (id: string) => string): string {
+export function describeRule(spec: RuleSpec, agentName: (id: string) => string, teamName: (id: string) => string, roleName: (id: string) => string = (id) => id): string {
   const m = spec.match;
   const who = [
     m.callerProducts?.length ? `calls from app ${m.callerProducts.join(", ")}` : m.agents?.length ? `calls by ${m.agents.map(agentName).join(", ")}` : "calls by any agent",
     m.callerTeams?.length ? `in team ${m.callerTeams.map(teamName).join(", ")}` : "",
+    m.callerRoles?.length ? `with role ${m.callerRoles.map(roleName).join(", ")}` : "",
     m.onBehalfOf?.teams?.length ? `on behalf of team ${m.onBehalfOf.teams.map(teamName).join(", ")}` : "",
   ].filter(Boolean);
   const what = [m.effects?.length ? `with effect ${m.effects.join(" or ")}` : "", m.products?.length ? `in app ${m.products.join(", ")}` : ""].filter(Boolean);

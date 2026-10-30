@@ -26,6 +26,10 @@ export const REFRESH_MS = 60_000;
 export const AGENT_HANDLES = "agent_handles";
 /** The feed extra of C380 (spec 0.1.89): `lifecycle` and `floor` on agents and contacts. A Governance that does not know it ignores it. */
 export const LIFECYCLE = "lifecycle";
+/** The feed extra of C380 T2-a: a top-level `roles` list (flat roles with the agents and contacts that hold them now). The schema allows extra members, so it is checked here. */
+export const ROLES = "roles";
+/** Caps of the `roles` list (Governance's own: 200 roles, 4000 members in each). */
+export const ROLE_CAPS = { roles: 200, membersPerRole: 4000 } as const;
 /** After a Governance refused `accept` (older than 0.3.0), Rules asks for it again after this long (a Governance update shows within it). */
 export const ACCEPT_RETRY_MS = 10 * 60 * 1000;
 /** The error code of an answer that does not fit the contract (a refusal). */
@@ -82,6 +86,8 @@ export interface ParsedFeed {
   floorAware: boolean;
   /** C380: the rows with no `floor` in an aware answer. Each is blind on its own: it cannot lift that holder's lifecycle stop */
   floorBlind: Set<string>;
+  /** C380 T2-a: the answer carried a `roles` list (maybe empty). Without it nobody is known to hold a role */
+  rolesKnown: boolean;
   /** C380 N2-2: the feed's origin. Governance changes it on a restore, and a fresh install has another. An extra member, so the schema does not check it: a bad value refuses the answer here */
   epoch?: string;
 }
@@ -102,6 +108,47 @@ function floorCode(row: { trust: Trust; status: string; floor?: boolean; lifecyc
   if (floor === true) return state ?? "listed";
   if (floor === false) return null;
   return isContact && row.status === "departed" ? "departed" : null;
+}
+
+
+interface RoleIn {
+  id: string;
+  name: string;
+  members: { kind: "agent" | "contact"; id: string }[];
+}
+
+/**
+ * The `roles` of an answer, or null when it carries none (a Governance that does not know them). The frozen schema allows extra members and says
+ * nothing about this one, so it is checked by hand, as strictly as a team: a list of at most ROLE_CAPS.roles roles, each with an id of 1 to 64
+ * characters, an optional name of 1 to 80 characters (the id stands in for a name it lacks), and at most ROLE_CAPS.membersPerRole members of kind `agent`
+ * or `contact` with an id of 1 to 64 characters. A role id listed twice, or a member listed twice in one role, refuses the answer.
+ */
+function* readRoles(out: Record<string, unknown>, tick: (n?: number) => boolean): Generator<void, RoleIn[] | null, void> {
+  const raw = out.roles;
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) throw feedInvalid("roles must be a list");
+  if (raw.length > ROLE_CAPS.roles) throw feedInvalid(`more than ${ROLE_CAPS.roles} roles`);
+  const ids = new Set<string>();
+  const roles: RoleIn[] = [];
+  for (const r of raw as unknown[]) {
+    if (!isObj(r) || typeof r.id !== "string" || r.id.length < 1 || r.id.length > 64) throw feedInvalid("a role has no valid id");
+    if (r.name !== undefined && (typeof r.name !== "string" || r.name.length < 1 || r.name.length > 80)) throw feedInvalid(`the name of role ${r.id.slice(0, 40)} is not 1 to 80 characters`);
+    if (ids.has(r.id)) throw feedInvalid(`role id listed twice: ${r.id.slice(0, 40)}`);
+    ids.add(r.id);
+    if (!Array.isArray(r.members) || r.members.length > ROLE_CAPS.membersPerRole) throw feedInvalid(`the members of role ${r.id.slice(0, 40)} are not a list of at most ${ROLE_CAPS.membersPerRole}`);
+    const seen = new Set<string>();
+    const members: RoleIn["members"] = [];
+    for (const m of r.members as unknown[]) {
+      if (!isObj(m) || (m.kind !== "agent" && m.kind !== "contact") || typeof m.id !== "string" || m.id.length < 1 || m.id.length > 64) throw feedInvalid(`a member of role ${r.id.slice(0, 40)} is not valid`);
+      const key = `${m.kind}:${m.id}`;
+      if (seen.has(key)) throw feedInvalid(`a member is listed twice in role ${r.id.slice(0, 40)}`);
+      seen.add(key);
+      members.push({ kind: m.kind, id: m.id });
+      if (tick()) yield;
+    }
+    roles.push({ id: r.id, name: (r.name as string | undefined) ?? r.id, members });
+  }
+  return roles;
 }
 
 /** Work units between two yields to the event loop while an answer is read (about 2 to 5 ms of work). */
@@ -135,7 +182,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   if (out.unchanged === true) {
     check(out as Json);
-    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false, floorBlind: new Set(), ...epochOf };
+    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false, floorBlind: new Set(), rolesKnown: false, ...epochOf };
   }
   // Validate in slices (the same schema, each slice a full document with the other arrays empty), then the array caps.
   const teamsIn = Array.isArray(out.teams) ? (out.teams as { id: string; name?: string; members: { kind: string; id: string }[] }[]) : null;
@@ -171,6 +218,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
     work = 0;
     return true;
   };
+  const rolesIn = yield* readRoles(out, tick);
   for (const c of contacts) {
     for (const h of c.handles) {
       // S4-3: the error is shown by fleet_status and kept in fleet_sync: it names the contact, never the handle
@@ -211,10 +259,28 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
     }
   }
 
+  // roles of each contact / agent, the same way (C380 T2-a)
+  const contactRoles = new Map<string, Set<string>>();
+  const agentRoles = new Map<string, Set<string>>();
+  const roleOut = (rolesIn ?? []).map((r): FleetTeam => ({ id: r.id, name: r.name, people: 0, agents: 0, keys: [], activeKeys: [] }));
+  for (const [i, r] of (rolesIn ?? []).entries()) {
+    const role = roleOut[i] as FleetTeam;
+    for (const m of r.members) {
+      const map = m.kind === "agent" ? agentRoles : contactRoles;
+      if (m.kind === "agent") role.agents++;
+      else role.people++;
+      const set = map.get(m.id);
+      if (set) set.add(r.id);
+      else map.set(m.id, new Set([r.id]));
+      if (tick()) yield;
+    }
+  }
+
   interface Holder {
     trust: Trust;
     active: boolean;
     teams: ReadonlySet<string>;
+    roles: ReadonlySet<string>;
   }
   const none: ReadonlySet<string> = new Set();
   const holders = new Map<string, Holder[]>();
@@ -226,14 +292,14 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   const known = { contact: new Set<string>(), agent: new Set<string>() };
   for (const c of contacts) {
     known.contact.add(c.id);
-    const h: Holder = { trust: c.trust, active: c.status === "active" && c.trust !== "blocked", teams: contactTeams.get(c.id) ?? none };
+    const h: Holder = { trust: c.trust, active: c.status === "active" && c.trust !== "blocked", teams: contactTeams.get(c.id) ?? none, roles: contactRoles.get(c.id) ?? none };
     hold(`contact:${c.id}`, h);
     for (const handle of c.handles) hold(`handle:${handle}`, h);
     if (tick(1 + c.handles.length)) yield;
   }
   for (const a of agents) {
     known.agent.add(a.id);
-    const h: Holder = { trust: a.trust, active: a.status !== "removed" && a.trust !== "blocked", teams: agentTeams.get(a.id) ?? none };
+    const h: Holder = { trust: a.trust, active: a.status !== "removed" && a.trust !== "blocked", teams: agentTeams.get(a.id) ?? none, roles: agentRoles.get(a.id) ?? none };
     hold(`agent:${a.id}`, h);
     // C373 D5: an agent that holds a handle is a holder of `handle:<h>` like a contact (recipients, channel-sender claims)
     for (const handle of a.handles ?? []) hold(`handle:${handle}`, h);
@@ -249,6 +315,14 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
       if (act.has(tid)) team.activeKeys.push(key);
     }
   };
+  const roleById = new Map(roleOut.map((t) => [t.id, t]));
+  const placeRole = (key: string, any: ReadonlySet<string>, act: ReadonlySet<string>) => {
+    for (const rid of any) {
+      const role = roleById.get(rid) as FleetTeam;
+      role.keys.push(key);
+      if (act.has(rid)) role.activeKeys.push(key);
+    }
+  };
   for (const [key, hs] of holders) {
     const allActive = hs.every((h) => h.active);
     const any = new Set<string>();
@@ -261,11 +335,22 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
     }
     trust.set(key, { trusts: [...new Set(hs.map((h) => h.trust))], allActive });
     place(key, any, act);
+    // roles: the same two sets (deny and hold see every holder, allow only the holders that count)
+    const anyRoles = new Set<string>();
+    for (const h of hs) for (const t of h.roles) anyRoles.add(t);
+    let actRoles: ReadonlySet<string> = none;
+    if (allActive) {
+      const first = hs[0] as Holder;
+      actRoles = new Set([...first.roles].filter((t) => hs.every((h) => h.roles.has(t))));
+    }
+    placeRole(key, anyRoles, actRoles);
     if (tick(1 + any.size)) yield;
   }
   // members the producer left out of contacts/agents: deny/hold only
   for (const [id, ts] of contactTeams) if (!known.contact.has(id)) place(`contact:${id}`, ts, none);
   for (const [id, ts] of agentTeams) if (!known.agent.has(id)) place(`agent:${id}`, ts, none);
+  for (const [id, rs] of contactRoles) if (!known.contact.has(id)) placeRole(`contact:${id}`, rs, none);
+  for (const [id, rs] of agentRoles) if (!known.agent.has(id)) placeRole(`agent:${id}`, rs, none);
   // C380: the floor rows of this answer. A handle two holders share is listed when either is stopped; a lifecycle stop names it first.
   const floorRows = new Map<string, FloorEntry>();
   let floorAware = false;
@@ -287,7 +372,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
       if (tick(1 + (row.handles?.length ?? 0))) yield;
     }
   }
-  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind, ...epochOf };
+  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust, roles: roleOut }, floor: [...floorRows.values()], floorAware, floorBlind, rolesKnown: rolesIn !== null, ...epochOf };
 }
 
 /** Read an answer in one go (small answers, tests). */
@@ -351,7 +436,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     const accept = refused === undefined || now() - refused > ACCEPT_RETRY_MS;
     // a delta read only onto a copy of the same shape (with or without agent handles); else a full read
     let since = st.revision != null && !st.stale && st.usable && copyWithHandles.get(db) === accept ? st.revision : null;
-    const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES, LIFECYCLE] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
+    const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES, LIFECYCLE, ROLES] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
     let withHandles = accept;
     let res: Awaited<ReturnType<CallApp>>;
     try {
@@ -379,7 +464,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     }
     // C380 S1-1: only a full valid read changes the floor, and only an answer with lifecycle facts can lift a lifecycle stop (the fallback read without `accept` has none)
     const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware, blindHolders: d.floorBlind, ...(d.epoch !== undefined ? { epoch: d.epoch } : {}) } };
-    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, ...floor }, now());
+    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, rolesKnown: withHandles && d.rolesKnown, ...floor }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {
     const code = isObj(e) && typeof e.code === "string" ? e.code : "error";
