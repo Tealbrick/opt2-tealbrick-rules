@@ -1,6 +1,6 @@
 {
   "name": "opt2-tealbrick-rules",
-  "version": "0.7.0-dev.1",
+  "version": "0.7.0-dev.2",
   "private": true,
   "description": "Rules and Approvals: a Teal Brick opt2 miniapp.",
   "license": "Apache-2.0",
