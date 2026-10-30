@@ -46,20 +46,29 @@ interface Stub {
 }
 const stub: Stub = { calls: [], fail: {}, floor: STOPPED };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+let inFlight = 0;
+const answered = (op: string | undefined, r: Response): Response => {
+  inFlight--;
+  return r;
+};
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  inFlight++;
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
   const path = url.pathname.replace("/a/rules/tb/v1/", "");
-  if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: ["floor_clear"] });
+  if (path === "session") return answered(path, json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: ["floor_clear"] }));
   const op = /^ops\/(.+)$/.exec(path)?.[1];
-  if (!op) return json(404, { error: { code: "not_found", message: "not found" } });
+  if (!op) return answered(op, json(404, { error: { code: "not_found", message: "not found" } }));
   const body = JSON.parse(String(init?.body ?? "{}")) as { input?: unknown };
   stub.calls.push({ op, input: body.input });
   const failure = stub.fail[op];
-  if (failure) return json(failure.status, { error: { code: failure.code, message: failure.message ?? `raw upstream text for ${failure.code}`, requestId: "req_1" } });
-  if (op === "floor_list" && stub.floor === "hang") return new Promise<Response>(() => {});
-  if (op === "floor_list") return json(200, { status: "ok", output: stub.floor });
-  if (op === "floor_clear") return json(200, { status: "ok", output: { cleared: 1 } });
-  return json(404, { error: { code: "unknown_op", message: op } });
+  if (failure) return answered(op, json(failure.status, { error: { code: failure.code, message: failure.message ?? `raw upstream text for ${failure.code}`, requestId: "req_1" } }));
+  if (op === "floor_list" && stub.floor === "hang") {
+    inFlight--; // this one never answers: nothing waits for it
+    return new Promise<Response>(() => {});
+  }
+  if (op === "floor_list") return answered(op, json(200, { status: "ok", output: stub.floor }));
+  if (op === "floor_clear") return answered(op, json(200, { status: "ok", output: { cleared: 1 } }));
+  return answered(op, json(404, { error: { code: "unknown_op", message: op } }));
 }) as typeof fetch;
 
 type Mounted = { host: HTMLElement; unmount: () => Promise<void> };
@@ -68,13 +77,22 @@ let h: typeof import("react").createElement;
 let act: (cb: () => unknown) => Promise<void>;
 let createRoot: typeof import("react-dom/client").createRoot;
 
+/** Wait for the page's calls to settle, not for a fixed time: a loaded CI machine needs more than 20 ms. */
+const settle = async () => {
+  let quiet = 0;
+  for (let i = 0; i < 500 && quiet < 5; i++) {
+    await new Promise((res) => setTimeout(res, 2));
+    quiet = inFlight === 0 ? quiet + 1 : 0;
+  }
+};
+
 async function mount(el: ReactElement): Promise<Mounted> {
   const host = document.createElement("div");
   document.body.append(host);
   const r = createRoot(host);
   await act(async () => {
     r.render(el);
-    await new Promise((res) => setTimeout(res, 20));
+    await settle();
   });
   return {
     host,
@@ -89,7 +107,7 @@ const button = (scope: ParentNode, name: string) => [...scope.querySelectorAll("
 const click = (b: HTMLElement) =>
   act(async () => {
     b.dispatchEvent(new (globalThis as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
-    await new Promise((res) => setTimeout(res, 20));
+    await settle();
   });
 const name = (id: string) => (id === AGENT ? "Front desk" : id);
 
