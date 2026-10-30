@@ -38,4 +38,15 @@ the two are the same bytes, and rebuilds the derived schema from the spec byte c
 | File here | sha256 |
 |---|---|
 | `fleet.directory_feed.1.agent_handles.schema.json` | `9a11657d8ac88580aa76af647118ed57e19798c56498e804b03b4fcd49515823` |
-| `../../src/contracts/fleet.directory_feed.1.agent_handles.schema.json` (runtime copy: the image has no `test/`) | `9a11657d8ac88580aa76af647118ed57e19798c56498e804b03b4fcd49515823` |
+
+## fleet.directory_feed/1 with lifecycle (C380, spec 0.1.89) — the runtime schema since 0.7.0, byte copy
+
+Before 0.7.0 the runtime schema was the agent-handles file above. That file stays here because the test still rebuilds it from the spec copy.
+
+Source: `Tealbrick/opt2-tealbrick-specs`, tag `spec-v0.1.89`. `src/fleet.ts` validates every answer against it: the base schema plus the optional `agents[].handles`, and `lifecycle`, `floor` on agents and contacts. `accept: ["agent_handles", "lifecycle"]`. `test/feed.test.ts` runs its fixtures through the real reader.
+
+| File here | Path in the source repo (at the tag) | sha256 |
+|---|---|---|
+| `fleet.directory_feed.1.lifecycle.schema.json` | `packages/spec/schemas/contracts/fleet.directory_feed.1.lifecycle.schema.json` | `35ebfd9f49eebeebc3c84a0ea686ab4efb18503953599828bdfd94f76734695f` |
+| `../../src/contracts/fleet.directory_feed.1.lifecycle.schema.json` (runtime copy) | same | `35ebfd9f49eebeebc3c84a0ea686ab4efb18503953599828bdfd94f76734695f` |
+| `fleet.directory_feed.1.lifecycle.json` | `packages/spec/examples/contracts/fleet.directory_feed.1.lifecycle.json` | `3c0004d98b361bf629fb6489e655516e3fbf5123b1a1adb9d84bf62d3a17e1b2` |

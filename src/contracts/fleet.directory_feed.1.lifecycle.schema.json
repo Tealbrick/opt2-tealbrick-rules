@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.tealbrick.com/opt2/contracts/fleet.directory_feed/1.schema.json",
-  "title": "fleet.directory_feed/1 — Governance directory feed for app readers (Rules)",
-  "description": "v0.1.42 (C230, G-3, RUL-02, FLT-02). Producer: fleet (Governance) op directory_feed. Consumer: rules. Readers validate the answer against this schema; a mismatch is a refusal with an error (never a partial read). Extra members are allowed and ignored (L24); required members and enum values are strict. Handles are canonical (@opt2-tealbrick/manifest normalizeHandle, G-4). Answers carry no email, no Connect identities and no review reasons (C88, FLT-01). Readers MUST also require normalizeHandle(h) === h for every handle (@opt2-tealbrick/manifest; this checks the bech32 checksum the pattern cannot) and refuse the whole answer otherwise. Member kind `contact` refers to contacts[].id (a reader that models people maps it there).",
+  "$id": "https://schemas.tealbrick.com/opt2/contracts/fleet.directory_feed/1.lifecycle.schema.json",
+  "title": "fleet.directory_feed/1 with accept agent_handles and lifecycle",
+  "description": "v0.1.42 (C230, G-3, RUL-02, FLT-02). Producer: fleet (Governance) op directory_feed. Consumer: rules. Readers validate the answer against this schema; a mismatch is a refusal with an error (never a partial read). Extra members are allowed and ignored (L24); required members and enum values are strict. Handles are canonical (@opt2-tealbrick/manifest normalizeHandle, G-4). Answers carry no email, no Connect identities and no review reasons (C88, FLT-01). Readers MUST also require normalizeHandle(h) === h for every handle (@opt2-tealbrick/manifest; this checks the bech32 checksum the pattern cannot) and refuse the whole answer otherwise. Member kind `contact` refers to contacts[].id (a reader that models people maps it there). Spec 0.1.89 (C380, docs/ACCESS.md): this file adds the optional members a reader gets when it passes accept: agents[].handles (agent_handles), and contacts[].lifecycle, contacts[].floor, agents[].lifecycle, agents[].floor (lifecycle). A Governance that ignores accept omits them, and the answer stays valid.",
   "oneOf": [
     {
       "$ref": "#/$defs/full"
@@ -158,6 +158,21 @@
                 "items": {
                   "$ref": "#/$defs/handle"
                 }
+              },
+              "lifecycle": {
+                "enum": [
+                  "not_started",
+                  "proposed",
+                  "active",
+                  "suspended",
+                  "leaving",
+                  "archived"
+                ],
+                "description": "Effective lifecycle, computed by Governance. Absent on outside agents."
+              },
+              "floor": {
+                "type": "boolean",
+                "description": "true: Rules refuses this entry before any rule. Effective lifecycle not_started, suspended, leaving or archived (not migrated no_card rows), or trust blocked."
               }
             }
           }
@@ -205,7 +220,22 @@
                 "items": {
                   "$ref": "#/$defs/handle"
                 },
-                "description": "C373 (RULES-INTERFACE §3), additive: present only when the reader passed accept [\"agent_handles\"]. Canonical channel handles Connect issued to the agent (normalizeHandle forms), sorted, at most 16; [] when none. Readers also require normalizeHandle(h) === h."
+                "description": "Present only when the reader passed accept agent_handles. Canonical, sorted, at most 16; [] when none."
+              },
+              "lifecycle": {
+                "enum": [
+                  "not_started",
+                  "proposed",
+                  "active",
+                  "suspended",
+                  "leaving",
+                  "archived"
+                ],
+                "description": "Effective lifecycle, computed by Governance. Absent on outside agents."
+              },
+              "floor": {
+                "type": "boolean",
+                "description": "true: Rules refuses this entry before any rule. Effective lifecycle not_started, suspended, leaving or archived (not migrated no_card rows), or trust blocked."
               }
             }
           }

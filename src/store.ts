@@ -5,6 +5,7 @@ import { ulid } from "@opt2-tealbrick/manifest";
 import { type Db, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { CATALOG_MISSING, catalogOf, catalogProblem } from "./catalog.ts";
 import { type CallFacts, type Decision, emptyListProblem, order, type Rule, type RuleSpec, specProblem, type Trust } from "./engine.ts";
+import { commitFloor, type FloorRead, writeFloor } from "./floor.ts";
 import { placeDraft } from "./placement.ts";
 import { controlProblem, escapeControls, textProblem } from "./text-guard.ts";
 
@@ -641,13 +642,18 @@ function* writeSteps(db: Db, model: FleetModel | null, state: FleetWriteState, n
     yield* flush(false);
   }
   yield* flush(true);
+  let floorNext: Map<string, string> | null = null;
   db.transaction(() => {
     db.exec("DELETE FROM fleet_teams;");
     const t = db.prepare("INSERT INTO fleet_teams (id, name, people, agents) VALUES (?, ?, ?, ?)");
     for (const team of model.teams) t.run(team.id, team.name, team.people, team.agents);
     if (state.error === null) db.prepare("UPDATE fleet_sync SET revision = ?, synced_at = ?, stale = 0, error = NULL, usable = 1 WHERE id = 1").run(state.revision, now);
     else db.prepare("UPDATE fleet_sync SET revision = NULL, stale = 1, error = ?, usable = 0 WHERE id = 1").run(state.error);
+    // C380 S1-1: the floor changes here and nowhere else in a sync: in the transaction that makes a full valid read current, so a crash leaves
+    // the last floor whole. A failure's write (an empty model with an error) never carries `floor`.
+    if (state.error === null && state.floor) floorNext = writeFloor(db, state.floor, now);
   });
+  if (floorNext) commitFloor(db, floorNext);
   const usable = state.error === null;
   if (usable) memoryError.delete(db);
   fleetCache.set(db, { idx, idxAny, trust, gone, okAt: usable ? now : fleetState(db).syncedAt, usable, agentHandles: usable && state.agentHandles === true });
@@ -661,6 +667,8 @@ export interface FleetWriteState {
   revision: number | null;
   error: string | null;
   agentHandles?: boolean;
+  /** C380: the floor rows of a full valid read. Absent on a failure and on an "unchanged" answer: both leave the floor as it is */
+  floor?: FloorRead;
 }
 
 /** Synchronous write (one go): small models, errors, tests. */

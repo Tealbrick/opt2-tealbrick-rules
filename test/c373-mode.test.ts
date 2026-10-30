@@ -251,7 +251,7 @@ test("exemptions (b) and (c): Rules' self-service ops and standard tb.* ops pass
   assert.deepEqual([v.decision, v.byMode, modeDetail(v)], ["allow", { mode: "closed", exemption: "rules-self-service" }, { decidedBy: "exemption", mode: "closed", exemption: "rules-self-service" }]);
   assert.deepEqual(
     EXEMPTIONS.map((e) => e.id),
-    ["rules-governance-feed", "knowledge-governance-feed", "governance-reads-connect", "inbox-owner-alerts", "owner-decision-relay", "apps-ask-owner", "rules-self-service", "platform-standard-ops"],
+    ["rules-governance-feed", "knowledge-governance-feed", "governance-reads-connect", "governance-reads-access", "inbox-owner-alerts", "owner-decision-relay", "apps-ask-owner", "rules-self-service", "platform-standard-ops"],
   );
 });
 

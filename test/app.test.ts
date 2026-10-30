@@ -46,7 +46,7 @@ test("the generated kit matches the manifest and every operation and hook has ex
   assert.deepEqual(Object.keys(handlers).sort(), ids);
   assert.deepEqual(Object.keys(definition.hooks ?? {}).sort(), (manifest.hooks ?? []).map((h) => h.id).sort());
   const agentOps = manifest.operations.filter((o) => o.audience === "agent").map((o) => o.id);
-  assert.deepEqual(agentOps.sort(), ["draft_status", "rule_draft_submit", "rules_explain"], "rule editing is person-only");
+  assert.deepEqual(agentOps.sort(), ["draft_status", "floor_status", "rule_draft_submit", "rules_explain"], "rule editing is person-only");
 });
 
 test("boots on the SDK and serves the derived routes", async (t) => {
@@ -164,12 +164,12 @@ test("Fleet read model: parse, departed contacts dropped, unchanged keeps, refus
     return { status: "ok" as const, output: answer };
   };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs[0], { accept: ["agent_handles"] }, "first read is a full one (with agent handles, C373 §3)");
+  assert.deepEqual(inputs[0], { accept: ["agent_handles", "lifecycle"] }, "first read is a full one (with agent handles, C373 §3)");
   assert.deepEqual(fleetTeams(db).map((t) => t.id), ["tm_x", "tm_y"]);
   assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);
   answer = { v: 1, revision: 7, unchanged: true };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs.at(-1), { accept: ["agent_handles"], sinceRevision: 7 });
+  assert.deepEqual(inputs.at(-1), { accept: ["agent_handles", "lifecycle"], sinceRevision: 7 });
   assert.equal(fleetTeams(db).length, 2, "unchanged keeps the copy");
   fail = "bridge_unavailable";
   await syncFleet(db, callApp);

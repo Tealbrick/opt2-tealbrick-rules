@@ -16,6 +16,12 @@ import {
   type DraftsListOutput,
   type FleetStatusInput,
   type FleetStatusOutput,
+  type FloorClearInput,
+  type FloorClearOutput,
+  type FloorListInput,
+  type FloorListOutput,
+  type FloorStatusInput,
+  type FloorStatusOutput,
   type ModeGetInput,
   type ModeGetOutput,
   type ModeSetInput,
@@ -48,9 +54,10 @@ import {
 import { catalogOf, catalogState, ensureCatalog, isDynamicOp, opTitles, type SyncOptions, startCatalogTimer } from "./catalog.ts";
 import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, MAX_COMPOSED_RULES, type Proposal, parserDrafter, placeProposal, priorityWhy, vetProposal } from "./compose.ts";
 import { knownAgents, rememberAgents } from "./directory.ts";
-import { type CallFacts, evaluate, explain, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
+import { type CallFacts, evaluate, explain, floorHit, floorVerdict, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
-import { callerTrustFacts, claimFleetFacts, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
+import { clearFloor, FLOOR_REASON, floorIndex, floorRows, floorState } from "./floor.ts";
+import { callerTrustFacts, claimFleetFacts, floorRecipients, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
 import { draftBinding, type ModelSource, modelDrafter } from "./model-drafter.ts";
@@ -273,6 +280,20 @@ const dynamicOpIds = (db: Db): string[] =>
     .sort()
     .slice(0, 1000);
 
+const isoOrNull = (ms: number | null): string | null => (ms == null ? null : new Date(ms).toISOString());
+
+/**
+ * `floor_status` is for Governance only (S2-9): an app caller whose VERIFIED product is `fleet` and that the CURRENT signed slice lists. The same three checks as
+ * Governance's own feed guard: no agent, no other app, no self-claimed name. `listing: "workflow"` keeps it off every card's tool list, this is the guard behind that.
+ */
+function assertGovernanceCaller(caller: OpContext["caller"]): void {
+  if (caller.type !== "app") throw new TbError("no_access", "floor_status is for Governance only", 403);
+  const { product, listed } = caller as { product?: unknown; listed?: unknown };
+  if (product === undefined || product === null || product === "") throw new TbError("caller_unverified", "the calling app is not verified for this workspace yet", 403, { retryable: true });
+  if (product !== "fleet") throw new TbError("no_access", "floor_status is for Governance only", 403);
+  if (listed !== true) throw new TbError("caller_unverified", "the calling app is not verified for this workspace yet", 403, { retryable: true });
+}
+
 const dynamicFact = (db: Db, product: string, op: string): { dynamic?: boolean } => {
   const dynamic = isDynamicOp(db, product, op);
   return dynamic === undefined ? {} : { dynamic };
@@ -369,8 +390,11 @@ export const handlers = {
       };
       // the dry run may try another default mode than the current one (C373c); nothing is stored
       const mode = input.mode ?? currentMode(ctx.db);
-      const v = evaluate(rules, facts, mode);
+      // the company floor (C380) runs before every rule, here as in the gate; the owner reads the full reason
+      const hit = floorHit(floorIndex(ctx.db), { callerAgent: facts.caller.type === "agent" ? facts.caller.id : null, acting: [], claim, recipients: floorRecipients({ recipients: typedRecipients }) });
+      const v = hit ? floorVerdict(hit) : evaluate(rules, facts, mode);
       return {
+        floor: v.floor ?? null,
         mode,
         decidedBy: decidedBy(v),
         exemption: v.byMode?.exemption ?? null,
@@ -470,7 +494,8 @@ export const handlers = {
           op: d.target.op,
           decision: d.decision,
           answered: d.answered,
-          reason: d.reason,
+          // C380 S2-8: a floor row keeps its full reason for the owner; the caller reads the one sentence it was refused with
+          reason: d.detail?.decidedBy === "floor" ? FLOOR_REASON : d.reason,
           ruleId: d.ruleId,
           ruleTitle: d.ruleTitle,
           fleetUnavailable: d.detail?.fleetUnavailable === true,
@@ -522,6 +547,35 @@ export const handlers = {
       const d = submitDraft(ctx.db, { text: input.text, note: input.note, rules: input.rules, by: { type: "person", id: actor, name: ctx.caller.name || "Owner" } });
       ctx.statusChanged();
       return { draftId: d.id, status: "pending" as const };
+    },
+  }),
+  [OP.floorList]: op<FloorListInput, FloorListOutput>({
+    async run(input, ctx) {
+      person(ctx);
+      const st = floorState(ctx.db);
+      return {
+        entries: floorRows(ctx.db, input.limit ?? 500).map((r) => ({ ...r, at: new Date(r.at).toISOString() })),
+        total: st.entries,
+        feedRevision: st.feedRevision,
+        readAt: isoOrNull(st.readAt),
+        lastGateAt: isoOrNull(st.lastGateAt),
+        governanceReadable: fleetFacts(ctx.db).available,
+      };
+    },
+  }),
+  [OP.floorClear]: op<FloorClearInput, FloorClearOutput>({
+    // Owner only (person op; no agent or app reaches it). The way out when Governance is gone or cannot be trusted (S1-1).
+    async run(input, ctx) {
+      const actor = person(ctx);
+      return { cleared: clearFloor(ctx.db, { holder: input.holder ?? null, actor }) };
+    },
+  }),
+  [OP.floorStatus]: op<FloorStatusInput, FloorStatusOutput>({
+    // S2-9: what Governance may say about the floor comes from here, so it never claims a stop Rules did not take.
+    async run(_input, ctx) {
+      assertGovernanceCaller(ctx.caller);
+      const st = floorState(ctx.db);
+      return { version: manifest.version, feedRevision: st.feedRevision, entries: st.entries, lastGateAt: isoOrNull(st.lastGateAt) };
     },
   }),
 } satisfies Record<OpId, HandlerSpec>;

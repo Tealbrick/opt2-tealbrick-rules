@@ -96,6 +96,8 @@ export function previewRecent(db: Db, input: { candidate: RuleSpec; replaces?: s
   const { items } = listDecisions(db, { phase: "before", limit });
   const rows: RecentRow[] = [];
   for (const d of items) {
+    // the company floor decided this call before any rule ran: no rule would have changed it
+    if (d.detail?.decidedBy === "floor") continue;
     const facts = factsOfRow(db, d);
     if (evaluate(alone, facts).rule?.id !== "candidate") continue;
     const after = evaluate(all, facts, mode);

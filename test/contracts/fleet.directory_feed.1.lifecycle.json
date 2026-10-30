@@ -1,0 +1,192 @@
+{
+  "description": "Answers to a reader that passed accept lifecycle. The third valid answer is a Governance that ignored accept (0.3.2): no member is added, and the answer stays valid.",
+  "valid": [
+    {
+      "v": 1,
+      "revision": 43,
+      "teams": [],
+      "contacts": [
+        {
+          "id": "ct_anna",
+          "kind": "person",
+          "status": "departed",
+          "trust": "trusted",
+          "handles": [
+            "buzz:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6"
+          ],
+          "lifecycle": "leaving",
+          "floor": true
+        },
+        {
+          "id": "ct_bob",
+          "kind": "person",
+          "status": "active",
+          "trust": "trusted",
+          "handles": [],
+          "lifecycle": "active",
+          "floor": false
+        },
+        {
+          "id": "ct_bot",
+          "kind": "outside_agent",
+          "status": "active",
+          "trust": "blocked",
+          "handles": [
+            "telegram:-1001234567890"
+          ],
+          "floor": true
+        }
+      ],
+      "agents": [
+        {
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+          "status": "active",
+          "trust": "trusted",
+          "owner": "ct_anna",
+          "handles": [
+            "buzz:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6"
+          ],
+          "lifecycle": "suspended",
+          "floor": true
+        },
+        {
+          "id": "agt_01M4TWGYN437B0W62JBV36HQT5",
+          "status": "paused",
+          "trust": "limited",
+          "owner": null,
+          "handles": [],
+          "lifecycle": "not_started",
+          "floor": true
+        },
+        {
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHXA",
+          "status": "removed",
+          "trust": "unreviewed",
+          "owner": null,
+          "lifecycle": "archived",
+          "floor": false
+        }
+      ]
+    },
+    {
+      "v": 1,
+      "revision": 43,
+      "unchanged": true
+    },
+    {
+      "v": 1,
+      "revision": 42,
+      "teams": [
+        {
+          "id": "team_sales",
+          "members": [
+            {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+              "role": "lead"
+            },
+            {
+              "kind": "contact",
+              "id": "ct_anna"
+            }
+          ],
+          "name": "Sales"
+        }
+      ],
+      "contacts": [
+        {
+          "id": "ct_anna",
+          "kind": "person",
+          "status": "active",
+          "trust": "trusted",
+          "handles": [
+            "buzz:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+            "slack:U012ABCDEF"
+          ]
+        },
+        {
+          "id": "ct_bot",
+          "kind": "outside_agent",
+          "status": "departed",
+          "trust": "unreviewed",
+          "handles": [
+            "telegram:-1001234567890"
+          ]
+        }
+      ],
+      "agents": [
+        {
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+          "status": "active",
+          "trust": "trusted",
+          "owner": "ct_anna"
+        },
+        {
+          "id": "agt_01M4TWGYN437B0W62JBV36HQT5",
+          "status": "paused",
+          "trust": "limited",
+          "owner": null
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "why": "floor is not a boolean",
+      "doc": {
+        "v": 1,
+        "revision": 1,
+        "teams": [],
+        "contacts": [],
+        "agents": [
+          {
+            "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+            "status": "active",
+            "trust": "trusted",
+            "owner": null,
+            "floor": "yes"
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown lifecycle",
+      "doc": {
+        "v": 1,
+        "revision": 1,
+        "teams": [],
+        "contacts": [
+          {
+            "id": "c",
+            "kind": "person",
+            "status": "active",
+            "trust": "trusted",
+            "handles": [],
+            "lifecycle": "departed"
+          }
+        ],
+        "agents": []
+      }
+    },
+    {
+      "why": "agent handle not canonical",
+      "doc": {
+        "v": 1,
+        "revision": 1,
+        "teams": [],
+        "contacts": [],
+        "agents": [
+          {
+            "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+            "status": "active",
+            "trust": "trusted",
+            "owner": null,
+            "handles": [
+              "bob"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

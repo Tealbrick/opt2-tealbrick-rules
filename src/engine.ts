@@ -50,6 +50,9 @@
 //   (agreed with Evolution): when the bridge cap `app_workflow_grants` is visible, it is not a workflow call (no match); when it is
 //   not visible (caps never read count as not visible), a deny or hold rule APPLIES to an `evolution` caller (`closedOnWorkflow`)
 //   and an allow rule never matches. A call from another verified product without a workflow never matches.
+// - The company floor (0.7.0, C380, overrides C84; src/floor.ts): `floorHit` runs before every rule, in all modes, in the gate only. It refuses a
+//   caller agent, an acting agent, a claimed requester or a known recipient that Governance lists as stopped. `evaluate` does not read it: a call the gate
+//   already let through keeps its narrowing in the later phases.
 // - Acting agents (0.6.0, C378, spec 0.1.88, bridge `tb.acting`): the agents an APP call acts for, proven by the bridge. NARROW ONLY: a deny or hold rule
 //   naming `agents`, `callerTeams` or `callerTrust` also matches when ANY acting agent matches (every membership, any trust); an allow rule never reads
 //   them, so a call never gets easier because of them. A call with no acting agent is the app's own work: those criteria do not match it, as before.
@@ -207,6 +210,8 @@ export interface Verdict {
   narrowingRuleId: string | null;
   /** C373c: set when NO rule matched: the default mode that decided, or the built-in exemption that kept the mode out (src/mode.ts) */
   byMode?: { mode: DefaultMode; exemption: ExemptionId | null };
+  /** C380: set when the company floor decided. The caller is told only FLOOR_REASON; `reason` here is for Decisions */
+  floor?: { role: FloorRole; code: string };
 }
 
 export interface Step {
@@ -595,6 +600,72 @@ export function evaluate(ordered: readonly Rule[], facts: CallFacts, mode: Defau
   const strict = SEVERITY[withClaim.decision] >= SEVERITY[base.decision] ? withClaim : base;
   if (strict.decision !== "allow") return strict;
   return { ...strict, narrowing: mergeNarrowing(withClaim.narrowing, base.narrowing), narrowingRuleId: strict.narrowingRuleId ?? (strict === withClaim ? base : withClaim).narrowingRuleId, closedOnFleet: withClaim.closedOnFleet || base.closedOnFleet, closedOnProduct: withClaim.closedOnProduct || base.closedOnProduct, recipientsUnknown: withClaim.recipientsUnknown || base.recipientsUnknown, closedOnWorkflow: withClaim.closedOnWorkflow || base.closedOnWorkflow };
+}
+
+// ── the company floor (C380) ────────────────────────────────────────────────────────
+export type FloorRole = "caller" | "acting" | "requester" | "recipient";
+/** Who a call touches, as the floor reads them. `recipients` are canonical handles; a partial list still names who it names. */
+export interface FloorSubjects {
+  callerAgent: string | null;
+  acting: readonly string[];
+  claim: Claim | null;
+  recipients: readonly string[];
+}
+export interface FloorHit {
+  role: FloorRole;
+  code: string;
+}
+
+/**
+ * The first subject of a call that the floor lists, or null. Pure. A claim is tried under its own key and, when its id reads as a handle,
+ * under that handle too: a claim narrows only, so reading it both ways can only refuse more.
+ */
+export function floorHit(index: ReadonlyMap<string, string>, s: FloorSubjects): FloorHit | null {
+  if (index.size === 0) return null;
+  const at = (key: string, role: FloorRole): FloorHit | null => {
+    const code = index.get(key);
+    return code === undefined ? null : { role, code };
+  };
+  if (s.callerAgent !== null) {
+    const hit = at(`agent:${s.callerAgent}`, "caller");
+    if (hit) return hit;
+  }
+  for (const id of s.acting) {
+    const hit = at(`agent:${id}`, "acting");
+    if (hit) return hit;
+  }
+  if (s.claim) {
+    const key = claimKey(s.claim);
+    const handle = handleOf(s.claim.id);
+    const hit = (key ? at(key, "requester") : null) ?? (handle ? at(`handle:${handle}`, "requester") : null);
+    if (hit) return hit;
+  }
+  for (const h of s.recipients) {
+    const hit = at(`handle:${h}`, "recipient");
+    if (hit) return hit;
+  }
+  return null;
+}
+
+const FLOOR_ROLE_TEXT: Record<FloorRole, string> = { caller: "the calling agent", acting: "the agent behind this app call", requester: "the claimed requester", recipient: "a recipient" };
+const FLOOR_CODE_TEXT: Record<string, string> = { blocked: "is blocked", suspended: "is suspended", leaving: "is marked as leaving", archived: "is closed", not_started: "has not started yet", departed: "has left" };
+
+/** The floor's verdict. `reason` goes to Decisions only; the gate answers the caller with FLOOR_REASON (see `gateAnswer` in src/hooks.ts). */
+export function floorVerdict(hit: FloorHit): Verdict {
+  return {
+    decision: "deny",
+    reason: `Company floor: ${FLOOR_ROLE_TEXT[hit.role]} ${FLOOR_CODE_TEXT[hit.code] ?? "is stopped"} in Governance`,
+    rule: null,
+    narrowing: null,
+    viaClaim: hit.role === "requester",
+    closedOnFleet: false,
+    closedOnProduct: false,
+    toolUnknown: false,
+    recipientsUnknown: false,
+    closedOnWorkflow: false,
+    narrowingRuleId: null,
+    floor: { role: hit.role, code: hit.code },
+  };
 }
 
 /** "matches", or what a closed match rests on: unavailable Fleet facts or app product, and/or a call that names no tool. */

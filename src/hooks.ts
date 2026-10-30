@@ -5,7 +5,8 @@ import { performance } from "node:perf_hooks";
 import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type ActingFact, type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
+import { type ActingFact, type CallFacts, type Claim, claimKey, evaluate, type FloorSubjects, floorHit, floorVerdict, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
+import { FLOOR_REASON, floorIndex, noteGate } from "./floor.ts";
 import { modeDetail } from "./mode.ts";
 import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
@@ -205,6 +206,36 @@ export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null
   });
 }
 
+/**
+ * C380: every well-formed recipient of the call, also from a list `recipientsOf` calls unknown. A partial list still names the people it names, so
+ * `recipientsIncomplete`, a list over the cap or one bad value never hides a stopped recipient. A value that reads as no handle is skipped.
+ */
+export function floorRecipients(target: unknown): string[] {
+  const raw = isObj(target) ? target.recipients : undefined;
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const v of raw) {
+    const h = typeof v === "string" ? normalizeHandle(v) : null;
+    if (h) out.add(h);
+  }
+  return [...out];
+}
+
+/** Rules' own ops the floor never refuses: an agent can read why it was stopped, and Governance can read the floor. `rule_draft_submit` is NOT here. */
+export const FLOOR_EXEMPT_OPS: ReadonlySet<string> = new Set(["rules_explain", "draft_status", "floor_status"]);
+
+/**
+ * Who the floor checks on this call, or null when it does not apply: the exempt ops of Rules itself (by product AND op, another app's op of the same name is not exempt) and Rules'
+ * own read of the feed, which is the only thing that can bring a change back. A malformed `tb.acting` throws: the gate refuses.
+ */
+export function floorSubjectsOf(req: HookRequest): FloorSubjects | null {
+  const { caller, target } = req.call;
+  if (target.product === "rules" && FLOOR_EXEMPT_OPS.has(target.op)) return null;
+  if (callerProductOf(caller) === "rules" && target.product === "fleet" && target.op === "directory_feed") return null;
+  const ctx = (req.context ?? {}) as Record<string, unknown>;
+  return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target) };
+}
+
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
@@ -267,6 +298,8 @@ export type GateAnswer = { allow: true } | { allow: false; reason: string } | { 
 
 /** The before-hook answer for a verdict. Hold without spec 0.1.13 → refuse with the reason (fail closed). */
 export function gateAnswer(v: Verdict, holdSupported = HOLD_SUPPORTED): { answer: GateAnswer; answered: "allow" | "deny" | "hold" } {
+  // C380 S2-8: one sentence for every floor refusal. The full reason is in Decisions; the caller cannot tell who was not active from the words.
+  if (v.floor) return { answer: { allow: false, reason: FLOOR_REASON }, answered: "deny" };
   const tag = v.rule ? ` (rule ${v.rule.id})` : "";
   if (v.decision === "allow") return { answer: { allow: true }, answered: "allow" };
   if (v.decision === "hold" && holdSupported) {
@@ -290,9 +323,13 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
   async function rules_gate(req: HookRequest, ctx: HookContext): Promise<GateAnswer> {
     const t0 = clock();
     try {
+      noteGate(ctx.db, Date.now());
       const facts = factsOf(req, ctx.db);
+      // C380 S1-1: the company floor, before every rule, in all modes. It reads its own table, never `fleetFacts().available`.
+      const subjects = floorSubjectsOf(req);
+      const hit = subjects ? floorHit(floorIndex(ctx.db), subjects) : null;
       // the default mode decides a call no rule matches (C373c); cached like the rules, no query per call
-      const v = evaluate(liveRules(ctx.db), facts, currentMode(ctx.db));
+      const v = hit ? floorVerdict(hit) : evaluate(liveRules(ctx.db), facts, currentMode(ctx.db));
       const { answer, answered } = gateAnswer(v, opts.holdSupported ?? HOLD_SUPPORTED);
       if (ctx.signal.aborted || clock() - t0 > budget) throw new Error("gate budget exceeded");
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
@@ -301,7 +338,8 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
         // C378: the Decisions row names the acting agents and a send-time check; never a ticket or a job's content
         const acting = facts.acting?.length ? { acting: facts.acting.map((a) => a.id) } : {};
         const recheck = (req.context as Record<string, unknown> | undefined)?.["tb.recheck"] === true ? { atSendTime: true } : {};
-        const unavailable = { ...unavailableDetail(v), ...modeDetail(v), ...acting, ...recheck };
+        const floor = v.floor ? { decidedBy: "floor", floor: v.floor } : {};
+        const unavailable = { ...unavailableDetail(v), ...modeDetail(v), ...acting, ...recheck, ...floor };
         recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
       }
       return answer;
