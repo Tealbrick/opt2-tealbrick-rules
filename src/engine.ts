@@ -53,8 +53,13 @@
 // - The company floor (0.7.0, C380, overrides C84; src/floor.ts): `floorHit` runs before every rule, in all modes, in the gate only. It refuses a
 //   caller agent, an acting agent, a claimed requester or a known recipient that Governance lists as stopped. `evaluate` does not read it: a call the gate
 //   already let through keeps its narrowing in the later phases.
+// - Caller roles (`callerRoles`, 0.7.0, C380 T2-a): the flat roles of Governance (feed `roles`, read with `accept: ["roles"]`) of the CALLING agent, with the
+//   semantics of `callerTeams` and nothing more: deny and hold rules see every holder, allow rules only the holders that count (not blocked, departed or
+//   removed); an app caller never matches; acting agents narrow only (below); unavailable Fleet facts, or a copy read without roles (an older Governance,
+//   a restart before the first full read), make a deny or hold rule APPLY and an allow rule NOT apply. A role is a record: with no rule that names it,
+//   it decides nothing. An archived role is not in the feed, so a rule that names it matches no one.
 // - Acting agents (0.6.0, C378, spec 0.1.88, bridge `tb.acting`): the agents an APP call acts for, proven by the bridge. NARROW ONLY: a deny or hold rule
-//   naming `agents`, `callerTeams` or `callerTrust` also matches when ANY acting agent matches (every membership, any trust); an allow rule never reads
+//   naming `agents`, `callerTeams`, `callerRoles` or `callerTrust` also matches when ANY acting agent matches (every membership, any trust); an allow rule never reads
 //   them, so a call never gets easier because of them. A call with no acting agent is the app's own work: those criteria do not match it, as before.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
@@ -111,6 +116,8 @@ export interface ActingFact {
   id: string;
   /** every membership, incl. blocked, departed, removed */
   teamsAny: readonly string[];
+  /** every role held, incl. by a blocked, departed or removed agent (C380 T2-a) */
+  rolesAny?: readonly string[];
   /** the trust set; an agent the directory does not know is `unreviewed`; [] while the Fleet facts are unavailable */
   trusts: readonly Trust[];
 }
@@ -146,6 +153,12 @@ export interface CallFacts {
   callerTeams: readonly string[];
   /** team ids of the CALLER agent, every membership (deny and hold rules) */
   callerTeamsAny: readonly string[];
+  /** role ids of the CALLER agent, holders that count (allow rules; C380 T2-a). Absent = none */
+  callerRoles?: readonly string[];
+  /** role ids of the CALLER agent, every holder incl. blocked, departed, removed (deny and hold rules). Absent = none */
+  callerRolesAny?: readonly string[];
+  /** the Fleet copy was read WITH roles. `false` = it was not (a rule that names roles reads it as unavailable); absent = known (tests, the dry run of a copy that has them) */
+  rolesKnown?: boolean;
   /**
    * The trust of the CALLING agent (feed agents[].trust, key `agent:<id>`), as a set. Absent = an agent the directory does not
    * know (`unreviewed`); ignored for an app caller (a `callerTrust` rule never matches an app) and while the Fleet facts are unavailable.
@@ -223,10 +236,10 @@ export interface Step {
 
 const anyOf = (list: readonly string[] | undefined, value: string | null | undefined): boolean => !list || list.length === 0 || (value != null && list.includes(value));
 
-/** Fleet facts a rule names: caller teams or trust, claimed requester's teams or trust, recipients (their holders). */
+/** Fleet facts a rule names: caller teams, roles or trust, claimed requester's teams or trust, recipients (their holders). */
 export function dependsOnFleet(spec: RuleSpec): boolean {
   const m = spec.match;
-  return (m.callerTeams?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || m.recipients !== undefined || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
+  return (m.callerTeams?.length ?? 0) > 0 || (m.callerRoles?.length ?? 0) > 0 || (m.callerTrust?.length ?? 0) > 0 || m.recipients !== undefined || (m.onBehalfOf?.teams?.length ?? 0) > 0 || (m.onBehalfOf?.trust?.length ?? 0) > 0;
 }
 
 export function dependsOnClaim(spec: RuleSpec): boolean {
@@ -370,6 +383,18 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
     const have = acting.length > 0 ? acting.flatMap((a) => a.teamsAny) : strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
     if (why) return no(why);
+  }
+  if (m.callerRoles?.length) {
+    // roles are AGENT facts like teams (an app is in no role): an app caller never matches, known facts or not. A copy read without roles is a gap.
+    if (facts.caller.type !== "agent" && acting.length === 0) return no("caller is not an agent");
+    if (facts.rolesKnown === false) {
+      gap();
+      onFleet = true;
+    } else {
+      const have = acting.length > 0 ? acting.flatMap((a) => a.rolesAny ?? []) : strict ? (facts.callerRolesAny ?? []) : (facts.callerRoles ?? []);
+      const why = fleet(m.callerRoles.some((r) => have.includes(r)), "caller does not have the roles");
+      if (why) return no(why);
+    }
   }
   if (m.callerTrust?.length) {
     // the CALLING agent's trust (C373 D4b): an app has none, so it never matches; unknown agent = unreviewed
@@ -833,7 +858,16 @@ export function specProblem(spec: RuleSpec): string {
     if (m.agents?.length && m.agents.every((a) => a.startsWith("agt_"))) return "callerProducts names apps, but agents lists only agents (agt_…), so the rule would never match an app call (an app is listed by its instance id, ins_…)";
     if (m.modes?.length) return "callerProducts names apps, but modes (free, bound) apply to agents only, so the rule would never match an app call";
     if (m.callerTeams?.length) return "callerProducts names apps, but callerTeams are teams of agents (an app is in none), so the rule would never match an app call";
+    if (m.callerRoles?.length) return "callerProducts names apps, but callerRoles are roles of agents (an app has none), so the rule would never match an app call";
     if (m.callerTrust?.length) return "callerProducts names apps, but callerTrust is the trust of a calling agent (an app has none), so the rule would never match";
+  }
+  const cr = m.callerRoles ?? [];
+  if (cr.length) {
+    const twice = cr.find((r, i) => cr.indexOf(r) !== i);
+    if (twice !== undefined) return `callerRoles lists “${String(twice).slice(0, 40)}” twice`;
+    if (cr.some((r) => typeof r !== "string" || r.length < 1 || r.length > 64 || r !== r.trim())) return "callerRoles names are 1 to 64 characters with no space at either end";
+    // an app caller has no roles: agents that lists only app instances (ins_…) could never match
+    if (m.agents?.length && m.agents.every((a) => a.startsWith("ins_"))) return "callerRoles are the roles of a calling agent, but agents lists only apps (ins_…), so the rule would never match";
   }
   const ct = m.callerTrust ?? [];
   if (ct.length) {
@@ -883,8 +917,9 @@ export function strictestNarrowing(ordered: readonly Rule[], facts: CallFacts): 
     // a product rule can apply to an app only: with the verified product it must list it; without one it could apply (fail closed)
     // a callerTrust rule can apply to an agent only (its trust is a Fleet fact: could apply)
     if (m.callerTrust?.length && facts.caller.type !== "agent") continue;
-    // a callerTeams rule can apply to an agent only (an app is in no team)
+    // a callerTeams rule can apply to an agent only (an app is in no team); so can a callerRoles rule
     if (m.callerTeams?.length && facts.caller.type !== "agent") continue;
+    if (m.callerRoles?.length && facts.caller.type !== "agent") continue;
     // a recipients rule cannot apply to a call known to name no recipient; unknown recipients and their facts could apply
     if (m.recipients && facts.recipients?.length === 0) continue;
     // a workflow rule applies to an app only; a verified workflow must be listed; without one it could apply only on the strict path

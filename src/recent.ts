@@ -37,7 +37,7 @@ export interface RecentResult {
 export function cannotCheck(spec: RuleSpec): string | null {
   const m = spec.match;
   if (m.recipients) return "This rule names recipients. The decision log keeps only how many recipients a call had, never who, so it can’t be checked against past calls.";
-  if (m.callerTeams?.length || m.callerTrust?.length) return "This rule names the calling agent’s teams or trust. The decision log does not keep what they were at the time of a call, so it can’t be checked against past calls.";
+  if (m.callerTeams?.length || m.callerRoles?.length || m.callerTrust?.length) return "This rule names the calling agent’s teams, roles or trust. The decision log does not keep what they were at the time of a call, so it can’t be checked against past calls.";
   return null;
 }
 
@@ -65,6 +65,8 @@ export function factsOfRow(db: Db, d: DecisionView): CallFacts {
     claimTeamsAny: teams,
     callerTeams: [],
     callerTeamsAny: [],
+    callerRoles: [],
+    callerRolesAny: [],
     callerTrusts: [],
     callerTrustActive: true,
     recipients: null,

@@ -152,7 +152,7 @@ test("Fleet fail safe: refusal clears at once, transient keeps ≤ 10 min then c
     // still retrying: a later success restores the copy (full read, no stale sinceRevision)
     err = null;
     await syncFleet(db, async (_p: string, _o: string, input: unknown) => {
-      assert.deepEqual(input, { accept: ["agent_handles", "lifecycle"] }, "after a clear the next read is a full one");
+      assert.deepEqual(input, { accept: ["agent_handles", "lifecycle", "roles"] }, "after a clear the next read is a full one");
       return { status: "ok" as const, output: feed() };
     });
     assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);

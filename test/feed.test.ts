@@ -85,7 +85,7 @@ test("upgrade: a stored copy read WITHOUT accept (Rules 0.3.x, or before this pr
     seen.push(input);
     return { status: "ok" as const, output: input.sinceRevision === 5 ? { v: 1, revision: 5, unchanged: true } : handles };
   }) as never);
-  assert.deepEqual([...seen], [{ accept: ["agent_handles", "lifecycle"] }], "no sinceRevision on the first read with accept");
+  assert.deepEqual([...seen], [{ accept: ["agent_handles", "lifecycle", "roles"] }], "no sinceRevision on the first read with accept");
   assert.equal(fleetFacts(db).trust.has("handle:slack:U900"), true, "the agent handles arrive at once, not when the revision moves");
   // quiet: the next read is a delta read again (the copy now has the shape asked for)
   seen.length = 0;
@@ -93,7 +93,7 @@ test("upgrade: a stored copy read WITHOUT accept (Rules 0.3.x, or before this pr
     seen.push(input);
     return { status: "ok" as const, output: { v: 1, revision: 5, unchanged: true } };
   }) as never);
-  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle"], sinceRevision: 5 }]);
+  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 5 }]);
 });
 
 test("an older Governance that refuses accept (400 input_invalid) is read without it at once, asked again after 10 min; delta reads only onto a copy of the same shape", async () => {
@@ -109,7 +109,7 @@ test("an older Governance that refuses accept (400 input_invalid) is read withou
     return { status: "ok" as const, output: answer };
   };
   await syncFleet(db, callApp as never, () => t);
-  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle"] }, {}], "refused, then read the old way in the same sync");
+  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle", "roles"] }, {}], "refused, then read the old way in the same sync");
   assert.equal(fleetFacts(db, t).available, true, "quiet: Governance 0.2.3 is read correctly");
   assert.equal(fleetState(db).error, null);
   // within 10 min: no accept, delta read onto the copy without handles
@@ -124,21 +124,21 @@ test("an older Governance that refuses accept (400 input_invalid) is read withou
   seen.length = 0;
   t += 10 * 60_000;
   await syncFleet(db, callApp as never, () => t);
-  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle"] }]);
+  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle", "roles"] }]);
   assert.equal(fleetFacts(db, t).trust.has("handle:slack:U900"), true);
   // then deltas with accept
   seen.length = 0;
   answer = { v: 1, revision: 4, unchanged: true };
   t += 60_000;
   await syncFleet(db, callApp as never, () => t);
-  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle"], sinceRevision: 4 }]);
+  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 4 }]);
   // Governance rolled back to 0.2.3 while Rules holds a copy WITH handles: the fallback read is a FULL one (never "unchanged" onto it)
   knowsAccept = false;
   answer = feed({ revision: 4 });
   seen.length = 0;
   t += 60_000;
   await syncFleet(db, callApp as never, () => t);
-  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle"], sinceRevision: 4 }, {}]);
+  assert.deepEqual(seen, [{ accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 4 }, {}]);
   assert.equal(fleetFacts(db, t).trust.has("handle:slack:U900"), false, "the agent handles of the old answer are gone");
   // fire: a 403 is a refusal whatever was asked (no fallback, the copy goes)
   const refusing = async () => Promise.reject(Object.assign(new Error("no"), { code: "not_granted", httpStatus: 403 }));
@@ -258,7 +258,7 @@ test("the companion op is called with sinceRevision once a read exists (and neve
     seen.push(a);
     return { status: "ok" as const, output: { v: 1, revision: 3, unchanged: true } };
   });
-  assert.deepEqual(seen, [["fleet", "directory_feed", { accept: ["agent_handles", "lifecycle"] }], ["fleet", "directory_feed", { accept: ["agent_handles", "lifecycle"], sinceRevision: 3 }]]);
+  assert.deepEqual(seen, [["fleet", "directory_feed", { accept: ["agent_handles", "lifecycle", "roles"] }], ["fleet", "directory_feed", { accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 3 }]]);
 });
 
 async function run(id: "fleetStatus", db: ReturnType<typeof migratedDb>["db"], callApp: never) {

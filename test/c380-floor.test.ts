@@ -306,7 +306,7 @@ test("asks for lifecycle on every read that asks for anything; Governance 0.3.x 
     asked.push(input);
     return { status: "ok", output: feed() };
   });
-  assert.deepEqual(asked[0], { accept: ["agent_handles", "lifecycle"] });
+  assert.deepEqual(asked[0], { accept: ["agent_handles", "lifecycle", "roles"] });
   const keys = [...floorIndex(db).keys()].sort();
   assert.deepEqual(keys, ["agent:agt_01J0000000000000000000000R", "contact:ct_block", "contact:ct_gone", "handle:slack:U666", "handle:telegram:9"]);
   assert.equal((await gate(db)).allow, true, "an active agent runs");
@@ -353,7 +353,7 @@ test("upgrade from 0.6.0 data: the copy says usable at revision 7, and the first
     asked.push(input);
     return { status: "ok", output: floorFeed() };
   });
-  assert.deepEqual(asked[0], { accept: ["agent_handles", "lifecycle"] }, "no sinceRevision");
+  assert.deepEqual(asked[0], { accept: ["agent_handles", "lifecycle", "roles"] }, "no sinceRevision");
   assert.ok(refusedAsFloor(await gate(fresh)));
 });
 

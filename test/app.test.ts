@@ -164,12 +164,12 @@ test("Fleet read model: parse, departed contacts dropped, unchanged keeps, refus
     return { status: "ok" as const, output: answer };
   };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs[0], { accept: ["agent_handles", "lifecycle"] }, "first read is a full one (with agent handles, C373 §3)");
+  assert.deepEqual(inputs[0], { accept: ["agent_handles", "lifecycle", "roles"] }, "first read is a full one (with agent handles, C373 §3)");
   assert.deepEqual(fleetTeams(db).map((t) => t.id), ["tm_x", "tm_y"]);
   assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);
   answer = { v: 1, revision: 7, unchanged: true };
   await syncFleet(db, callApp);
-  assert.deepEqual(inputs.at(-1), { accept: ["agent_handles", "lifecycle"], sinceRevision: 7 });
+  assert.deepEqual(inputs.at(-1), { accept: ["agent_handles", "lifecycle", "roles"], sinceRevision: 7 });
   assert.equal(fleetTeams(db).length, 2, "unchanged keeps the copy");
   fail = "bridge_unavailable";
   await syncFleet(db, callApp);

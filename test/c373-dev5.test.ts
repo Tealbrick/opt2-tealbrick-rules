@@ -88,8 +88,9 @@ test("D11: a rule that names facts the log does not keep cannot be checked (reci
   const base = { title: "r", decision: "hold" as const, reason: "r" };
   for (const [match, word] of [
     [{ effects: ["outward"], recipients: { known: false } }, /recipients/],
-    [{ callerTeams: ["tm_x"] }, /teams or trust/],
-    [{ callerTrust: ["blocked"] }, /teams or trust/],
+    [{ callerTeams: ["tm_x"] }, /teams, roles or trust/],
+    [{ callerRoles: ["rol_x"] }, /teams, roles or trust/],
+    [{ callerTrust: ["blocked"] }, /teams, roles or trust/],
   ] as const) {
     const out = await preview(db, { rule: spec({ ...base, match: match as never }) });
     assert.match(out.cannotCheck, word);

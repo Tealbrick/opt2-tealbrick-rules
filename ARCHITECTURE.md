@@ -43,6 +43,14 @@ Data (`src/floor.ts`, migration 0010): `floor_entries` is apart from the Fleet r
 
 Limit: a full valid read is authority. A compromised Governance can reopen a stop by saying `active` per entry, and can stop anyone; the way out is the owner's `floor_clear` and pausing Governance (a paused Governance cannot add or lift). `floor_clear` forgets `feed_revision` and forces the next read to be a full one: an entry Governance still lists comes back at that read. Exempt from the floor: Rules' own `rules_explain`, `draft_status`, `floor_status`, by product and op, and Rules' own feed read. `rule_draft_submit` is not exempt.
 
+## Caller roles (C380 T2-a, since 0.7.0)
+
+- `match.callerRoles` names the flat roles of Governance (feed `roles`, read with `accept: ["agent_handles", "lifecycle", "roles"]`) of the CALLING agent. It has the semantics of `callerTeams` and nothing more: deny and hold rules see every holder (also a blocked, departed or removed one), allow rules only holders that count; an app caller never matches (`caller is not an agent`); a call with no acting agent is the app's own work and matches no role rule.
+- **Acting agents narrow only.** A deny or hold rule by role also matches an app call that acts for an agent that has the role (any one of them); an allow rule never reads the acting agents (`ActingFact.rolesAny`).
+- **Fail closed.** Fleet facts unavailable: a deny or hold by role applies, an allow does not (its narrowing stays). A copy read WITHOUT roles (a Governance that does not know them, the fallback read after a 400 to `accept`, a restart or update before the first full read) is read the same way (`rolesKnown` false): nobody is known to hold a role, so no rule by role may be taken as "does not apply". A role that ended or is archived is not in the feed, so a rule that names it matches no one: for a deny that is the owner's intent, and the editor keeps the unlisted id visible so it can be removed.
+- Tables `fleet_roles`, `fleet_role_members` (migration 0011), kept apart from the teams so a team id never matches a role. `parseFeed` checks `roles` by hand (the frozen schema allows extra members): at most 200 roles, 4000 members each, unique ids and members, kinds `agent` or `contact`; a bad list refuses the whole answer. `fleet_status` lists the roles for the editor; `rules_preview` answers `callerRoles`.
+- A role is a record. With no rule that names it, it decides nothing. The decision log does not keep roles, so a rule by role cannot be checked against past calls.
+
 ## Acting agents (C378, since 0.6.0)
 
 The bridge writes `tb.acting` on an app call that acts for an agent (spec 0.1.88, BRIDGE §8.7): inside that agent's own open call, or later by a ticket the bridge signed during that call. `src/hooks.ts` `actingIdsOf` reads it strictly (malformed: the gate refuses) and `actingFacts` adds the Fleet facts.

@@ -680,11 +680,12 @@ export function composeRules(text: string, env: ComposeEnv): Proposal {
 }
 
 /** One readable line per rule: decision, who, what, narrowing. */
-export function describeRule(spec: RuleSpec, agentName: (id: string) => string, teamName: (id: string) => string): string {
+export function describeRule(spec: RuleSpec, agentName: (id: string) => string, teamName: (id: string) => string, roleName: (id: string) => string = (id) => id): string {
   const m = spec.match;
   const who = [
     m.callerProducts?.length ? `calls from app ${m.callerProducts.join(", ")}` : m.agents?.length ? `calls by ${m.agents.map(agentName).join(", ")}` : "calls by any agent",
     m.callerTeams?.length ? `in team ${m.callerTeams.map(teamName).join(", ")}` : "",
+    m.callerRoles?.length ? `with role ${m.callerRoles.map(roleName).join(", ")}` : "",
     m.onBehalfOf?.teams?.length ? `on behalf of team ${m.onBehalfOf.teams.map(teamName).join(", ")}` : "",
   ].filter(Boolean);
   const what = [m.effects?.length ? `with effect ${m.effects.join(" or ")}` : "", m.products?.length ? `in app ${m.products.join(", ")}` : ""].filter(Boolean);

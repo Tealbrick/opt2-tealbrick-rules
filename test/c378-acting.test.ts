@@ -63,6 +63,6 @@ test("tb.acting is read strictly: absent = none; anything malformed throws (the 
 
 test("actingFacts: an unknown agent is unreviewed; with no copy the trust is unknown", () => {
   const fx = { available: true, teamsAny: new Map([[`agent:${A}`, ["sales"]]]), trust: new Map([[`agent:${A}`, { trusts: ["limited"], allActive: true }]]) } as never;
-  assert.deepEqual(actingFacts(fx, [A, B]), [{ id: A, teamsAny: ["sales"], trusts: ["limited"] }, { id: B, teamsAny: [], trusts: ["unreviewed"] }]);
+  assert.deepEqual(actingFacts(fx, [A, B]), [{ id: A, teamsAny: ["sales"], rolesAny: [], trusts: ["limited"] }, { id: B, teamsAny: [], rolesAny: [], trusts: ["unreviewed"] }]);
   assert.deepEqual(actingFacts({ ...(fx as object), available: false } as never, [A])[0]?.trusts, []);
 });

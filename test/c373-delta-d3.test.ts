@@ -77,7 +77,7 @@ test("D-3: manifest input schemas have minItems 1 on every match array (all inpu
   const arrays = (m: any): any[] => Object.values(m.properties).flatMap((p: any) => (p.type === "array" ? [p] : p.type === "object" ? Object.values(p.properties ?? {}).filter((q: any) => q.type === "array") : []));
   for (const o of inputs) {
     const list = arrays(o.input.$defs.RuleSpec.properties.match);
-    assert.equal(list.length, 16, `${o.id}: 10 match lists + 4 onBehalfOf + 2 recipients`);
+    assert.equal(list.length, 17, `${o.id}: 11 match lists + 4 onBehalfOf + 2 recipients`);
     for (const a of list) assert.equal(a.minItems, 1, o.id);
   }
   const outputs = ops.filter((o) => o.output?.$defs?.RuleSpec);
