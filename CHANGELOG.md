@@ -2,6 +2,15 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.6.0 - unreleased
+
+### Added
+- Rules reach the agent behind an app call (C378, audit hole 3, spec 0.1.88). A deny or hold rule that names agents, teams or trust also matches an app call that acts for such an agent: inside that agent's own call, or later by a ticket the bridge signed. An allow rule never reads an acting agent, so no call gets easier. A call with no acting agent is the app's own work, as before. Decisions names the agent, and marks a check at send time.
+
+### Changed
+- `requires.bridge` is 0.2.13: on an older bridge the update is refused with a clear message.
+- `upgradeFrom` is `<0.6.0`.
+
 ## 0.5.2 - unreleased
 
 ### Changed

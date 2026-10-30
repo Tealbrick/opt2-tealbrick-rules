@@ -32,6 +32,10 @@ export function noRulesText(mode: Mode | undefined): string {
 
 /** Decisions page: " · decided by Closed mode (no rule matched)" for a trace the mode decided; "" otherwise. */
 export function modeTraceText(detail: Record<string, unknown> | null | undefined): string {
+  const extra = `${detail?.atSendTime === true ? " · checked at send time" : ""}${Array.isArray(detail?.acting) && detail.acting.length > 0 ? ` · for agent ${detail.acting.join(", ")}` : ""}`;
+  return baseTraceText(detail) + extra;
+}
+function baseTraceText(detail: Record<string, unknown> | null | undefined): string {
   const mode = typeof detail?.mode === "string" && detail.mode in MODE_TITLE ? MODE_TITLE[detail.mode as Mode] : null;
   if (!mode) return "";
   if (detail?.decidedBy === "exemption") return ` · ${mode} mode did not apply (system exemption)`;
