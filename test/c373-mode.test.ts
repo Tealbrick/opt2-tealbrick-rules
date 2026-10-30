@@ -157,6 +157,55 @@ test("exemption (a) fire-on-bad: an ins_ caller without a verified product, anot
   assert.deepEqual(await gate(db, { callId: "cal_rulesother", app: { product: "rules" }, product: "connect", op: "buzz_dm", effect: "outward" }), refused, "Rules calling another app");
 });
 
+test("C378 internal calls pass Verification and Closed: each exemption with its exact caller and ops, read back in the trace", async () => {
+  const cases = [
+    ["knowledge-governance-feed", "knowledge", "fleet", ["directory_feed"], "read"],
+    ["governance-reads-connect", "fleet", "connect", ["identities_list", "contacts_list"], "read"],
+    ["owner-decision-relay", "connect", "inbox", ["item_decide_dm"], "write"],
+    ["apps-ask-owner", "evolution", "inbox", ["inbox_ask", "inbox_status", "inbox_reply", "inbox_withdraw"], "write"],
+    ["apps-ask-owner", "observer", "inbox", ["inbox_ask", "inbox_status"], "write"],
+  ] as const;
+  for (const mode of ["verification", "closed"] as const) {
+    const { db } = migratedDb();
+    setMode(db, { mode, confirm: true, actor: OWNER });
+    for (const [id, caller, product, ops, effect] of cases)
+      for (const op of ops) {
+        const callId = `cal_${mode}_${caller}_${op}`;
+        assert.deepEqual(await gate(db, { callId, app: { product: caller }, product, op, effect }), { allow: true }, callId);
+        if (effect === "write") assert.deepEqual(traces(db)[callId]?.detail, { decidedBy: "exemption", mode, exemption: id }, callId);
+      }
+  }
+});
+
+test("C378 fire-on-bad: no verified product, another product, another op, another target and an agent are NOT exempt; a deny rule still decides", async () => {
+  const { db } = migratedDb();
+  setMode(db, { mode: "closed", actor: OWNER });
+  const refused = { allow: false, reason: "Rules: no rule allows this call (Closed mode)" };
+  const bad = [
+    ["knowledge without a verified product", { id: APP_INSTANCE }, "fleet", "directory_feed", "read"],
+    ["knowledge another fleet op", { product: "knowledge" }, "fleet", "agents_list", "read"],
+    ["observer reads the feed", { product: "observer" }, "fleet", "directory_feed", "read"],
+    ["fleet another connect op", { product: "fleet" }, "connect", "data_pull", "read"],
+    ["fleet writes through connect", { product: "fleet" }, "connect", "buzz_dm", "outward"],
+    ["observer reads the directory", { product: "observer" }, "connect", "contacts_list", "read"],
+    ["kanban decides a DM", { product: "kanban" }, "inbox", "item_decide_dm", "write"],
+    ["evolution decides a DM", { product: "evolution" }, "inbox", "item_decide_dm", "write"],
+    ["connect another inbox op", { product: "connect" }, "inbox", "items_list", "read"],
+    ["app without a product asks", { id: APP_INSTANCE }, "inbox", "inbox_ask", "write"],
+    ["same op name on another app", { product: "evolution" }, "kanban", "inbox_ask", "write"],
+    ["evolution sends through connect", { product: "evolution" }, "connect", "tools", "outward"],
+    ["observer pulls data", { product: "observer" }, "connect", "data_pull", "read"],
+    ["evolution writes the board", { product: "evolution" }, "kanban", "issue_create", "write"],
+  ] as const;
+  for (const [name, app, product, op, effect] of bad) assert.deepEqual(await gate(db, { callId: `cal_${name}`, app, product, op, effect }), refused, name);
+  for (const [name, product, op] of [["agent reads feed", "fleet", "directory_feed"], ["agent decides", "inbox", "item_decide_dm"], ["agent asks", "inbox", "inbox_ask"], ["agent reads directory", "connect", "contacts_list"]] as const)
+    assert.deepEqual(await gate(db, { callId: `cal_${name}`, product, op, effect: "read" }), refused, name);
+  const cdb = seedCatalog(migratedDb().db, ["inbox"]);
+  saveRule(cdb, { spec: spec({ title: "no inbox", match: { products: ["inbox"] }, decision: "deny", reason: "off" }), actor: OWNER });
+  setMode(cdb, { mode: "closed", actor: OWNER });
+  assert.equal((await gate(cdb, { callId: "cal_x", app: { product: "connect" }, product: "inbox", op: "item_decide_dm", effect: "write" })).allow, false);
+});
+
 test("exemption (a) does not override an owner rule: a matching deny rule on the feed still refuses it", async () => {
   const db = seedCatalog(migratedDb().db, ["fleet"]);
   saveRule(db, { spec: spec({ title: "no fleet", match: { products: ["fleet"] }, decision: "deny", reason: "fleet is off" }), actor: OWNER });
@@ -202,7 +251,7 @@ test("exemptions (b) and (c): Rules' self-service ops and standard tb.* ops pass
   assert.deepEqual([v.decision, v.byMode, modeDetail(v)], ["allow", { mode: "closed", exemption: "rules-self-service" }, { decidedBy: "exemption", mode: "closed", exemption: "rules-self-service" }]);
   assert.deepEqual(
     EXEMPTIONS.map((e) => e.id),
-    ["rules-governance-feed", "inbox-owner-alerts", "rules-self-service", "platform-standard-ops"],
+    ["rules-governance-feed", "knowledge-governance-feed", "governance-reads-connect", "inbox-owner-alerts", "owner-decision-relay", "apps-ask-owner", "rules-self-service", "platform-standard-ops"],
   );
 });
 
@@ -224,7 +273,7 @@ test("mode_set: tighter needs no confirm; looser without confirm is 409 confirm_
     ["closed>permissive:true", "verification>closed:true", "closed>verification:true", "permissive>closed:true"],
   );
   assert.equal(got.mode, "permissive");
-  assert.equal(got.system.length, 4);
+  assert.equal(got.system.length, EXEMPTIONS.length);
   assert.deepEqual([looser("closed", "verification"), looser("verification", "permissive"), looser("permissive", "closed"), looser("closed", "closed")], [true, true, false, false]);
 });
 

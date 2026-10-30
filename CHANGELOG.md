@@ -2,7 +2,14 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## 0.5.1 - unreleased
+## 0.5.2 - unreleased
+
+### Changed
+- Closed and Verification no longer break calls the platform needs (C378, audit hole 7). New system lines: Knowledge reads Governance, Governance reads Connect's directory, your answer from a DM (Connect to Inbox), apps ask you (Inbox ask, status, reply, withdraw). Each names a verified product and exact ops; an owner rule that matches still decides. The work apps do for you (Observer, Evolving Workflows) stays under the mode on purpose.
+- The Closed warning and the empty rule list say "agent and app call": owner actions in an app were never checked.
+- `upgradeFrom` is `<0.5.2`.
+
+## 0.5.1
 
 ### Added
 - Access page (C374, Martin 2026-10-28: "which agent / app goes how deep, to which specific things / tools"): one row per agent and per app. "Set access" picks how deep it may go (Nothing, Read only, Read and change, Also outward, Also money, Everything), what happens beyond that (hold for the owner or refuse), and optionally only some apps and only some tools of connected services. The setting is saved as ordinary rules (`rules_set`, priorities 900 and up, after the owner's own rules; `src/ui/access-model.ts`); the page reads it back from them, flags a hand edit, "Check" runs the real dry run (`rules_preview`) per effect, and "Remove" deletes the rules. Rules' own agent ops and Inbox's owner DMs stay allowed inside a setting. No new operation, no migration.

@@ -3,6 +3,6 @@
   "kind": "miniapp",
   "paths": ["."],
   "images": [
-    { "name": "opt2-tealbrick-rules", "product": "rules", "kind": "app", "manifest": "tealbrick.manifest.json", "upgradeFrom": "<0.5.1" }
+    { "name": "opt2-tealbrick-rules", "product": "rules", "kind": "app", "manifest": "tealbrick.manifest.json", "upgradeFrom": "<0.5.2" }
   ]
 }

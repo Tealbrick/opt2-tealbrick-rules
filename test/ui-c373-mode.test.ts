@@ -292,7 +292,7 @@ describe("C373c: default mode on the Rules page", () => {
     reset();
     stub.outputs.rules_list = LIST([], "closed");
     const m = await mount(h(rules.RulesPage));
-    assert.match(textOf(m.host), /Every call is refused \(Closed mode\), except the system lines below/);
+    assert.match(textOf(m.host), /Every agent and app call is refused \(Closed mode\), except the system lines below/);
     await m.unmount();
   });
 
