@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { hookResponseProblem, normalizeHandle } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { isDynamicOp } from "./catalog.ts";
-import { type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
+import { type ActingFact, type CallFacts, type Claim, claimKey, evaluate, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
 import { modeDetail } from "./mode.ts";
 import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
@@ -116,6 +116,28 @@ export function callerTrustFacts(fx: FleetFacts, caller: { type: string; id: str
   return { callerTrusts: entry?.trusts ?? ["unreviewed"], callerTrustActive: entry?.allActive ?? true };
 }
 
+const ACTING_ID = /^agt_[0-9A-HJKMNP-TV-Z]{26}$/;
+/**
+ * C378 (spec 0.1.88, cap `acting_agents`): the agent ids of `tb.acting`, which only the bridge writes and the proof covers. The pinned SDK types do not
+ * carry it, so it is read structurally. Absent = none. Present but malformed throws: the gate answers FAIL_CLOSED (only a bridge bug gets here).
+ */
+export function actingIdsOf(context: Record<string, unknown>): string[] {
+  const o = context["tb.acting"];
+  if (o === undefined) return [];
+  const agents = isObj(o) ? o.agents : undefined;
+  if (!Array.isArray(agents) || agents.length === 0 || agents.length > 4) throw new Error("tb.acting malformed");
+  return agents.map((a) => {
+    const id = isObj(a) ? a.id : undefined;
+    if (typeof id !== "string" || !ACTING_ID.test(id)) throw new Error("tb.acting malformed");
+    return id;
+  });
+}
+
+/** The Fleet facts of the acting agents (key `agent:<id>`): every membership and the trust set; an agent the directory does not know is `unreviewed`. */
+export function actingFacts(fx: FleetFacts, ids: readonly string[]): ActingFact[] {
+  return ids.map((id) => ({ id, teamsAny: fx.teamsAny.get(`agent:${id}`) ?? [], trusts: fx.available ? (fx.trust.get(`agent:${id}`)?.trusts ?? ["unreviewed"]) : [] }));
+}
+
 /**
  * C373 D2c (Evolution P1): the VERIFIED workflow id of an APP caller (`HookCallInfo.caller.workflow` = the grant's `wfl`), or null.
  * The pinned SDK types (spec 0.1.64) do not carry it yet, so it is read structurally (TODO(C373 D2c): use the typed field when the
@@ -200,6 +222,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerTeams: callerKey ? (fx.teams.get(callerKey) ?? []) : [],
     callerTeamsAny: callerKey ? (fx.teamsAny.get(callerKey) ?? []) : [],
     ...callerTrustFacts(fx, req.call.caller),
+    acting: req.call.caller.type === "app" ? actingFacts(fx, actingIdsOf(ctx)) : [],
     recipients: recipientFacts(fx, recipientsOf(req.call.target)),
     callerWorkflow: workflowOf(req.call.caller),
     workflowCapVisible: workflowCapVisible(db),
@@ -275,7 +298,10 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       // The after hook redacts by the narrowing decided HERE (read calls only: that is where rules_filter runs).
       if (v.decision === "allow" && facts.target.effect === "read") pinVerdict(ctx.db, req.call.id, v.narrowing);
       if (recorded(facts, v)) {
-        const unavailable = { ...unavailableDetail(v), ...modeDetail(v) };
+        // C378: the Decisions row names the acting agents and a send-time check; never a ticket or a job's content
+        const acting = facts.acting?.length ? { acting: facts.acting.map((a) => a.id) } : {};
+        const recheck = (req.context as Record<string, unknown> | undefined)?.["tb.recheck"] === true ? { atSendTime: true } : {};
+        const unavailable = { ...unavailableDetail(v), ...modeDetail(v), ...acting, ...recheck };
         recordDecision(ctx.db, { callId: req.call.id, phase: "before", facts, decision: v.decision, answered, reason: v.reason, rule: v.rule, ...(Object.keys(unavailable).length ? { detail: unavailable } : {}), durationUs: elapsedUs(t0) });
       }
       return answer;

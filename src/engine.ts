@@ -50,6 +50,9 @@
 //   (agreed with Evolution): when the bridge cap `app_workflow_grants` is visible, it is not a workflow call (no match); when it is
 //   not visible (caps never read count as not visible), a deny or hold rule APPLIES to an `evolution` caller (`closedOnWorkflow`)
 //   and an allow rule never matches. A call from another verified product without a workflow never matches.
+// - Acting agents (0.6.0, C378, spec 0.1.88, bridge `tb.acting`): the agents an APP call acts for, proven by the bridge. NARROW ONLY: a deny or hold rule
+//   naming `agents`, `callerTeams` or `callerTrust` also matches when ANY acting agent matches (every membership, any trust); an allow rule never reads
+//   them, so a call never gets easier because of them. A call with no acting agent is the app's own work: those criteria do not match it, as before.
 import { normalizeTag, normalizeHandle as sharedNormalizeHandle, tagsMatch } from "@opt2-tealbrick/manifest";
 import type { RulesSetInputRuleSpec } from "#kit";
 import { type DefaultMode, type ExemptionId, exemptionOf, modeVerdict } from "./mode.ts";
@@ -100,6 +103,15 @@ export interface RecipientFact {
   known: boolean;
 }
 
+/** What Rules knows about one agent an app call acts for (bridge `tb.acting`). Deny and hold rules only. */
+export interface ActingFact {
+  id: string;
+  /** every membership, incl. blocked, departed, removed */
+  teamsAny: readonly string[];
+  /** the trust set; an agent the directory does not know is `unreviewed`; [] while the Fleet facts are unavailable */
+  trusts: readonly Trust[];
+}
+
 export interface Claim {
   kind: "person" | "agent" | "channel_sender";
   id: string;
@@ -144,6 +156,8 @@ export interface CallFacts {
    * canonical): deny/hold recipient rules apply, allow rules do not. `[]` = known: the call names no recipient.
    */
   recipients?: readonly RecipientFact[] | null;
+  /** The agents an APP call acts for (`tb.acting`), never for an agent caller. Absent or [] = none: the app's own work. */
+  acting?: readonly ActingFact[];
   /** The VERIFIED workflow id of an APP caller (bridge `caller.workflow`, Evolution P1, a valid id), else null/absent. */
   callerWorkflow?: string | null;
   /** The bridge cap `app_workflow_grants` is visible to Rules (slice `bridge.caps`); absent or false = not visible (the strict path). */
@@ -286,12 +300,14 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
   const no = (why: string): Judged => ({ why, closed: false, skipped: false, onFleet: false, onProduct: false, onTool: false, onRecipients: false, onWorkflow: false });
   if (!spec.active) return no("inactive");
   const m = spec.match;
-  if (!anyOf(m.agents, facts.caller.id)) return no("caller is not listed");
+  const strict = spec.outcome.decision !== "allow";
+  // C378: acting agents narrow only, so only a deny or hold rule reads them, and only on an app caller
+  const acting = strict && facts.caller.type === "app" ? (facts.acting ?? []) : [];
+  if (!anyOf(m.agents, facts.caller.id) && !acting.some((a) => m.agents?.includes(a.id))) return no("caller is not listed");
   if (!anyOf(m.modes, facts.caller.mode)) return no("caller mode differs");
   if (!anyOf(m.products, facts.target.product)) return no("target product differs");
   if (!anyOf(m.operations, facts.target.op)) return no("target operation differs");
   if (!anyOf(m.effects, facts.target.effect)) return no("effect differs");
-  const strict = spec.outcome.decision !== "allow";
   let closed = false;
   let toolClosed = false;
   // spec 0.1.68: a rule that names tools matches a call that carries one of them. A call WITHOUT `target.tool`: a static op never
@@ -345,16 +361,16 @@ export function judge(spec: RuleSpec, facts: CallFacts, useClaim = true): Judged
   if (m.callerTeams?.length) {
     // teams are AGENT facts (an app is in no team): an app caller never matches, known facts or not (S2-2 review 0.5.0: else a
     // deny/hold by team refused Rules' own Governance read while the facts were missing, so they never came back)
-    if (facts.caller.type !== "agent") return no("caller is not an agent");
-    const have = strict ? facts.callerTeamsAny : facts.callerTeams;
+    if (facts.caller.type !== "agent" && acting.length === 0) return no("caller is not an agent");
+    const have = acting.length > 0 ? acting.flatMap((a) => a.teamsAny) : strict ? facts.callerTeamsAny : facts.callerTeams;
     const why = fleet(m.callerTeams.some((t) => have.includes(t)), "caller is not in the teams");
     if (why) return no(why);
   }
   if (m.callerTrust?.length) {
     // the CALLING agent's trust (C373 D4b): an app has none, so it never matches; unknown agent = unreviewed
-    if (facts.caller.type !== "agent") return no("caller is not an agent");
+    if (facts.caller.type !== "agent" && acting.length === 0) return no("caller is not an agent");
     const list = m.callerTrust;
-    const trusts = facts.callerTrusts ?? ["unreviewed"];
+    const trusts = acting.length > 0 ? acting.flatMap((a) => a.trusts) : (facts.callerTrusts ?? ["unreviewed"]);
     const met = strict ? trusts.some((t) => list.includes(t)) : facts.callerTrustActive !== false && trusts.length > 0 && trusts.every((t) => list.includes(t));
     const why = fleet(met, "caller's trust is not listed");
     if (why) return no(why);

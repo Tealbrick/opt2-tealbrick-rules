@@ -35,6 +35,13 @@ Rule shape: `title`, `active`, `priority` 0 to 1000 (lower first), `match` {agen
 - C373 match fields (0.5.0): `callerTrust` (calling agent's trust, a Fleet fact), `recipients` (who an outward call goes to: handles → holders → teams, trust, known; unknown fails closed with `recipientsUnknown`; effects exactly `["outward"]`), `callerWorkflows` (verified workflow of an `evolution` app caller; without the cap `app_workflow_grants` a call without a workflow fails closed with `closedOnWorkflow`). All three use the closed/skipped machinery of `judge`/`firstMatch` in `src/engine.ts` (flags `onRecipients`, `onWorkflow`). `recipientsOf`, `workflowOf`, `registerBridgeCaps` live in `src/hooks.ts`. CallFacts hold per-recipient Fleet facts only, never a handle; traces keep the recipient count.
 - Default mode and missing facts: `verdictOf` lets the default mode decide over a closed rule when the scan ended on closed rules only and the mode is stricter (Hit `exhausted`), so a missing fact never makes a call looser than the no-match path with known facts. Fuzz: `test/c373-fail-closed-fuzz.test.ts`.
 
+## Acting agents (C378, since 0.6.0)
+
+The bridge writes `tb.acting` on an app call that acts for an agent (spec 0.1.88, BRIDGE §8.7): inside that agent's own open call, or later by a ticket the bridge signed during that call. `src/hooks.ts` `actingIdsOf` reads it strictly (malformed: the gate refuses) and `actingFacts` adds the Fleet facts.
+- **Narrow only.** Deny and hold rules naming `agents`, `callerTeams` or `callerTrust` also match when ANY acting agent matches. Allow rules never read acting agents, because the calling app decides which of its calls carry them. Allow for app work: `callerProducts`, `callerWorkflows`.
+- **No acting agent** = the app's own work (owner schedule, timers, plumbing): agent rules do not match it, product and workflow rules and the mode decide.
+- Decisions names the agents (`detail.acting`) and marks a send-time check (`detail.atSendTime`, bridge `tb.recheck`). `rules_preview_recent` does not replay acting agents: the old rows have none.
+
 ## Default mode (C373c, since 0.5.0)
 
 Martin's decision C373c: one workspace-wide mode for calls that match NO rule. `permissive` = allow (every release before 0.5.0 behaved so; a fresh install and an updated 0.3.2/0.4.x install start here, migration 0008), `verification` = hold, `closed` = refuse.
