@@ -170,7 +170,7 @@ async function checkAccess(caller: Caller, s: AccessSetting, cat: AccessCatalog)
   const rows: Check = [];
   const one = async (label: string, target: { product: string; op: string; effect: AccessEffect; tool?: string }) => {
     const r: Out<"rules_preview"> = await run("rules_preview", { call: { caller: callerIn, target } });
-    rows.push({ label, decision: r.decision, by: r.ruleTitle ?? (r.decidedBy === "mode" ? `${MODE_TITLE[r.mode]} mode` : r.decidedBy) });
+    rows.push({ label, decision: r.decision, by: r.ruleTitle ?? (r.decidedBy === "mode" ? `${MODE_TITLE[r.mode]} mode` : r.decidedBy === "floor" ? "the company floor" : r.decidedBy) });
   };
   if (inside) for (const e of ACCESS_EFFECTS) await one(`${EFFECT_WORD[e]} in ${inside}`, { product: inside, op: "access_check", effect: e });
   const outside = s.apps ? usable.find((p) => !s.apps?.includes(p)) : undefined;

@@ -36,6 +36,7 @@ export function modeTraceText(detail: Record<string, unknown> | null | undefined
   return baseTraceText(detail) + extra;
 }
 function baseTraceText(detail: Record<string, unknown> | null | undefined): string {
+  if (detail?.decidedBy === "floor") return " · decided by the company floor (before every rule); the caller read only “Refused by company policy”";
   const mode = typeof detail?.mode === "string" && detail.mode in MODE_TITLE ? MODE_TITLE[detail.mode as Mode] : null;
   if (!mode) return "";
   if (detail?.decidedBy === "exemption") return ` · ${mode} mode did not apply (system exemption)`;

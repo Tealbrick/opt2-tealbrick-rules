@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { readMark } from "./access-model.ts";
 import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
+import { FloorCard } from "./floor.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery, replanAllow } from "./hold-allow.ts";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
@@ -517,6 +518,7 @@ function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: st
             {result.ruleTitle ? <span className="tb-hint">by “{safeText(result.ruleTitle)}”</span> : null}
           </div>
           {result.modeNote ? <p className="tb-soft">{result.modeNote}</p> : null}
+          {result.floor ? <p className="tb-soft">The company floor decides this call before any rule runs. The caller reads only “Refused by company policy”.</p> : null}
           {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
           {result.fleetAvailable ? (
             <p className="tb-hint">
@@ -647,6 +649,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         }
       />
       {data?.mode ? <ModeCard state={data.mode} onChanged={reload} /> : null}
+      <FloorCard agentName={dir.agentName} />
       <Composer
         dir={dir}
         onSaved={onDraftSaved}
