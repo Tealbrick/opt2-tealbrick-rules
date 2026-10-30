@@ -188,12 +188,34 @@ describe("Company floor card", () => {
     await m.unmount();
   });
 
+  it("a cut list says so and still offers Clear all, by row count; an unknown agent shows no raw id", async () => {
+    const unknown = "agt_01J0000000000000000000000Z";
+    stub.floor = { ...STOPPED, entries: [{ kind: "handle", id: "slack:U777", code: "leaving", holder: `agent:${unknown}`, revision: 7, at: "2026-10-30T16:00:00.000Z" }], total: 501 };
+    const m = await mount(h(floor.FloorCard, { agentName: name }));
+    assert.match(textOf(m.host), /Showing the newest 1 of 501 entries/);
+    assert.ok(button(m.host, "Clear all"));
+    const item = (m.host.querySelector(".item") as Element).cloneNode(true) as Element;
+    item.querySelector("details")?.remove();
+    assert.match(textOf(item), /An agent in Governance/);
+    assert.ok(!textOf(item).includes("agt_"));
+    await m.unmount();
+  });
+
+  it("since: the holder's own row, not a newer handle row", () => {
+    const rows = [
+      { kind: "handle", id: "slack:U666", code: "blocked", holder: "contact:c", revision: 8, at: "2026-10-30T17:00:00.000Z" },
+      { kind: "contact", id: "c", code: "blocked", holder: "contact:c", revision: 7, at: "2026-10-30T15:00:00.000Z" },
+    ];
+    assert.equal(floor.floorHolders(rows as never)[0]?.at, "2026-10-30T15:00:00.000Z");
+  });
+
   it("Clear all sends no holder", async () => {
     stub.floor = STOPPED;
     stub.calls = [];
     const m = await mount(h(floor.FloorCard, { agentName: name }));
     await click(button(m.host, "Clear all"));
-    const dialog = [...document.querySelectorAll("dialog, [role='dialog']")].find((d) => textOf(d).includes("Clear everyone on this list?")) as Element;
+    const dialog = [...document.querySelectorAll("dialog, [role='dialog']")].find((d) => textOf(d).includes("Clear everyone on the company floor?")) as Element;
+    assert.match(textOf(dialog), /clears every entry on the company floor, also any that arrived after this page loaded\. It held 3 entries/);
     await click(button(dialog, "Clear"));
     assert.deepEqual(stub.calls.filter((c) => c.op === "floor_clear").at(-1)?.input, { confirm: true });
     await m.unmount();

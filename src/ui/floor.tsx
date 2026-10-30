@@ -2,7 +2,7 @@
 // when Governance cannot be read, so this card is also the only place to lift an entry when Governance is gone or cannot be trusted.
 import { Button, Card, Dialog, Notice, Swatch, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useMemo, useState } from "react";
-import { errorText, type Out, run, when } from "./api.ts";
+import { errorText, type Out, run, safeText, when } from "./api.ts";
 import { LoadError, Loading, useLoaded } from "./shared.tsx";
 
 type FloorOut = Out<"floor_list">;
@@ -25,13 +25,17 @@ export function floorHolders(rows: readonly Row[]): FloorHolder[] {
   for (const r of rows) {
     const h = out.get(r.holder) ?? { holder: r.holder, isAgent: r.holder.startsWith("agent:"), code: r.code, at: r.at, handles: [] };
     if (r.kind === "handle") h.handles.push(r.id);
-    else h.code = r.code;
+    else {
+      // the holder's own row names it; a handle row can be newer
+      h.code = r.code;
+      h.at = r.at;
+    }
     out.set(r.holder, h);
   }
   return [...out.values()];
 }
 
-function ConfirmClear({ what, holder, onDone }: { what: string; holder: string | null; onDone: (changed: boolean) => void }) {
+function ConfirmClear({ what, holder, total, onDone }: { what: string; holder: string | null; total: number; onDone: (changed: boolean) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const clear = async () => {
@@ -71,6 +75,7 @@ function ConfirmClear({ what, holder, onDone }: { what: string; holder: string |
         </Notice>
       ) : null}
       <p>Rules stops refusing {what} at once. Your rules and the default mode decide their calls again.</p>
+      {holder ? null : <p>This clears every entry on the company floor, also any that arrived after this page loaded. It held {total === 1 ? "1 entry" : `${total} entries`} when this page loaded.</p>}
       <p>If Governance still lists this, it comes back at the next read. To keep it cleared, change it in Governance, or pause or remove Governance if you no longer trust it.</p>
     </Dialog>
   );
@@ -81,7 +86,14 @@ export function FloorCard({ agentName }: { agentName: (id: string) => string }) 
   const { data, error, loading, reload } = useLoaded(load);
   const [asking, setAsking] = useState<{ what: string; holder: string | null } | null>(null);
   const holders = useMemo(() => floorHolders(data?.entries ?? []), [data]);
-  const nameOf = (h: FloorHolder) => (h.isAgent ? agentName(h.holder.slice("agent:".length)) : "A person in Governance");
+  // the directory does not know a departed agent, and it is still loading at first: agentName then answers the raw id
+  const nameOf = (h: FloorHolder) => {
+    if (!h.isAgent) return "A person in Governance";
+    const id = h.holder.slice("agent:".length);
+    const name = agentName(id);
+    return name === id ? "An agent in Governance" : safeText(name);
+  };
+  const cut = data ? data.total > data.entries.length : false;
   return (
     <Card as="section" className="rules-floor" aria-label="Company floor">
       <h3>Company floor</h3>
@@ -106,8 +118,8 @@ export function FloorCard({ agentName }: { agentName: (id: string) => string }) 
               </span>
               <details className="floor-details tb-hint">
                 <summary>Details</summary>
-                {h.holder}
-                {h.handles.length > 0 ? ` · ${h.handles.join(", ")}` : ""}
+                {safeText(h.holder)}
+                {h.handles.length > 0 ? ` · ${safeText(h.handles.join(", "))}` : ""}
               </details>
               <div className="side">
                 <Button size="sm" onClick={() => setAsking({ what: nameOf(h), holder: h.holder })}>
@@ -118,10 +130,10 @@ export function FloorCard({ agentName }: { agentName: (id: string) => string }) 
           ))}
         </div>
       ) : null}
-      {data && data.total > holders.reduce((n, h) => n + 1 + h.handles.length, 0) ? <p className="tb-hint">Showing the newest {data.entries.length} of {data.total} entries.</p> : null}
-      {data && holders.length > 1 ? (
+      {cut && data ? <p className="tb-hint">Showing the newest {data.entries.length} of {data.total} entries.</p> : null}
+      {data && (holders.length > 1 || cut) ? (
         <div className="tb-ctas">
-          <Button size="sm" onClick={() => setAsking({ what: "everyone on this list", holder: null })}>
+          <Button size="sm" onClick={() => setAsking({ what: "everyone on the company floor", holder: null })}>
             Clear all
           </Button>
         </div>
@@ -130,6 +142,7 @@ export function FloorCard({ agentName }: { agentName: (id: string) => string }) 
         <ConfirmClear
           what={asking.what}
           holder={asking.holder}
+          total={data?.total ?? 0}
           onDone={(changed) => {
             setAsking(null);
             if (changed) reload();
