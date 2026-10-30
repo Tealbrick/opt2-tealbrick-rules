@@ -56,7 +56,7 @@ import { APP_NAMES, type ComposeEnv, type DrafterId, describeRule, MAX_COMPOSED_
 import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, floorHit, floorVerdict, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
-import { clearFloor, FLOOR_REASON, floorIndex, floorRows, floorState } from "./floor.ts";
+import { clearFloor, FLOOR_REASON, type FloorState, floorIndex, floorRows, floorState } from "./floor.ts";
 import { callerTrustFacts, claimFleetFacts, floorRecipients, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
@@ -283,6 +283,7 @@ const dynamicOpIds = (db: Db): string[] =>
     .slice(0, 1000);
 
 const isoOrNull = (ms: number | null): string | null => (ms == null ? null : new Date(ms).toISOString());
+const regressedView = (r: FloorState["regressed"]) => (r ? { at: new Date(r.at).toISOString(), fromRevision: r.fromRevision, toRevision: r.toRevision, why: r.why } : null);
 
 /**
  * `floor_status` is for Governance only (S2-9): an app caller whose VERIFIED product is `fleet` and that the CURRENT signed slice lists. The same three checks as
@@ -568,6 +569,8 @@ export const handlers = {
         readAt: isoOrNull(st.readAt),
         lastGateAt: isoOrNull(st.lastGateAt),
         governanceReadable: fleetFacts(ctx.db).available,
+        unlisted: st.unlisted,
+        regressed: regressedView(st.regressed),
       };
     },
   }),
@@ -586,7 +589,7 @@ export const handlers = {
     async run(_input, ctx) {
       assertGovernanceCaller(ctx.caller);
       const st = floorState(ctx.db);
-      return { version: manifest.version, feedRevision: st.feedRevision, entries: st.entries, lastGateAt: isoOrNull(st.lastGateAt) };
+      return { version: manifest.version, feedRevision: st.feedRevision, entries: st.entries, lastGateAt: isoOrNull(st.lastGateAt), unlisted: st.unlisted, regressed: regressedView(st.regressed) };
     },
   }),
 } satisfies Record<OpId, HandlerSpec>;

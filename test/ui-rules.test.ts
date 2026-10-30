@@ -57,7 +57,7 @@ const stub: Stub = { calls: [], fail: {}, gate: {} };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const OUTPUTS: Record<string, unknown> = {
   "tb.agents_list": { agents: [{ id: "agt_1", name: "Front desk", mode: "free", status: "active", access: [] }] },
-  floor_list: { entries: [], total: 0, feedRevision: 3, readAt: "2026-10-17T09:00:00.000Z", lastGateAt: null, governanceReadable: true },
+  floor_list: { entries: [], total: 0, feedRevision: 3, readAt: "2026-10-17T09:00:00.000Z", lastGateAt: null, governanceReadable: true, unlisted: 0, regressed: null },
   fleet_status: { source: "fleet", available: true, revision: 3, syncedAt: "2026-10-17T09:00:00.000Z", error: null, teams: [{ id: "tm_x", name: "Team X", people: 1, agents: 1 }], roles: [{ id: "rol_con", name: "Contractor", people: 1, agents: 2 }, { id: "rol_stf", name: "Staff", people: 3, agents: 0 }] },
   drafts_list: { drafts: [GOOD, BAD] },
   rules_list: { rules: [RULE], holdSupported: true, defaultDecision: "allow", catalog: { generatedAt: null, syncedAt: null, error: null, products: 3, productIds: ["connect", "crm", "knowledge"] } },

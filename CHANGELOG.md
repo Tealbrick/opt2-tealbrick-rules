@@ -2,6 +2,20 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.3 - DEV pre-release (C380)
+
+### Fixed
+- A restored or reinstalled Governance no longer lifts the company floor (N2-2). A read that goes back in revision, or comes with another feed `epoch`, marks the floor as held: it adds stops and lifts none until the owner uses Clear all, and the Rules page says why.
+- The floor reads recipient keys at any depth of a connected tool's arguments (`body.to`).
+
+### Still a stated limit
+- `channel_reply` names a sequence number. Only Connect's inbox knows whose it is, and a hook makes no app call, so the floor cannot read it; Connect's own bar covers it when a bar exists. The same for a Slack `C…` or `D…` conversation, a Buzz channel id and an email.
+
+## 0.7.0-dev.2 - DEV pre-release (C380)
+
+### Fixed
+- The company floor now sees a recipient. The bridge sends no `target.recipients` yet, so a DM to a stopped person passed the floor (QA A29). The floor reads who Connect's send ops name from the call's own input: `buzz_dm`, `channel_dm`, their first-contact forms, `channel_send`, `channel_edit`, `channel_react`, and the arguments of connected send tools, read as Connect's first-contact gate reads them. `channel_reply` names nobody in its input: Connect's own bar covers it. Recipient rules are unchanged.
+
 ## 0.7.0-dev.1 - DEV pre-release (C380, not for stable until the owner decides D2, D3)
 
 ### Added

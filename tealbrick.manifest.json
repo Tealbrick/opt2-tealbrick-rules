@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.7.0-dev.1",
+  "version": "0.7.0-dev.3",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.2.13"
@@ -6277,7 +6277,9 @@
           "feedRevision",
           "readAt",
           "lastGateAt",
-          "governanceReadable"
+          "governanceReadable",
+          "regressed",
+          "unlisted"
         ],
         "properties": {
           "entries": {
@@ -6292,7 +6294,8 @@
                 "code",
                 "holder",
                 "revision",
-                "at"
+                "at",
+                "listed"
               ],
               "properties": {
                 "kind": {
@@ -6316,6 +6319,9 @@
                 },
                 "at": {
                   "type": "string"
+                },
+                "listed": {
+                  "type": "boolean"
                 }
               }
             }
@@ -6344,6 +6350,51 @@
           },
           "governanceReadable": {
             "type": "boolean"
+          },
+          "regressed": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "at",
+                  "fromRevision",
+                  "toRevision",
+                  "why"
+                ],
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "fromRevision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "toRevision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "why": {
+                    "enum": [
+                      "revision",
+                      "epoch"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "Set when Governance went back to an older state or another install: Rules only adds to the floor, and lifts nothing, until the owner's Clear all."
+          },
+          "unlisted": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }
@@ -6358,7 +6409,7 @@
       "idempotency": "required",
       "id": "floor_clear",
       "title": "Clear the company floor",
-      "description": "Lift one holder (an agent or a person with their handles), or every entry. The way out when Governance is gone or cannot be trusted. If Governance still lists an entry, the entry comes back at the next full read. Every clear is recorded.",
+      "description": "Lift one holder (an agent or a person with their handles), or every entry. The way out when Governance is gone or cannot be trusted, and after Governance went back to an older state. If Governance still lists an entry, the entry comes back at the next read. Every clear is recorded.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -6414,7 +6465,9 @@
           "version",
           "feedRevision",
           "entries",
-          "lastGateAt"
+          "lastGateAt",
+          "regressed",
+          "unlisted"
         ],
         "properties": {
           "version": {
@@ -6435,6 +6488,51 @@
               "string",
               "null"
             ]
+          },
+          "regressed": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "at",
+                  "fromRevision",
+                  "toRevision",
+                  "why"
+                ],
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "fromRevision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "toRevision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "why": {
+                    "enum": [
+                      "revision",
+                      "epoch"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "Set when Governance went back to an older state or another install: Rules only adds to the floor, and lifts nothing, until the owner's Clear all."
+          },
+          "unlisted": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }
