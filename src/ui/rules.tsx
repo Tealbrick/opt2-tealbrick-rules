@@ -261,8 +261,12 @@ function Editor({
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
-          hint="none = any. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. Roles that have ended or are archived match no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
-          options={[...dir.roles.map((r) => ({ value: r.id, label: r.name })), ...(m.callerRoles ?? []).filter((id) => !dir.roles.some((r) => r.id === id)).map((id) => ({ value: id, label: `${id} (no longer listed)` }))]}
+          hint="none = any. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={[
+            ...dir.roles.map((r) => ({ value: r.id, label: r.name })),
+            // a role the list does not have (archived or gone) stays visible so the owner can remove it; never by its id
+            ...(m.callerRoles ?? []).filter((id) => !dir.roles.some((r) => r.id === id)).map((id, i, all) => ({ value: id, label: `A role that is archived or gone${all.length > 1 ? ` (${i + 1})` : ""}` })),
+          ]}
           value={m.callerRoles}
           onChange={(v) => setMatch({ callerRoles: v })}
         />

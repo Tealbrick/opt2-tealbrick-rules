@@ -89,6 +89,9 @@ export interface Directory {
   reload: () => void;
 }
 
+/** What the owner reads for a role id that Governance does not list (archived, or gone). */
+export const UNLISTED_ROLE = "a role that is archived or gone";
+
 /** The exact wording the Lead asked for (C236). */
 export const FLEET_UNAVAILABLE_TEXT = "Governance data unavailable — team rules apply strictly";
 
@@ -124,7 +127,8 @@ export function useDirectory(): Directory {
   useEffect(reload, [reload]);
   const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? id, [agents]);
   const teamName = useCallback((id: string) => teams.find((t) => t.id === id)?.name ?? id, [teams]);
-  const roleName = useCallback((id: string) => roles.find((r) => r.id === id)?.name ?? id, [roles]);
+  // A role the list does not have is archived or gone (Governance leaves an archived role out): say that, never its id. While the list loads, or when it could not be read, say only "a role".
+  const roleName = useCallback((id: string) => roles.find((r) => r.id === id)?.name ?? (loading || fleetAvailable === null ? "a role" : UNLISTED_ROLE), [roles, loading, fleetAvailable]);
   return { agents, teams, roles, agentName, teamName, roleName, errors, fleetAvailable, loading, reload };
 }
 

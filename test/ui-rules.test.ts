@@ -654,6 +654,19 @@ describe("C380 T2-a: caller roles", () => {
     OUTPUTS.rules_list = saved;
   });
 
+  it("a rule that names a role Governance does not list reads as an archived or gone role, never as its id; while the list loads it says only a role", async () => {
+    reset();
+    const r = { ...RULE, spec: { ...spec("Old role rule", "deny"), match: { callerRoles: ["rol_old"] } } };
+    const saved = OUTPUTS.rules_list;
+    OUTPUTS.rules_list = { ...(saved as object), rules: [r] };
+    const m = await mount(h(rules.RulesPage));
+    const line = [...m.host.querySelectorAll(".item p")].map((p) => p.textContent ?? "")[0] ?? "";
+    assert.match(line, /^caller has role a role that is archived or gone → because/);
+    assert.doesNotMatch(line, /rol_old/);
+    await m.unmount();
+    OUTPUTS.rules_list = saved;
+  });
+
   it("the editor offers Governance's roles as chips and saves the chosen ones; untouched, it sends no callerRoles; it says a role changes nothing until a rule names it", async () => {
     reset();
     const m = await mount(h(rules.RulesPage));
@@ -675,7 +688,7 @@ describe("C380 T2-a: caller roles", () => {
     await m.unmount();
   });
 
-  it("a rule that names a role the list no longer has (ended or archived) keeps it as a chip, and the role can be switched off", async () => {
+  it("a rule that names a role the list no longer has (archived or gone) keeps it as a chip, by no id, and the role can be switched off", async () => {
     reset();
     const r = { ...RULE, spec: { ...RULE.spec, match: { callerRoles: ["rol_old"] } } };
     const saved = OUTPUTS.rules_list;
@@ -683,8 +696,8 @@ describe("C380 T2-a: caller roles", () => {
     const m = await mount(h(rules.RulesPage));
     await click(button(m.host, "Edit"));
     const dialog = document.querySelector("dialog") as HTMLElement;
-    assert.equal(chipOf(dialog, "Caller has the role (from Governance)", "rol_old (no longer listed)").getAttribute("aria-pressed"), "true");
-    await click(chipOf(dialog, "Caller has the role (from Governance)", "rol_old (no longer listed)"));
+    assert.equal(chipOf(dialog, "Caller has the role (from Governance)", "A role that is archived or gone").getAttribute("aria-pressed"), "true");
+    await click(chipOf(dialog, "Caller has the role (from Governance)", "A role that is archived or gone"));
     await click(button(dialog, "Save rule"));
     await flush();
     assert.equal("callerRoles" in lastCall("rules_set").rule.match, false);
