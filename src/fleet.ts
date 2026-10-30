@@ -121,28 +121,32 @@ interface RoleIn {
  * characters, an optional name of 1 to 80 characters (the id stands in for a name it lacks), and at most ROLE_CAPS.membersPerRole members of kind `agent`
  * or `contact` with an id of 1 to 64 characters. A role id listed twice, or a member listed twice in one role, refuses the answer.
  */
-function readRoles(out: Record<string, unknown>): RoleIn[] | null {
+function* readRoles(out: Record<string, unknown>, tick: (n?: number) => boolean): Generator<void, RoleIn[] | null, void> {
   const raw = out.roles;
   if (raw === undefined) return null;
   if (!Array.isArray(raw)) throw feedInvalid("roles must be a list");
   if (raw.length > ROLE_CAPS.roles) throw feedInvalid(`more than ${ROLE_CAPS.roles} roles`);
   const ids = new Set<string>();
-  return raw.map((r: unknown): RoleIn => {
+  const roles: RoleIn[] = [];
+  for (const r of raw as unknown[]) {
     if (!isObj(r) || typeof r.id !== "string" || r.id.length < 1 || r.id.length > 64) throw feedInvalid("a role has no valid id");
     if (r.name !== undefined && (typeof r.name !== "string" || r.name.length < 1 || r.name.length > 80)) throw feedInvalid(`the name of role ${r.id.slice(0, 40)} is not 1 to 80 characters`);
     if (ids.has(r.id)) throw feedInvalid(`role id listed twice: ${r.id.slice(0, 40)}`);
     ids.add(r.id);
     if (!Array.isArray(r.members) || r.members.length > ROLE_CAPS.membersPerRole) throw feedInvalid(`the members of role ${r.id.slice(0, 40)} are not a list of at most ${ROLE_CAPS.membersPerRole}`);
     const seen = new Set<string>();
-    const members = r.members.map((m: unknown) => {
-      if (!isObj(m) || (m.kind !== "agent" && m.kind !== "contact") || typeof m.id !== "string" || m.id.length < 1 || m.id.length > 64) throw feedInvalid(`a member of role ${(r.id as string).slice(0, 40)} is not valid`);
+    const members: RoleIn["members"] = [];
+    for (const m of r.members as unknown[]) {
+      if (!isObj(m) || (m.kind !== "agent" && m.kind !== "contact") || typeof m.id !== "string" || m.id.length < 1 || m.id.length > 64) throw feedInvalid(`a member of role ${r.id.slice(0, 40)} is not valid`);
       const key = `${m.kind}:${m.id}`;
-      if (seen.has(key)) throw feedInvalid(`a member is listed twice in role ${(r.id as string).slice(0, 40)}`);
+      if (seen.has(key)) throw feedInvalid(`a member is listed twice in role ${r.id.slice(0, 40)}`);
       seen.add(key);
-      return { kind: m.kind as "agent" | "contact", id: m.id };
-    });
-    return { id: r.id, name: (r.name as string | undefined) ?? r.id, members };
-  });
+      members.push({ kind: m.kind, id: m.id });
+      if (tick()) yield;
+    }
+    roles.push({ id: r.id, name: (r.name as string | undefined) ?? r.id, members });
+  }
+  return roles;
 }
 
 /** Work units between two yields to the event loop while an answer is read (about 2 to 5 ms of work). */
@@ -184,7 +188,6 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   const shell = { ...out, ...Object.fromEntries((["teams", "contacts", "agents"] as const).filter((k) => Array.isArray(out[k])).map((k) => [k, []])) } as Json;
   check(shell);
   if (!teamsIn || !contacts || !agents) throw feedInvalid("teams, contacts and agents must be arrays");
-  const rolesIn = readRoles(out);
   for (const [name, list] of [["teams", teamsIn], ["contacts", contacts], ["agents", agents]] as const) {
     if (list.length > CAPS[name].maxItems) throw feedInvalid(`more than ${CAPS[name].maxItems} ${name}`);
   }
@@ -211,6 +214,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
     work = 0;
     return true;
   };
+  const rolesIn = yield* readRoles(out, tick);
   for (const c of contacts) {
     for (const h of c.handles) {
       // S4-3: the error is shown by fleet_status and kept in fleet_sync: it names the contact, never the handle

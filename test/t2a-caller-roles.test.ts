@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Db, HookContext, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { handlers, manifest } from "../src/app.ts";
+import { namesProblem, vetProposal } from "../src/compose.ts";
 import { type ActingFact, type CallFacts, evaluate, explain, NEEDS_FLEET, order, type Rule, specProblem, strictestNarrowing } from "../src/engine.ts";
 import { FEED_INVALID, parseFeed, ROLE_CAPS, syncFleet } from "../src/fleet.ts";
 import { makeHooks } from "../src/hooks.ts";
@@ -272,4 +273,30 @@ test("ops: fleet_status lists the roles; the dry run names the roles the caller 
   assert.equal((await run("rules_preview", { call: { ...call, caller: { type: "agent", id: AGENT_B, mode: "free" } } })).callerRoles.length, 0);
   await assert.rejects(run("rules_set", { rule: spec({ match: { callerRoles: [CONTRACTOR, CONTRACTOR] } }) }), /twice/);
   await assert.rejects(run("rules_set", { rule: spec({ match: { callerRoles: [CONTRACTOR] } }) }, opCtx(db, { type: "agent", id: AGENT_A })), /no_access|only the owner|person/i);
+});
+
+// ── review fixes (C380 T2-a, rules PR 2 review) ─────────────────────────────
+
+test("a drafter cannot invent a role: a rule by an unknown role is taken out of a proposal; with no list to check against, nothing is checked", () => {
+  const env = { agents: [], teams: [], apps: [], roles: [{ id: CONTRACTOR, name: "Contractor" }] };
+  const known = spec({ match: { callerRoles: [CONTRACTOR] }, decision: "hold" });
+  const invented = spec({ match: { callerRoles: ["rol_invented"] }, decision: "hold" });
+  assert.equal(namesProblem(known, env), "", "quiet on good");
+  assert.match(namesProblem(invented, env), /names a role Rules does not know/);
+  assert.equal(namesProblem(invented, { agents: [], teams: [], apps: [] }), "", "no list: not checked");
+  const out = vetProposal({ rules: [known, invented], notes: [], unmatched: [] }, () => "", env);
+  assert.equal(out.rules.length, 1);
+  assert.match(out.unmatched[0]?.hint ?? "", /cannot be saved: it names a role Rules does not know/);
+});
+
+test("a big roles list is read in slices: the parse yields to the event loop and gives the same answer as the one-go read", async () => {
+  const { parseFeedChunked, PARSE_YIELD_UNITS } = await import("../src/fleet.ts");
+  const members = Array.from({ length: 3000 }, (_, i) => ({ kind: "contact", id: `ct_${i}` }));
+  const doc = withRoles(Array.from({ length: 6 }, (_, i) => ({ id: `rol_${i}`, name: `Role ${i}`, members })));
+  let pauses = 0;
+  const chunked = await parseFeedChunked(doc, async () => {
+    pauses++;
+  });
+  assert.ok(pauses >= (6 * 3000) / PARSE_YIELD_UNITS, `yielded ${pauses} times`);
+  assert.deepEqual(chunked.model.roles?.map((r) => [r.id, r.people]), parseFeed(doc).model.roles?.map((r) => [r.id, r.people]));
 });

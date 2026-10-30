@@ -190,6 +190,7 @@ function composeEnv(ctx: OpContext, shown: readonly { id: string; name: string }
   return {
     agents,
     teams: fleetTeams(ctx.db).map((t) => ({ id: t.id, name: t.name })),
+    roles: fleetRoles(ctx.db).map((r) => ({ id: r.id, name: r.name })),
     apps: [...(cat?.keys() ?? [])].map((id) => ({ id, names: APP_NAMES[id] ?? [] })),
     problem: writerProblem(ctx.db),
     // active AND inactive rules (S3-3): re-activating a rule later must not be weakened by a composed one
