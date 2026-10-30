@@ -6,9 +6,9 @@ import { test } from "node:test";
 import type { Db, HookContext, HookRequest, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { type CallApp, syncFleet } from "../src/fleet.ts";
 import { FLOOR_REASON } from "../src/floor.ts";
-import { CONNECT_TOOL_RECIPIENT_ARGS, connectInputRecipients, makeHooks, recipientsOf } from "../src/hooks.ts";
+import { CONNECT_TOOL_RECIPIENT_KEYS, connectInputRecipients, FLOOR_INPUT_VALUES_MAX, makeHooks, recipientsOf } from "../src/hooks.ts";
 import { listDecisions } from "../src/store.ts";
-import { AGENT_B, feed, hookCtx, hookReq, migratedDb, NPUB } from "./helpers.ts";
+import { AGENT_B, cpuNowMs, feed, hookCtx, hookReq, migratedDb, NPUB } from "./helpers.ts";
 
 const hooks = makeHooks("rules") as unknown as Record<string, (r: HookRequest, c: HookContext) => Promise<{ allow: boolean; reason?: string }>>;
 const HEX = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
@@ -75,6 +75,36 @@ test("connected tools: the arguments that name a chat person, as a string, a num
   assert.equal((await send(db, "tools", { arguments: { channel: "C0123" } }, "slack_send_message")).allow, true);
 });
 
+test("review: tool arguments are read the way Connect's first-contact gate reads them: key spelling, nesting, list separators; a read tool is not", async () => {
+  const db = await firedPerson();
+  for (const args of [{ user_id: "U666" }, { userId: "U666" }, { Channel: "U666" }, { chatId: 111 }, { to: "U666" }, { recipient: "U666" }, { to: { id: "U666" } }, { users: [["U666"]] }, { users: [{ id: "U666" }] }, { users: "U777;U666" }, { users: "U777\nU666" }] as Record<string, Json>[]) {
+    assert.ok(refused(await send(db, "tools", { tool: "x_send", arguments: args }, "x_send")), JSON.stringify(args));
+  }
+  assert.equal((await send(db, "tools", { tool: "x_send", arguments: { text: "U666", limit: 111 } }, "x_send")).allow, true, "a body is not a recipient");
+  assert.equal((await send(db, "tools", { tool: "slack_user_info", arguments: { user: "U666" } }, "slack_user_info", { caller: AGENT_B, effect: "read" })).allow, true, "a read tool answers no test of who is stopped");
+});
+
+test("review: channel_edit and channel_react by a person's conversation id; channel_reply names nobody here (Connect's bar)", async () => {
+  const db = await firedPerson();
+  assert.ok(refused(await send(db, "channel_edit", { conversation: "111", messageId: "m", text: "x" })));
+  assert.ok(refused(await send(db, "channel_react", { conversation: "111", messageId: "m", emoji: "x" })));
+  assert.equal((await send(db, "channel_reply", { account: "a", seq: 5, text: "x" })).allow, true, "stated limit");
+});
+
+test("review: too many values in one call are refused inside the time budget, only while the floor holds someone; an op named like an Object member does not throw", async () => {
+  const db = await firedPerson();
+  const big = "1,".repeat(1_000_000);
+  const t0 = cpuNowMs();
+  const a = await send(db, "buzz_dm", { to: big });
+  assert.equal(a.allow, false);
+  assert.ok(cpuNowMs() - t0 < 250, "bounded by the split limit (CPU time: the machine may be loaded)");
+  const padded = [...Array.from({ length: FLOOR_INPUT_VALUES_MAX + 5 }, () => "U777"), "U666"];
+  assert.equal((await send(db, "tools", { arguments: { users: padded } }, "x_send")).allow, false, "padding does not hide someone");
+  const { db: none } = migratedDb();
+  assert.equal((await send(none, "buzz_dm", { to: big })).allow, true, "an empty floor reads nothing");
+  for (const op of ["constructor", "__proto__"]) assert.equal((await send(db, op, { to: "x" })).allow, true, op);
+});
+
 test("an app caller, an unknown op, another product, a malformed input: quiet, and none throws", async () => {
   const db = await firedPerson();
   assert.ok(refused(await send(db, "buzz_dm", { to: NPUB.slice("buzz:".length) }, undefined, { app: { product: "evolution" } })), "an app's send to them is refused too");
@@ -96,5 +126,5 @@ test("drift: every field of the table exists on Connect's op, and every Connect 
   // a new op with a direct-message name must be read here first
   const dms = m.operations.filter((o) => /dm/.test(o.id)).map((o) => o.id).sort();
   assert.deepEqual(dms.filter((id) => !connectInputRecipients({ product: "connect", op: id }, { to: "U666", person: "U666" }).length), [], "a DM op the floor does not read");
-  assert.ok(CONNECT_TOOL_RECIPIENT_ARGS.includes("chat_id"));
+  assert.ok(CONNECT_TOOL_RECIPIENT_KEYS.has("chatid"));
 });
