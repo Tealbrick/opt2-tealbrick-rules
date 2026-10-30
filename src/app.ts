@@ -567,7 +567,10 @@ export const handlers = {
     // Owner only (person op; no agent or app reaches it). The way out when Governance is gone or cannot be trusted (S1-1).
     async run(input, ctx) {
       const actor = person(ctx);
-      return { cleared: clearFloor(ctx.db, { holder: input.holder ?? null, actor }) };
+      const cleared = clearFloor(ctx.db, { holder: input.holder ?? null, actor });
+      // the next read is a full one, also when a sync is in flight now: an entry Governance still lists comes back, as the page says
+      markFleetStale(ctx.db);
+      return { cleared };
     },
   }),
   [OP.floorStatus]: op<FloorStatusInput, FloorStatusOutput>({
