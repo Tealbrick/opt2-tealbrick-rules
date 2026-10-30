@@ -32,3 +32,17 @@ test("0010 on the data of 0.6.0: everything stays, the floor starts empty", () =
   raw.exec("INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES ('agent', 'a', 'leaving', 'agent:a', 7, 1)");
   assert.throws(() => raw.exec("INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES ('agent', 'a', 'blocked', 'agent:a', 8, 2)"), /UNIQUE/);
 });
+
+test("0011 on the data of 0.7.0-dev.2: entries stay and count as listed; the high-water mark starts at the revision the floor has read; a stray file cannot jump the number", () => {
+  const raw = new DatabaseSync(":memory:");
+  const files = readdirSync(migrationsDir).filter((x) => x.endsWith(".sql")).sort();
+  assert.equal(files.indexOf("0011_floor_regress.sql"), 10);
+  for (const f of files.slice(0, 10)) raw.exec(sql(f));
+  raw.exec(`INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES ('agent', 'a', 'leaving', 'agent:a', 7, 1);
+    INSERT INTO floor_clears (id, at, actor, holder, entries) VALUES ('flc_1', 1, 'per_1', NULL, 1);
+    UPDATE floor_state SET feed_revision = 9, read_at = 5, last_gate_at = 6 WHERE id = 1;`);
+  raw.exec(sql("0011_floor_regress.sql"));
+  assert.deepEqual({ ...(raw.prepare("SELECT kind, id, code, holder, revision, at, listed FROM floor_entries").get() as object) }, { kind: "agent", id: "a", code: "leaving", holder: "agent:a", revision: 7, at: 1, listed: 1 });
+  assert.deepEqual({ ...(raw.prepare("SELECT * FROM floor_state").get() as object) }, { id: 1, feed_revision: 9, read_at: 5, last_gate_at: 6, high_revision: 9, epoch: null, regressed_at: null, regressed_from: null, regressed_to: null, regressed_why: null });
+  assert.equal((raw.prepare("SELECT COUNT(*) AS n FROM floor_clears").get() as { n: number }).n, 1);
+});
