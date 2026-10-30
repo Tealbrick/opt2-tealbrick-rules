@@ -19,15 +19,15 @@ export const MODE_TEXT: Record<Mode, string> = {
 };
 /** S3 (QA, dev.6): Closed also refuses the calls apps make to each other; the owner reads this before the switch. */
 export const CLOSED_WARNING =
-  "Closed also refuses calls that apps make to each other when no rule allows them, for example Governance reading Connect or Evolving Workflows running a step. Allow those apps first on the Access page (or with an allow rule), or they stop working.";
+  "Closed also refuses calls that apps make to each other when no rule allows them, for example Observer reading Connect or Evolving Workflows running a step. Allow those apps first on the Access page (or with an allow rule), or they stop working.";
 /** A move to a looser mode needs a confirm (the server refuses it without one: 409 confirm_required). */
 export const isLooser = (from: Mode, to: Mode): boolean => MODE_ORDER.indexOf(to) < MODE_ORDER.indexOf(from);
 
 /** The empty rule list says what happens to every call in this mode. */
 export function noRulesText(mode: Mode | undefined): string {
-  if (mode === "verification") return "Every call waits for your review (Verification mode), except the system lines below. A template is a quick start: nothing applies until you save it.";
-  if (mode === "closed") return "Every call is refused (Closed mode), except the system lines below. A template is a quick start: nothing applies until you save it.";
-  return "Every call is allowed (within each app’s own limits). A template is a quick start: nothing applies until you save it.";
+  if (mode === "verification") return "Every agent and app call waits for your review (Verification mode), except the system lines below. A template is a quick start: nothing applies until you save it.";
+  if (mode === "closed") return "Every agent and app call is refused (Closed mode), except the system lines below. A template is a quick start: nothing applies until you save it.";
+  return "Every agent and app call is allowed (within each app’s own limits). A template is a quick start: nothing applies until you save it.";
 }
 
 /** Decisions page: " · decided by Closed mode (no rule matched)" for a trace the mode decided; "" otherwise. */

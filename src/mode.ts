@@ -26,7 +26,7 @@ export const MODE_LABEL: Record<DefaultMode, string> = { permissive: "Permissive
 export const VERIFICATION_REASON = "no rule covers this call (Verification mode)";
 export const CLOSED_REASON = "no rule allows this call (Closed mode)";
 
-export type ExemptionId = "rules-governance-feed" | "inbox-owner-alerts" | "rules-self-service" | "platform-standard-ops";
+export type ExemptionId = "rules-governance-feed" | "knowledge-governance-feed" | "governance-reads-connect" | "inbox-owner-alerts" | "owner-decision-relay" | "apps-ask-owner" | "rules-self-service" | "platform-standard-ops";
 
 export interface Exemption {
   id: ExemptionId;
@@ -42,9 +42,29 @@ export const EXEMPTIONS: readonly Exemption[] = [
     text: "Calls from the Rules app itself (verified product rules) to Governance directory_feed are never held or refused by the mode. Rules needs them for team and trust rules.",
   },
   {
+    id: "knowledge-governance-feed",
+    title: "Knowledge reads Governance",
+    text: "Calls from Knowledge (verified product knowledge) to Governance directory_feed are never held or refused by the mode. Knowledge needs them to apply your teams and owners to agent memory; without them it keeps an old copy.",
+  },
+  {
+    id: "governance-reads-connect",
+    title: "Governance reads Connect's directory",
+    text: "Calls from Governance (verified product fleet) to Connect identities_list and contacts_list are never held or refused by the mode. They are read-only names and handles, and recipient rules need them.",
+  },
+  {
     id: "inbox-owner-alerts",
     title: "Inbox tells you",
     text: "Calls from Operator Inbox (verified product inbox) to Connect buzz_dm, buzz_dm_first, channel_dm and channel_dm_first are never held or refused by the mode. Inbox uses them to tell you that something waits for you.",
+  },
+  {
+    id: "owner-decision-relay",
+    title: "Your answer from a DM",
+    text: "Calls from Connect (verified product connect) to Operator Inbox item_decide_dm are never held or refused by the mode. It carries your own Approve or Deny from a DM alert; Inbox checks that it is yours.",
+  },
+  {
+    id: "apps-ask-owner",
+    title: "Apps ask you",
+    text: "Calls from an app with a verified product to Operator Inbox inbox_ask, inbox_status, inbox_reply and inbox_withdraw are never held or refused by the mode. They reach only you, an app sees only its own items, and a workflow approval step needs them.",
   },
   {
     id: "rules-self-service",
@@ -65,6 +85,10 @@ export const EXEMPTIONS: readonly Exemption[] = [
 const INBOX_OWNER_DM: ReadonlySet<string> = new Set(["buzz_dm", "buzz_dm_first", "channel_dm", "channel_dm_first"]);
 /** Rules' own agent-audience operations: explain own decisions, submit a DRAFT (the owner approves it, C84), read own draft. */
 const RULES_SELF_SERVICE: ReadonlySet<string> = new Set(["rules_explain", "rule_draft_submit", "draft_status"]);
+/** Governance's read of Connect's directory (opt2-tealbrick-fleet companion): names and handles, read only. */
+const GOVERNANCE_DIRECTORY: ReadonlySet<string> = new Set(["identities_list", "contacts_list"]);
+/** Operator Inbox's own-item ops an app uses to ask the owner (Evolution `approval` steps, Observer). */
+const INBOX_ASK: ReadonlySet<string> = new Set(["inbox_ask", "inbox_status", "inbox_reply", "inbox_withdraw"]);
 
 /**
  * The built-in exemption a no-match call falls under, or null.
@@ -74,7 +98,16 @@ const RULES_SELF_SERVICE: ReadonlySet<string> = new Set(["rules_explain", "rule_
  * (a2) Operator Inbox's owner DM: caller an APP with VERIFIED product `inbox`, target product `connect`, the four owner-DM ops
  *     only. In Verification a mode hold makes Inbox DM the owner; that DM matching no rule would itself be held → a new hold →
  *     another DM → … (the hold-notification loop). Closed would silence every owner alert.
- * (b) Rules' own self-service ops (target product `rules`): an agent must be able to ask why and to propose a draft.
+ * (a3) Knowledge reading Governance: the same read-only feed; Governance's own allow list (FEED_READERS) admits only Rules and Knowledge. Without it a
+ *     Closed workspace leaves Knowledge on an old copy, and in Verification a 60 s timer would ask the owner every minute.
+ * (a4) Governance reading Connect's directory: two read-only ops, verified caller. Without them handles go stale and recipient rules fail closed for ever.
+ * (a5) Connect relaying the owner's own DM answer: without it the owner's Approve is refused, or in Verification held, which needs another answer (a loop).
+ *     Inbox accepts `item_decide_dm` only from Connect and checks the person; this exemption adds no authority.
+ * (a6) An app asking the owner: reaches only the owner, and Inbox serves an app only its own items. In Verification a poll of `inbox_status` would make one
+ *     hold per tick. Agents are NOT exempt: they are not internal traffic, and the owner's rules or mode decide.
+ * NOT exempt, on purpose: the work apps do for you (Observer and Evolving Workflows moving data, running steps). The owner allows those with a rule or
+ * by the Access page. Every exemption names a VERIFIED product and exact ops; a caller without a verified product never gets one, except (b) and (c).
+ * (b) Rules' own self-service ops (target product `rules`): an agent must be able to ask why and to propose a draft. Drafts are capped and only the owner applies one.
  * (c) Standard `tb.*` ops: hooks must never see them (MANIFEST §8); a bridge that still sends them must not get Inbox's
  *     `tb.holds_pending` or an agent's `tb.hold_status` held or refused by the mode.
  */
@@ -82,6 +115,10 @@ export function exemptionOf(facts: CallFacts): ExemptionId | null {
   const t = facts.target;
   if (facts.caller.type === "app" && facts.callerProduct === "rules" && t.product === "fleet" && t.op === "directory_feed") return "rules-governance-feed";
   if (facts.caller.type === "app" && facts.callerProduct === "inbox" && t.product === "connect" && INBOX_OWNER_DM.has(t.op)) return "inbox-owner-alerts";
+  if (facts.caller.type === "app" && facts.callerProduct === "knowledge" && t.product === "fleet" && t.op === "directory_feed") return "knowledge-governance-feed";
+  if (facts.caller.type === "app" && facts.callerProduct === "fleet" && t.product === "connect" && GOVERNANCE_DIRECTORY.has(t.op)) return "governance-reads-connect";
+  if (facts.caller.type === "app" && facts.callerProduct === "connect" && t.product === "inbox" && t.op === "item_decide_dm") return "owner-decision-relay";
+  if (facts.caller.type === "app" && facts.callerProduct !== null && t.product === "inbox" && INBOX_ASK.has(t.op)) return "apps-ask-owner";
   if (t.product === "rules" && RULES_SELF_SERVICE.has(t.op)) return "rules-self-service";
   if (t.op.startsWith("tb.")) return "platform-standard-ops";
   return null;
