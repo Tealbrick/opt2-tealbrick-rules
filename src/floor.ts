@@ -24,14 +24,19 @@ export interface FloorEntry {
   /** `agent:<id>` or `contact:<id>`: the entry's owner in the feed */
   holder: string;
 }
-/** How one valid read changes the floor. `aware`: the answer carried `floor` on at least one row, so it speaks for every kind of stop. */
+/**
+ * How one valid read changes the floor. `aware`: the answer carried `floor` on at least one row, so it speaks for every kind of stop.
+ * `blindHolders`: the rows of an aware answer that carried no `floor` (`agent:<id>`, `contact:<id>`): each of them is blind on its own.
+ */
 export interface FloorRead {
   entries: readonly FloorEntry[];
   revision: number;
   aware: boolean;
+  blindHolders?: ReadonlySet<string>;
 }
 /** The stops a read with no lifecycle facts can see, so it may also lift them. Every other code is a lifecycle stop. */
 const VISIBLE_WITHOUT_LIFECYCLE: ReadonlySet<string> = new Set(["blocked", "departed"]);
+export const isLifecycleStop = (code: string): boolean => !VISIBLE_WITHOUT_LIFECYCLE.has(code);
 
 const keyOf = (kind: string, id: string): string => `${kind}:${id}`;
 
@@ -59,8 +64,8 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
   const out = new Map<string, string>();
   const del = db.prepare("DELETE FROM floor_entries WHERE kind = ? AND id = ?");
   for (const [key, was] of current) {
-    // a blind read neither lifts nor rewrites a lifecycle stop
-    if (!read.aware && !VISIBLE_WITHOUT_LIFECYCLE.has(was.code)) {
+    // a blind read, or a blind row of an aware read, neither lifts nor rewrites a lifecycle stop
+    if ((!read.aware || read.blindHolders?.has(was.holder)) && isLifecycleStop(was.code)) {
       out.set(key, was.code);
       next.delete(key);
     } else if (!next.has(key)) {
@@ -141,9 +146,10 @@ export function floorRows(db: Db, limit: number): FloorRow[] {
 
 /**
  * The owner's way out: one holder with its handles, or (`holder` null) everything. Recorded in `floor_clears`. Governance is not told: if it still
- * lists the entry, the entry comes back at the next read, which is forced to be a full one (`stale`), so what the owner reads on the page is what happens,
- * restart or not. An owner who no longer trusts Governance also pauses or removes it: a refused read then changes nothing here. `feed_revision` is
- * forgotten until that read (S2-9): Governance must not read "Rules has this change" while the entry is lifted. Answers how many entries were lifted.
+ * lists the entry, the entry comes back at the next read. The caller marks the copy stale (`markFleetStale`), so that read is a full one, also when a sync
+ * is in flight, and what the owner reads on the page is what happens. An owner who no longer trusts Governance also pauses or removes it: a refused read then
+ * changes nothing here. `feed_revision` is forgotten until that read (S2-9): Governance must not read "Rules has this change" while the entry is lifted.
+ * Answers how many entries were lifted.
  */
 export function clearFloor(db: Db, input: { holder: string | null; actor: string }, now = Date.now()): number {
   const n = db.transaction(() => {
@@ -151,7 +157,6 @@ export function clearFloor(db: Db, input: { holder: string | null; actor: string
     const count = Number(res.changes ?? 0);
     db.prepare("INSERT INTO floor_clears (id, at, actor, holder, entries) VALUES (?, ?, ?, ?, ?)").run(`flc_${ulid(now)}`, now, input.actor, input.holder, count);
     db.prepare("UPDATE floor_state SET feed_revision = NULL WHERE id = 1").run();
-    db.prepare("UPDATE fleet_sync SET stale = 1 WHERE id = 1").run();
     return count;
   });
   cache.delete(db);
