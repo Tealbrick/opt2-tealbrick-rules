@@ -2551,7 +2551,8 @@
             "enum": [
               "rule",
               "mode",
-              "exemption"
+              "exemption",
+              "floor"
             ]
           },
           "exemption": {
@@ -2566,6 +2567,35 @@
               "null"
             ],
             "maxLength": 300
+          },
+          "floor": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "role",
+                  "code"
+                ],
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "caller",
+                      "acting",
+                      "requester",
+                      "recipient"
+                    ]
+                  },
+                  "code": {
+                    "type": "string"
+                  }
+                }
+              }
+            ],
+            "description": "Set when the company floor decides this call, before every rule."
           }
         }
       }
@@ -4761,7 +4791,8 @@
                   "enum": [
                     "rule",
                     "mode",
-                    "exemption"
+                    "exemption",
+                    "floor"
                   ]
                 },
                 "mode": {
@@ -6047,6 +6078,200 @@
           },
           "status": {
             "const": "pending"
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "floor_list",
+      "title": "Who the company floor stops",
+      "description": "The entries the company floor refuses (agents, people, handles), why, and when Rules last read them from Governance. The floor runs before every rule, in all modes, and keeps its entries when Governance is not readable.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entries",
+          "total",
+          "feedRevision",
+          "readAt",
+          "lastGateAt",
+          "governanceReadable"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "id",
+                "code",
+                "holder",
+                "revision",
+                "at"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "agent",
+                    "contact",
+                    "handle"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "holder": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "feedRevision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "readAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastGateAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "governanceReadable": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "id": "floor_clear",
+      "title": "Clear the company floor",
+      "description": "Lift one holder (an agent or a person with their handles), or every entry. The way out when Governance is gone or cannot be trusted. If Governance still lists an entry, the entry comes back at the next full read. Every clear is recorded.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "const": true
+          },
+          "holder": {
+            "type": "string",
+            "pattern": "^(agent|contact):.{1,64}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cleared"
+        ],
+        "properties": {
+          "cleared": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "audience": "agent",
+      "listing": "workflow",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "floor_status",
+      "title": "State of the company floor",
+      "description": "For Governance only (verified product fleet): the Rules version, the feed revision the floor was last read at, how many entries it holds, and when the gate last ran. Agents get no_access.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "feedRevision",
+          "entries",
+          "lastGateAt"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "feedRevision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastGateAt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

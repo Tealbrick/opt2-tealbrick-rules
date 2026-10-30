@@ -9,6 +9,7 @@ description: How Rules and Approvals decides your calls, how to ask why, and how
 ## When a call is refused or held
 
 - A refusal from Rules starts with `Rules:` and names the rule (for example `(rule rul_…)`). Do not retry the same call. Tell the owner the reason.
+- The refusal `Refused by company policy` comes from the company floor, which runs before every rule. Do not retry, and do not draft a rule: no rule changes it. Tell the owner.
 - A held call needs the owner's review. Poll the target app's `tb_hold_status` with the `holdId`. After approval, repeat the same call once with the same input.
 - Call `rules__rules_explain` to see why your recent calls were allowed, refused or held. Pass `callId` to ask about one call. You see only your own calls.
 

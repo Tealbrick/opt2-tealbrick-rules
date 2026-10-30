@@ -8,6 +8,7 @@ import { OP } from "#kit";
 import { handlers } from "../src/app.ts";
 import { type CallFacts, evaluate, type Narrowing, order, type Rule, type Trust } from "../src/engine.ts";
 import { FEED_INVALID, parseFeed, strictest, syncFleet } from "../src/fleet.ts";
+import { clearFloor } from "../src/floor.ts";
 import { makeHooks, PIN_MAX, PIN_TTL_MS, pinnedNarrowing, pinVerdict } from "../src/hooks.ts";
 import { FLEET_WRITE_CHUNK_ROWS, fleetFacts, fleetState, listDecisions, markFleetStale, saveRule, writeFleetChunked } from "../src/store.ts";
 import { AGENT_A, AGENT_B, AGENT_R, cpuNowMs, feed, hookCtx, hookReq, migratedDb, NPUB, OWNER, opCtx, spec, trustFacts, WALL_CEILING_MS } from "./helpers.ts";
@@ -122,6 +123,7 @@ test("missing trust = unreviewed: unknown handle, unknown contact id, departed+t
   saveRule(db, { spec: spec({ title: "unreviewed requesters", match: { effects: ["outward"], onBehalfOf: { trust: ["unreviewed"] } }, decision: "hold", reason: "unknown requester" }), actor: OWNER });
   saveRule(db, { spec: spec({ title: "blocked requesters", priority: 1, match: { onBehalfOf: { trust: ["blocked"] } }, decision: "deny", reason: "blocked" }), actor: OWNER });
   await sync(db);
+  clearFloor(db, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
   const via = async (kind: string, id: string) => {
     const r = await gate(db, { context: claimCtx(kind, id, false) });
     return r.allow === true ? "allow" : r.hold ? "hold" : "deny";
@@ -354,11 +356,11 @@ test("markFleetStale while a sync is in flight → one more sync (a full read); 
   };
   const plain = await run(false);
   assert.equal(plain.inputs.length, 1);
-  assert.deepEqual(plain.inputs[0], { accept: ["agent_handles"], sinceRevision: 7 });
+  assert.deepEqual(plain.inputs[0], { accept: ["agent_handles", "lifecycle"], sinceRevision: 7 });
   assert.equal(plain.stale, false);
   const marked = await run(true);
   assert.equal(marked.inputs.length, 2, "the mark made during the read triggers one more");
-  assert.deepEqual(marked.inputs[1], { accept: ["agent_handles"] }, "and it is a full read");
+  assert.deepEqual(marked.inputs[1], { accept: ["agent_handles", "lifecycle"] }, "and it is a full read");
   assert.equal(marked.stale, false);
 });
 

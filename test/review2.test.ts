@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import { type CallFacts, dependsOnProduct, evaluate, explain, order, type Rule, TRUSTS, type Trust, tagsPass } from "../src/engine.ts";
 import { parseFeed, parseFeedChunked, syncFleet } from "../src/fleet.ts";
+import { clearFloor } from "../src/floor.ts";
 import { makeHooks } from "../src/hooks.ts";
 import { fleetFacts, fleetState, saveRule } from "../src/store.ts";
 import { AGENT_A, AGENT_B, cpuNowMs, feed, hookCtx, hookReq, migratedDb, OWNER, prng, spec, trustFacts, WALL_CEILING_MS } from "./helpers.ts";
@@ -160,6 +161,7 @@ test("a gone holder (departed contact, removed or blocked agent) never satisfies
   saveRule(allowDb, { spec: spec({ priority: 1, match: { effects: ["outward"], onBehalfOf: { trust: ["trusted"] } }, decision: "allow", reason: "trusted may" }), actor: OWNER });
   saveRule(allowDb, { spec: spec({ priority: 9, match: { effects: ["outward"] }, decision: "deny", reason: "default no" }), actor: OWNER });
   await sync(allowDb, doc);
+  clearFloor(allowDb, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
   const via = (db: Db, kind: string, id: string) => gate(db, { context: claimCtx(kind, id) });
   assert.equal(allowed(await via(allowDb, "person", "ct_live")), true, "quiet: active + trusted");
   assert.equal(allowed(await via(allowDb, "channel_sender", "slack:u100")), true);
@@ -172,6 +174,7 @@ test("a gone holder (departed contact, removed or blocked agent) never satisfies
   const holdDb = migratedDb().db;
   saveRule(holdDb, { spec: spec({ match: { effects: ["outward"], onBehalfOf: { trust: ["trusted"] } }, decision: "hold", reason: "review trusted" }), actor: OWNER });
   await sync(holdDb, doc);
+  clearFloor(holdDb, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
   assert.equal((await via(holdDb, "person", "ct_gone")).hold?.family, "policy", "a gone holder with raw trust 'trusted' is held by a hold-on-trusted rule");
   assert.equal((await via(holdDb, "person", "ct_nobody")).allow, true, "quiet: an unknown requester is unreviewed, not trusted");
 });
@@ -261,6 +264,7 @@ test("a blocked AGENT is gone for allow (callerTeams, agent claims); a member th
   saveRule(allowDb, { spec: spec({ priority: 2, match: { effects: ["outward"], onBehalfOf: { teams: ["tm_live"] } }, decision: "allow", reason: "live may" }), actor: OWNER });
   saveRule(allowDb, { spec: spec({ priority: 9, match: { effects: ["outward"] }, decision: "deny", reason: "default no" }), actor: OWNER });
   await sync(allowDb, doc);
+  clearFloor(allowDb, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
   assert.equal(allowed(await gate(allowDb, { caller: AGENT_A })), true, "quiet: an active agent in X");
   assert.equal(allowed(await gate(allowDb, { caller: AGENT_B })), false, "a blocked agent gets no allow by team");
   const live = { "fleet.requesterTeams": [{ id: "tm_live", name: "L", role: "member" }] } as Record<string, Json>;
@@ -271,6 +275,7 @@ test("a blocked AGENT is gone for allow (callerTeams, agent claims); a member th
   const denyDb = migratedDb().db;
   saveRule(denyDb, { spec: spec({ match: { effects: ["outward"], callerTeams: ["tm_x"] }, decision: "deny", reason: "no X" }), actor: OWNER });
   await sync(denyDb, doc);
+  clearFloor(denyDb, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
   assert.equal(allowed(await gate(denyDb, { caller: AGENT_B })), false);
 });
 

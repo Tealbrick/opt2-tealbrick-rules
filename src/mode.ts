@@ -26,7 +26,7 @@ export const MODE_LABEL: Record<DefaultMode, string> = { permissive: "Permissive
 export const VERIFICATION_REASON = "no rule covers this call (Verification mode)";
 export const CLOSED_REASON = "no rule allows this call (Closed mode)";
 
-export type ExemptionId = "rules-governance-feed" | "knowledge-governance-feed" | "governance-reads-connect" | "inbox-owner-alerts" | "owner-decision-relay" | "apps-ask-owner" | "rules-self-service" | "platform-standard-ops";
+export type ExemptionId = "rules-governance-feed" | "knowledge-governance-feed" | "governance-reads-connect" | "governance-reads-access" | "inbox-owner-alerts" | "owner-decision-relay" | "apps-ask-owner" | "rules-self-service" | "platform-standard-ops";
 
 export interface Exemption {
   id: ExemptionId;
@@ -50,6 +50,11 @@ export const EXEMPTIONS: readonly Exemption[] = [
     id: "governance-reads-connect",
     title: "Governance reads Connect's directory",
     text: "Calls from Governance (verified product fleet) to Connect identities_list and contacts_list are never held or refused by the mode. They are read-only names and handles, and recipient rules need them.",
+  },
+  {
+    id: "governance-reads-access",
+    title: "Governance reads who has access",
+    text: "Calls from Governance (verified product fleet) to access_list of Connect, Knowledge, Task Board and Evolving Workflows, and to Rules floor_status, are never held or refused by the mode. They only read. A call that removes access is never covered by this line.",
   },
   {
     id: "inbox-owner-alerts",
@@ -90,6 +95,9 @@ const GOVERNANCE_DIRECTORY: ReadonlySet<string> = new Set(["identities_list", "c
 /** Operator Inbox's own-item ops an app uses to ask the owner (Evolution `approval` steps, Observer). */
 const INBOX_ASK: ReadonlySet<string> = new Set(["inbox_ask", "inbox_status", "inbox_reply", "inbox_withdraw"]);
 
+/** The apps Governance reads with access_list (tb.access/1). `access_revoke` is NOT exempt on any of them: a change stays under the mode. */
+const ACCESS_TARGETS: ReadonlySet<string> = new Set(["connect", "knowledge", "kanban", "evolution"]);
+
 /**
  * The built-in exemption a no-match call falls under, or null.
  * (a) The Rules instance reading Governance: caller is an APP whose VERIFIED product is `rules` (the bridge's signed
@@ -101,6 +109,8 @@ const INBOX_ASK: ReadonlySet<string> = new Set(["inbox_ask", "inbox_status", "in
  * (a3) Knowledge reading Governance: the same read-only feed; Governance's own allow list (FEED_READERS) admits only Rules and Knowledge. Without it a
  *     Closed workspace leaves Knowledge on an old copy, and in Verification a 60 s timer would ask the owner every minute.
  * (a4) Governance reading Connect's directory: two read-only ops, verified caller. Without them handles go stale and recipient rules fail closed for ever.
+ * (a4b) Governance reading who has access (C380): only read ops, verified caller. Without them a Closed workspace shows every store as "could not be read" and Verification asks the
+ *     owner once per sweep. Never `access_revoke`.
  * (a5) Connect relaying the owner's own DM answer: without it the owner's Approve is refused, or in Verification held, which needs another answer (a loop).
  *     Inbox accepts `item_decide_dm` only from Connect and checks the person; this exemption adds no authority.
  * (a6) An app asking the owner: reaches only the owner, and Inbox serves an app only its own items. In Verification a poll of `inbox_status` would make one
@@ -117,6 +127,7 @@ export function exemptionOf(facts: CallFacts): ExemptionId | null {
   if (facts.caller.type === "app" && facts.callerProduct === "inbox" && t.product === "connect" && INBOX_OWNER_DM.has(t.op)) return "inbox-owner-alerts";
   if (facts.caller.type === "app" && facts.callerProduct === "knowledge" && t.product === "fleet" && t.op === "directory_feed") return "knowledge-governance-feed";
   if (facts.caller.type === "app" && facts.callerProduct === "fleet" && t.product === "connect" && GOVERNANCE_DIRECTORY.has(t.op)) return "governance-reads-connect";
+  if (facts.caller.type === "app" && facts.callerProduct === "fleet" && ((ACCESS_TARGETS.has(t.product) && t.op === "access_list") || (t.product === "rules" && t.op === "floor_status"))) return "governance-reads-access";
   if (facts.caller.type === "app" && facts.callerProduct === "connect" && t.product === "inbox" && t.op === "item_decide_dm") return "owner-decision-relay";
   if (facts.caller.type === "app" && facts.callerProduct !== null && t.product === "inbox" && INBOX_ASK.has(t.op)) return "apps-ask-owner";
   if (t.product === "rules" && RULES_SELF_SERVICE.has(t.op)) return "rules-self-service";
@@ -135,9 +146,9 @@ export function modeVerdict(base: Verdict, facts: CallFacts, mode: DefaultMode):
 }
 
 /** What decided a verdict: a rule, the default mode, or a built-in exemption of the mode. */
-export type DecidedBy = "rule" | "mode" | "exemption";
-export function decidedBy(v: Pick<Verdict, "rule" | "byMode">): DecidedBy {
-  return v.rule ? "rule" : v.byMode?.exemption ? "exemption" : "mode";
+export type DecidedBy = "rule" | "mode" | "exemption" | "floor";
+export function decidedBy(v: Pick<Verdict, "rule" | "byMode" | "floor">): DecidedBy {
+  return v.floor ? "floor" : v.rule ? "rule" : v.byMode?.exemption ? "exemption" : "mode";
 }
 
 /**
@@ -155,6 +166,7 @@ export function modeDetail(v: Pick<Verdict, "rule" | "byMode">): Record<string, 
 /** A stored trace read back: what decided it (rows without `decidedBy` and without a rule are Permissive no-match rows). */
 export function traceDecidedBy(ruleId: string | null, detail: Record<string, unknown> | null): { decidedBy: DecidedBy; mode: DefaultMode | null } {
   if (ruleId) return { decidedBy: "rule", mode: null };
+  if (detail?.decidedBy === "floor") return { decidedBy: "floor", mode: null };
   const mode = isMode(detail?.mode) ? detail.mode : "permissive";
   return { decidedBy: detail?.decidedBy === "exemption" ? "exemption" : "mode", mode };
 }

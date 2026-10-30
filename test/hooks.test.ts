@@ -6,6 +6,7 @@ import { hookResponseProblem, reduceBeforeChain } from "@opt2-tealbrick/manifest
 import type { Json } from "@opt2-tealbrick/miniapp-sdk";
 import type { RuleSpec } from "../src/engine.ts";
 import { syncFleet } from "../src/fleet.ts";
+import { clearFloor } from "../src/floor.ts";
 import { FAIL_CLOSED, GATE_BUDGET_MS, HOLD_SUPPORTED, makeHooks } from "../src/hooks.ts";
 import { fleetFacts, fleetIndex, fleetState, fleetTeams, listDecisions, liveRules, saveRule, writeFleet } from "../src/store.ts";
 import { AGENT_A, AGENT_B, feed, hookCtx, hookReq, migratedDb, OWNER, spec } from "./helpers.ts";
@@ -151,7 +152,7 @@ test("Fleet fail safe: refusal clears at once, transient keeps ≤ 10 min then c
     // still retrying: a later success restores the copy (full read, no stale sinceRevision)
     err = null;
     await syncFleet(db, async (_p: string, _o: string, input: unknown) => {
-      assert.deepEqual(input, { accept: ["agent_handles"] }, "after a clear the next read is a full one");
+      assert.deepEqual(input, { accept: ["agent_handles", "lifecycle"] }, "after a clear the next read is a full one");
       return { status: "ok" as const, output: feed() };
     });
     assert.deepEqual(fleetIndex(db).get("handle:slack:U777"), ["tm_x"]);
@@ -251,6 +252,7 @@ test("blocked contact carries no team: a team-scoped ALLOW rule does not widen f
     saveRule(db, { spec: spec({ title: "no sends", priority: 5, match: { effects: ["outward"] }, decision: "deny", reason: "no sends" }), actor: OWNER });
     if (withTrustRule) saveRule(db, { spec: spec({ title: "blocked", priority: 0, match: { onBehalfOf: { trust: ["blocked"] } }, decision: "deny", reason: "blocked requester" }), actor: OWNER });
     await syncFleet(db, async () => ({ status: "ok" as const, output: feed() }));
+    clearFloor(db, { holder: null, actor: OWNER }); // the rules' own semantics, with the floor (C380) out of the way
     return db;
   };
   const plain = await setup(false);

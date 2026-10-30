@@ -3,18 +3,20 @@
 // trust in its own tables, and the gate reads only that local copy. Refresh points: every 60 s from a timer once the SDK
 // offers `callApp` outside op handlers (C85, spec 0.1.13; feature-checked), agent events, and person ops when the copy is
 // older than 60 s.
-// Every answer is validated against the vendored schema (src/contracts: Governance's `fleet.directory_feed/1` schema with the
-// optional agents[].handles, C373 RULES-INTERFACE §3, byte copy, see test/contracts/PROVENANCE.md) and every handle must be
+// Every answer is validated against the vendored schema (src/contracts: `fleet.directory_feed/1` with the optional agents[].handles,
+// lifecycle and floor, spec 0.1.89, byte copy, see test/contracts/PROVENANCE.md) and every handle must be
 // canonical (normalizeHandle(h) === h). Rules asks for agent handles (`accept: ["agent_handles"]`); a Governance that does not
 // know `accept` (0.2.x, its input schema refuses unknown fields) answers 400 and Rules reads it again without it (see AGENT_HANDLES). A mismatch is a REFUSAL:
 // the error is recorded (fleet_status shows it), the copy is cleared, nothing of the answer is read (never a partial read).
 // No Governance (no grant, not deployed) or a refused answer → the Fleet facts are UNAVAILABLE: the engine applies deny
 // and hold rules that name Fleet facts and skips allow rules that name them (fail closed, C230).
+// The company floor (C380, src/floor.ts) is NOT part of that copy: a refusal, an expiry or a crash here leaves it as it is.
 
 import { normalizeHandle, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import feedSchema from "./contracts/fleet.directory_feed.1.agent_handles.schema.json" with { type: "json" };
+import feedSchema from "./contracts/fleet.directory_feed.1.lifecycle.schema.json" with { type: "json" };
 import type { Trust } from "./engine.ts";
+import { type FloorEntry, isLifecycleStop } from "./floor.ts";
 import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
 
 export const FLEET_PRODUCT = "fleet";
@@ -22,6 +24,8 @@ export const FLEET_OP = "directory_feed";
 export const REFRESH_MS = 60_000;
 /** The feed extra Rules reads (C373 RULES-INTERFACE §3): agents[].handles, the canonical handles Connect issued to each agent. */
 export const AGENT_HANDLES = "agent_handles";
+/** The feed extra of C380 (spec 0.1.89): `lifecycle` and `floor` on agents and contacts. A Governance that does not know it ignores it. */
+export const LIFECYCLE = "lifecycle";
 /** After a Governance refused `accept` (older than 0.3.0), Rules asks for it again after this long (a Governance update shows within it). */
 export const ACCEPT_RETRY_MS = 10 * 60 * 1000;
 /** The error code of an answer that does not fit the contract (a refusal). */
@@ -72,6 +76,30 @@ export interface ParsedFeed {
   revision: number;
   unchanged: boolean;
   model: FleetModel;
+  /** C380: who the company floor stops, from this answer ([] for "unchanged", which leaves the floor as it is) */
+  floor: FloorEntry[];
+  /** C380: at least one row carried `floor`: the answer has lifecycle facts. Absent on every row (a Governance that ignored `accept`, an empty directory): it cannot lift a lifecycle stop */
+  floorAware: boolean;
+  /** C380: the rows with no `floor` in an aware answer. Each is blind on its own: it cannot lift that holder's lifecycle stop */
+  floorBlind: Set<string>;
+}
+
+/** An effective lifecycle that always stops the row, whatever `floor` says. `archived` is not here: a card already gone (`no_card`) is `archived` with `floor: false`. */
+const STOPPING: ReadonlySet<string> = new Set(["suspended", "leaving", "not_started"]);
+
+/**
+ * Why the floor stops one row of the feed, or null. Narrow only: `floor: true`, trust `blocked` and a stopping lifecycle each stop it, and nothing lifts another. With no
+ * `floor` key (Governance 0.3.2 and older): trust `blocked`, or a departed contact. A removed agent on such a feed has no card and is not listed.
+ */
+function floorCode(row: { trust: Trust; status: string; floor?: boolean; lifecycle?: string }, isContact: boolean): string | null {
+  const { floor, lifecycle: state = null } = row;
+  // a lifecycle stop names the entry before `blocked`: a later read with no lifecycle facts may lift `blocked`, and must not lift what it cannot see
+  if (state !== null && STOPPING.has(state)) return state;
+  if (state === "archived" && floor !== false) return state;
+  if (row.trust === "blocked") return "blocked";
+  if (floor === true) return state ?? "listed";
+  if (floor === false) return null;
+  return isContact && row.status === "departed" ? "departed" : null;
 }
 
 /** Work units between two yields to the event loop while an answer is read (about 2 to 5 ms of work). */
@@ -103,12 +131,12 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   if (out.unchanged === true) {
     check(out as Json);
-    return { revision: out.revision as number, unchanged: true, model: emptyFleet() };
+    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false, floorBlind: new Set() };
   }
   // Validate in slices (the same schema, each slice a full document with the other arrays empty), then the array caps.
   const teamsIn = Array.isArray(out.teams) ? (out.teams as { id: string; name?: string; members: { kind: string; id: string }[] }[]) : null;
-  const contacts = Array.isArray(out.contacts) ? (out.contacts as { id: string; kind: string; status: string; trust: Trust; handles: string[] }[]) : null;
-  const agents = Array.isArray(out.agents) ? (out.agents as { id: string; status: string; trust: Trust; handles?: string[] }[]) : null;
+  const contacts = Array.isArray(out.contacts) ? (out.contacts as { id: string; kind: string; status: string; trust: Trust; handles: string[]; floor?: boolean; lifecycle?: string }[]) : null;
+  const agents = Array.isArray(out.agents) ? (out.agents as { id: string; status: string; trust: Trust; handles?: string[]; floor?: boolean; lifecycle?: string }[]) : null;
   // the document without its three big arrays (a missing or non-array member stays as it is, so the schema refuses it)
   const shell = { ...out, ...Object.fromEntries((["teams", "contacts", "agents"] as const).filter((k) => Array.isArray(out[k])).map((k) => [k, []])) } as Json;
   check(shell);
@@ -234,7 +262,28 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   // members the producer left out of contacts/agents: deny/hold only
   for (const [id, ts] of contactTeams) if (!known.contact.has(id)) place(`contact:${id}`, ts, none);
   for (const [id, ts] of agentTeams) if (!known.agent.has(id)) place(`agent:${id}`, ts, none);
-  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust } };
+  // C380: the floor rows of this answer. A handle two holders share is listed when either is stopped; a lifecycle stop names it first.
+  const floorRows = new Map<string, FloorEntry>();
+  let floorAware = false;
+  const floorBlind = new Set<string>();
+  const stop = (e: FloorEntry) => {
+    const key = `${e.kind}:${e.id}`;
+    const was = floorRows.get(key);
+    if (!was || (!isLifecycleStop(was.code) && isLifecycleStop(e.code))) floorRows.set(key, e);
+  };
+  for (const [isContact, list] of [[true, contacts], [false, agents]] as const) {
+    for (const row of list) {
+      const holder = `${isContact ? "contact" : "agent"}:${row.id}`;
+      if (row.floor !== undefined) floorAware = true;
+      else floorBlind.add(holder);
+      const code = floorCode(row, isContact);
+      if (code === null) continue;
+      stop({ kind: isContact ? "contact" : "agent", id: row.id, code, holder });
+      for (const handle of row.handles ?? []) stop({ kind: "handle", id: handle, code, holder });
+      if (tick(1 + (row.handles?.length ?? 0))) yield;
+    }
+  }
+  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind };
 }
 
 /** Read an answer in one go (small answers, tests). */
@@ -298,7 +347,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     const accept = refused === undefined || now() - refused > ACCEPT_RETRY_MS;
     // a delta read only onto a copy of the same shape (with or without agent handles); else a full read
     let since = st.revision != null && !st.stale && st.usable && copyWithHandles.get(db) === accept ? st.revision : null;
-    const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
+    const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES, LIFECYCLE] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
     let withHandles = accept;
     let res: Awaited<ReturnType<CallApp>>;
     try {
@@ -319,7 +368,9 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
     // S3-1: the copy says whether it lists agent handles (a read without them makes every recipient unknown at the gate)
-    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles }, now());
+    // C380 S1-1: only a full valid read changes the floor, and only an answer with lifecycle facts can lift a lifecycle stop (the fallback read without `accept` has none)
+    const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware, blindHolders: d.floorBlind } };
+    await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, ...floor }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {
     const code = isObj(e) && typeof e.code === "string" ? e.code : "error";
