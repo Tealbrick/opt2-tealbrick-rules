@@ -206,18 +206,47 @@ export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null
   });
 }
 
+/** What a recipient value can be named as. A value in no form names nobody. Numbers too: Telegram chat ids are often JSON numbers. A leading zero or a space does not get past (Connect reads them the same way). */
+function handlesOfValue(v: unknown): string[] {
+  const text = typeof v === "number" && Number.isSafeInteger(v) ? String(v) : typeof v === "string" ? v.trim() : "";
+  if (!text) return [];
+  const digits = /^(-?)0*([1-9][0-9]*)$/.exec(text);
+  const forms = [text, `buzz:${text}`, `slack:${text}`, digits ? `telegram:${digits[1]}${digits[2]}` : ""];
+  return forms.flatMap((f) => normalizeHandle(f) ?? []);
+}
+
+/**
+ * C380 A29: the bridge sends no `target.recipients` yet (cap `hook_recipients` waits on bridge feat/c373-recipients-p2), so the floor reads who Connect's send
+ * ops name from the call's own input, which the hook sees. Only Connect sends outward. The op input is what the op runs on, so this cannot be claimed away, and
+ * a wrong value can only refuse more. It serves the floor only: `recipientsOf` stays what recipient RULES read, so they stay fail closed until the bridge sends the list.
+ * test/c380-floor-input.test.ts binds this table to Connect's manifest. Buzz channel ids and Slack `C…` conversations are groups: Connect's own bar covers those.
+ */
+const CONNECT_RECIPIENT_FIELDS: Readonly<Record<string, readonly string[]>> = { buzz_dm: ["to"], buzz_dm_first: ["to"], channel_dm: ["person"], channel_dm_first: ["person"], channel_send: ["conversation"] };
+/** The arguments of Connect's dynamic tools that name a chat person (Composio Slack and Telegram tools, connect#36 table). Any outward tool: a new tool is covered by its field name. Email is no handle in the feed; Connect's bar covers it. */
+export const CONNECT_TOOL_RECIPIENT_ARGS: readonly string[] = ["channel", "channel_id", "user", "users", "chat_id"];
+
+export function connectInputRecipients(target: { product: string; op: string; tool?: unknown }, input: unknown): string[] {
+  if (target.product !== "connect" || !isObj(input)) return [];
+  const args = target.tool !== undefined && isObj(input.arguments) ? input.arguments : null;
+  const values = args ? CONNECT_TOOL_RECIPIENT_ARGS.map((k) => args[k]) : (CONNECT_RECIPIENT_FIELDS[target.op] ?? []).map((k) => input[k]);
+  return values.flatMap((v) => (Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [v])).flatMap(handlesOfValue);
+}
+
 /**
  * C380: every well-formed recipient of the call, also from a list `recipientsOf` calls unknown. A partial list still names the people it names, so
- * `recipientsIncomplete`, a list over the cap or one bad value never hides a stopped recipient. A value that reads as no handle is skipped.
+ * `recipientsIncomplete`, a list over the cap or one bad value never hides a stopped recipient. A value that reads as no handle is skipped. `input`: the call's own
+ * input, read for Connect's send ops (see `connectInputRecipients`).
  */
-export function floorRecipients(target: unknown): string[] {
-  const raw = isObj(target) ? target.recipients : undefined;
-  if (!Array.isArray(raw)) return [];
+export function floorRecipients(target: unknown, input?: unknown): string[] {
+  const t = isObj(target) ? target : {};
   const out = new Set<string>();
-  for (const v of raw) {
-    const h = typeof v === "string" ? normalizeHandle(v) : null;
-    if (h) out.add(h);
+  if (Array.isArray(t.recipients)) {
+    for (const v of t.recipients) {
+      const h = typeof v === "string" ? normalizeHandle(v) : null;
+      if (h) out.add(h);
+    }
   }
+  if (typeof t.product === "string" && typeof t.op === "string") for (const h of connectInputRecipients(t as { product: string; op: string }, input)) out.add(h);
   return [...out];
 }
 
@@ -233,7 +262,7 @@ export function floorSubjectsOf(req: HookRequest): FloorSubjects | null {
   if (target.product === "rules" && FLOOR_EXEMPT_OPS.has(target.op)) return null;
   if (callerProductOf(caller) === "rules" && target.product === "fleet" && target.op === "directory_feed") return null;
   const ctx = (req.context ?? {}) as Record<string, unknown>;
-  return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target) };
+  return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target, req.call.input) };
 }
 
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */

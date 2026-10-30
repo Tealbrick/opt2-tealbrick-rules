@@ -2,6 +2,11 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.2 - DEV pre-release (C380)
+
+### Fixed
+- The company floor now sees a recipient. The bridge sends no `target.recipients` yet, so a DM to a stopped person passed the floor (QA A29). The floor reads who Connect's send ops name from the call's own input: `buzz_dm`, `channel_dm`, their first-contact forms, `channel_send`, and the chat arguments of connected tools. Recipient rules are unchanged.
+
 ## 0.7.0-dev.1 - DEV pre-release (C380, not for stable until the owner decides D2, D3)
 
 ### Added
