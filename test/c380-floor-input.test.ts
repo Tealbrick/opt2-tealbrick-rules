@@ -84,6 +84,12 @@ test("review: tool arguments are read the way Connect's first-contact gate reads
   assert.equal((await send(db, "tools", { tool: "slack_user_info", arguments: { user: "U666" } }, "slack_user_info", { caller: AGENT_B, effect: "read" })).allow, true, "a read tool answers no test of who is stopped");
 });
 
+test("N2-2 note: recipient keys at any depth (a catalog tool names body.to), never a body text", async () => {
+  const db = await firedPerson();
+  for (const args of [{ body: { to: "U666" } }, { body: { recipient: { id: "U666" } } }, { messages: [{ to: "U666" }] }, { a: { b: { chat_id: 111 } } }] as Record<string, Json>[]) assert.ok(refused(await send(db, "tools", { tool: "x_send", arguments: args }, "x_send")), JSON.stringify(args));
+  assert.equal((await send(db, "tools", { tool: "x_send", arguments: { body: { text: "U666" } } }, "x_send")).allow, true);
+});
+
 test("review: channel_edit and channel_react by a person's conversation id; channel_reply names nobody here (Connect's bar)", async () => {
   const db = await firedPerson();
   assert.ok(refused(await send(db, "channel_edit", { conversation: "111", messageId: "m", text: "x" })));

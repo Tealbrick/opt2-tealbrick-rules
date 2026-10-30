@@ -82,6 +82,8 @@ export interface ParsedFeed {
   floorAware: boolean;
   /** C380: the rows with no `floor` in an aware answer. Each is blind on its own: it cannot lift that holder's lifecycle stop */
   floorBlind: Set<string>;
+  /** C380 N2-2: the feed's origin. Governance changes it on a restore, and a fresh install has another. An extra member, so the schema does not check it: a bad value refuses the answer here */
+  epoch?: string;
 }
 
 /** An effective lifecycle that always stops the row, whatever `floor` says. `archived` is not here: a card already gone (`no_card`) is `archived` with `floor: false`. */
@@ -263,6 +265,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   for (const [id, ts] of contactTeams) if (!known.contact.has(id)) place(`contact:${id}`, ts, none);
   for (const [id, ts] of agentTeams) if (!known.agent.has(id)) place(`agent:${id}`, ts, none);
   // C380: the floor rows of this answer. A handle two holders share is listed when either is stopped; a lifecycle stop names it first.
+  if (out.epoch !== undefined && (typeof out.epoch !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(out.epoch))) throw feedInvalid("epoch is not an id");
   const floorRows = new Map<string, FloorEntry>();
   let floorAware = false;
   const floorBlind = new Set<string>();
@@ -283,7 +286,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
       if (tick(1 + (row.handles?.length ?? 0))) yield;
     }
   }
-  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind };
+  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind, ...(typeof out.epoch === "string" ? { epoch: out.epoch } : {}) };
 }
 
 /** Read an answer in one go (small answers, tests). */
@@ -369,7 +372,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
     // S3-1: the copy says whether it lists agent handles (a read without them makes every recipient unknown at the gate)
     // C380 S1-1: only a full valid read changes the floor, and only an answer with lifecycle facts can lift a lifecycle stop (the fallback read without `accept` has none)
-    const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware, blindHolders: d.floorBlind } };
+    const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware, blindHolders: d.floorBlind, ...(d.epoch !== undefined ? { epoch: d.epoch } : {}) } };
     await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, ...floor }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {

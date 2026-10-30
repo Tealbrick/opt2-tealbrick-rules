@@ -7,6 +7,8 @@
 //  - A read with no lifecycle facts (a Governance that ignores `accept`, an older release after a rollback, the fallback for one that refuses
 //    `accept`, an empty directory) is BLIND: it cannot lift a lifecycle stop, because it does not know about one. It decides only the stops it can
 //    see: trust `blocked` and a departed contact. Such a stop on a lifecycle-only entry stays until a read with lifecycle facts, or the owner's Clear.
+//  - A read that goes BACK (a lower revision, or another epoch: Governance restored from a backup or installed fresh, N2-2) is no proof that a stop ended: its data
+//    is older than the stop. The floor is then REGRESSED: reads only add, nothing is lifted, until the owner's Clear all. The Rules page says why.
 //  - The gate reads `floorIndex` and never asks `fleetFacts().available`.
 //  - The way out, when Governance is gone or compromised, is the owner's person op `floor_clear`.
 // A read of the table that fails throws, and the gate answers FAIL_CLOSED: no copy that can be read means a refusal, never an allow.
@@ -33,6 +35,8 @@ export interface FloorRead {
   revision: number;
   aware: boolean;
   blindHolders?: ReadonlySet<string>;
+  /** the feed's `epoch` (an aware answer only): another value than the last one means another origin. Absent on a Governance that sends none */
+  epoch?: string;
 }
 /** The stops a read with no lifecycle facts can see, so it may also lift them. Every other code is a lifecycle stop. */
 const VISIBLE_WITHOUT_LIFECYCLE: ReadonlySet<string> = new Set(["blocked", "departed"]);
@@ -58,28 +62,43 @@ export function floorIndex(db: Db): ReadonlyMap<string, string> {
  * transaction committed. Rows that did not change are left alone, so an entry keeps the revision and the time that first listed it.
  */
 export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, string> {
+  const state = db.prepare("SELECT high_revision, epoch, regressed_at FROM floor_state WHERE id = 1").get();
+  const high = state?.high_revision == null ? null : Number(state.high_revision);
+  const epoch = state?.epoch == null ? null : String(state.epoch);
+  // an epoch is compared on an aware read only: a read without lifecycle facts may simply not carry it
+  const why = high !== null && read.revision < high ? "revision" : read.aware && epoch !== null && read.epoch !== epoch ? "epoch" : null;
+  const regressed = state?.regressed_at != null || why !== null;
+  if (state?.regressed_at == null && why !== null) db.prepare("UPDATE floor_state SET regressed_at = ?, regressed_from = ?, regressed_to = ?, regressed_why = ? WHERE id = 1").run(now, high, read.revision, why);
+  if (!regressed) db.prepare("UPDATE floor_state SET high_revision = MAX(COALESCE(high_revision, ?), ?), epoch = COALESCE(?, epoch) WHERE id = 1").run(read.revision, read.revision, read.aware ? (read.epoch ?? null) : null);
+
   const current = new Map<string, { code: string; holder: string }>();
   for (const r of db.prepare("SELECT kind, id, code, holder FROM floor_entries").all()) current.set(keyOf(String(r.kind), String(r.id)), { code: String(r.code), holder: String(r.holder) });
   const next = new Map(read.entries.map((e) => [keyOf(e.kind, e.id), e]));
   const out = new Map<string, string>();
   const del = db.prepare("DELETE FROM floor_entries WHERE kind = ? AND id = ?");
+  const listed = db.prepare("UPDATE floor_entries SET listed = ? WHERE kind = ? AND id = ?");
   for (const [key, was] of current) {
-    // a blind read, or a blind row of an aware read, neither lifts nor rewrites a lifecycle stop
-    if ((!read.aware || read.blindHolders?.has(was.holder)) && isLifecycleStop(was.code)) {
+    const at = key.indexOf(":");
+    const [kind, id] = [key.slice(0, at), key.slice(at + 1)];
+    if (regressed) {
+      // nothing is lifted; the page shows what Governance's list no longer has
+      out.set(key, next.get(key)?.code ?? was.code);
+      if (!next.has(key)) listed.run(0, kind, id);
+    } else if ((!read.aware || read.blindHolders?.has(was.holder)) && isLifecycleStop(was.code)) {
+      // a blind read, or a blind row of an aware read, neither lifts nor rewrites a lifecycle stop
       out.set(key, was.code);
       next.delete(key);
-    } else if (!next.has(key)) {
-      const at = key.indexOf(":");
-      del.run(key.slice(0, at), key.slice(at + 1));
-    }
+    } else if (!next.has(key)) del.run(kind, id);
   }
-  const put = db.prepare("INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, id) DO UPDATE SET code = excluded.code, holder = excluded.holder");
+  const put = db.prepare("INSERT INTO floor_entries (kind, id, code, holder, revision, at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (kind, id) DO UPDATE SET code = excluded.code, holder = excluded.holder, listed = 1");
   for (const [key, e] of next) {
     out.set(key, e.code);
     const was = current.get(key);
     if (was?.code !== e.code || was.holder !== e.holder) put.run(e.kind, e.id, e.code, e.holder, read.revision, now);
+    else if (regressed) listed.run(1, e.kind, e.id);
   }
-  // Governance reads this revision before it says "Rules has this change" (S2-9), so a read that could not see lifecycle facts does not move it
+  // Governance reads this revision before it says "Rules has this change" (S2-9), so a read that could not see lifecycle facts does not move it. Regressed reads move it:
+  // they add, so a stop made after the restore really is in the table, and Governance's revisions have started again from the lower number.
   if (read.aware) db.prepare("UPDATE floor_state SET feed_revision = ?, read_at = ? WHERE id = 1").run(read.revision, now);
   return out;
 }
@@ -107,16 +126,27 @@ export function noteGate(db: Db, now: number): void {
   }
 }
 
+/** Why the floor reads only add now. `why`: `revision` = the feed's revision went back; `epoch` = the feed comes from another origin (restored or installed fresh). */
+export interface FloorRegressed {
+  at: number;
+  fromRevision: number | null;
+  toRevision: number | null;
+  why: "revision" | "epoch";
+}
+
 export interface FloorState {
   feedRevision: number | null;
   readAt: number | null;
   /** epoch ms; null = the gate never ran */
   lastGateAt: number | null;
   entries: number;
+  /** entries held only because the floor is regressed: Governance's current list does not have them */
+  unlisted: number;
+  regressed: FloorRegressed | null;
 }
 
 export function floorState(db: Db): FloorState {
-  const r = db.prepare("SELECT feed_revision, read_at, last_gate_at FROM floor_state WHERE id = 1").get();
+  const r = db.prepare("SELECT feed_revision, read_at, last_gate_at, regressed_at, regressed_from, regressed_to, regressed_why FROM floor_state WHERE id = 1").get();
   const stored = r?.last_gate_at == null ? null : Number(r.last_gate_at);
   const mem = lastGate.get(db)?.at ?? 0;
   return {
@@ -124,6 +154,8 @@ export function floorState(db: Db): FloorState {
     readAt: r?.read_at == null ? null : Number(r.read_at),
     lastGateAt: mem > (stored ?? 0) ? mem : stored,
     entries: Number(db.prepare("SELECT COUNT(*) AS n FROM floor_entries").get()?.n ?? 0),
+    unlisted: Number(db.prepare("SELECT COUNT(*) AS n FROM floor_entries WHERE listed = 0").get()?.n ?? 0),
+    regressed: r?.regressed_at == null ? null : { at: Number(r.regressed_at), fromRevision: r.regressed_from == null ? null : Number(r.regressed_from), toRevision: r.regressed_to == null ? null : Number(r.regressed_to), why: r.regressed_why === "epoch" ? "epoch" : "revision" },
   };
 }
 
@@ -134,21 +166,22 @@ export interface FloorRow {
   holder: string;
   revision: number;
   at: number;
+  listed: boolean;
 }
 
 /** The rows for the owner's page, newest first. */
 export function floorRows(db: Db, limit: number): FloorRow[] {
   return db
-    .prepare("SELECT kind, id, code, holder, revision, at FROM floor_entries ORDER BY at DESC, holder, kind, id LIMIT ?")
+    .prepare("SELECT kind, id, code, holder, revision, at, listed FROM floor_entries ORDER BY at DESC, holder, kind, id LIMIT ?")
     .all(limit)
-    .map((r) => ({ kind: String(r.kind) as FloorKind, id: String(r.id), code: String(r.code), holder: String(r.holder), revision: Number(r.revision), at: Number(r.at) }));
+    .map((r) => ({ kind: String(r.kind) as FloorKind, id: String(r.id), code: String(r.code), holder: String(r.holder), revision: Number(r.revision), at: Number(r.at), listed: Number(r.listed) === 1 }));
 }
 
 /**
  * The owner's way out: one holder with its handles, or (`holder` null) everything. Recorded in `floor_clears`. Governance is not told: if it still
  * lists the entry, the entry comes back at the next read. The caller marks the copy stale (`markFleetStale`), so that read is a full one, also when a sync
- * is in flight, and what the owner reads on the page is what happens. An owner who no longer trusts Governance also pauses or removes it: a refused read then
- * changes nothing here. `feed_revision` is forgotten until that read (S2-9): Governance must not read "Rules has this change" while the entry is lifted.
+ * is in flight, and what the owner reads on the page is what happens. An owner who no longer trusts Governance also removes it: a refused read then
+ * changes nothing here. Clear ALL also ends a regressed floor: the owner has seen why, and Governance's current list decides again from the next read on. `feed_revision` is forgotten until that read (S2-9): Governance must not read "Rules has this change" while the entry is lifted.
  * Answers how many entries were lifted.
  */
 export function clearFloor(db: Db, input: { holder: string | null; actor: string }, now = Date.now()): number {
@@ -157,6 +190,7 @@ export function clearFloor(db: Db, input: { holder: string | null; actor: string
     const count = Number(res.changes ?? 0);
     db.prepare("INSERT INTO floor_clears (id, at, actor, holder, entries) VALUES (?, ?, ?, ?, ?)").run(`flc_${ulid(now)}`, now, input.actor, input.holder, count);
     db.prepare("UPDATE floor_state SET feed_revision = NULL WHERE id = 1").run();
+    if (input.holder === null) db.prepare("UPDATE floor_state SET high_revision = NULL, epoch = NULL, regressed_at = NULL, regressed_from = NULL, regressed_to = NULL, regressed_why = NULL WHERE id = 1").run();
     return count;
   });
   cache.delete(db);

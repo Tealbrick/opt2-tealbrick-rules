@@ -28,15 +28,17 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const AGENT = "agt_01J0000000000000000000000A";
 const STOPPED = {
   entries: [
-    { kind: "agent", id: AGENT, code: "leaving", holder: `agent:${AGENT}`, revision: 7, at: "2026-10-30T16:00:00.000Z" },
-    { kind: "contact", id: "ct_left", code: "blocked", holder: "contact:ct_left", revision: 7, at: "2026-10-30T15:00:00.000Z" },
-    { kind: "handle", id: "slack:U666", code: "blocked", holder: "contact:ct_left", revision: 7, at: "2026-10-30T15:00:00.000Z" },
+    { kind: "agent", id: AGENT, code: "leaving", holder: `agent:${AGENT}`, revision: 7, at: "2026-10-30T16:00:00.000Z", listed: true },
+    { kind: "contact", id: "ct_left", code: "blocked", holder: "contact:ct_left", revision: 7, at: "2026-10-30T15:00:00.000Z", listed: true },
+    { kind: "handle", id: "slack:U666", code: "blocked", holder: "contact:ct_left", revision: 7, at: "2026-10-30T15:00:00.000Z", listed: true },
   ],
   total: 3,
   feedRevision: 7,
   readAt: "2026-10-30T16:00:00.000Z",
   lastGateAt: "2026-10-30T16:01:00.000Z",
   governanceReadable: true,
+  unlisted: 0,
+  regressed: null,
 };
 const EMPTY = { ...STOPPED, entries: [], total: 0 };
 interface Stub {
@@ -208,7 +210,7 @@ describe("Company floor card", () => {
 
   it("a cut list says so and still offers Clear all, by row count; an unknown agent shows no raw id", async () => {
     const unknown = "agt_01J0000000000000000000000Z";
-    stub.floor = { ...STOPPED, entries: [{ kind: "handle", id: "slack:U777", code: "leaving", holder: `agent:${unknown}`, revision: 7, at: "2026-10-30T16:00:00.000Z" }], total: 501 };
+    stub.floor = { ...STOPPED, entries: [{ kind: "handle", id: "slack:U777", code: "leaving", holder: `agent:${unknown}`, revision: 7, at: "2026-10-30T16:00:00.000Z", listed: true }], total: 501 };
     const m = await mount(h(floor.FloorCard, { agentName: name }));
     assert.match(textOf(m.host), /Showing the newest 1 of 501 entries/);
     assert.ok(button(m.host, "Clear all"));
@@ -221,10 +223,24 @@ describe("Company floor card", () => {
 
   it("since: the holder's own row, not a newer handle row", () => {
     const rows = [
-      { kind: "handle", id: "slack:U666", code: "blocked", holder: "contact:c", revision: 8, at: "2026-10-30T17:00:00.000Z" },
-      { kind: "contact", id: "c", code: "blocked", holder: "contact:c", revision: 7, at: "2026-10-30T15:00:00.000Z" },
+      { kind: "handle", id: "slack:U666", code: "blocked", holder: "contact:c", revision: 8, at: "2026-10-30T17:00:00.000Z", listed: true },
+      { kind: "contact", id: "c", code: "blocked", holder: "contact:c", revision: 7, at: "2026-10-30T15:00:00.000Z", listed: true },
     ];
     assert.equal(floor.floorHolders(rows as never)[0]?.at, "2026-10-30T15:00:00.000Z");
+  });
+
+  it("regressed: the card says what happened and what Clear all does; the row says Governance no longer lists it; one holder still gets Clear all", async () => {
+    stub.floor = { ...STOPPED, entries: [{ ...STOPPED.entries[0], listed: false }], total: 1, unlisted: 1, regressed: { at: "2026-10-30T21:00:00.000Z", fromRevision: 900, toRevision: 12, why: "revision" } };
+    const m = await mount(h(floor.FloorCard, { agentName: name }));
+    const alert = textOf(m.host.querySelector('[role="alert"]') as Element);
+    assert.match(alert, /Governance went back to an older state on .*restored from a backup, or installed again/);
+    assert.match(alert, /1 entry that Governance no longer lists among them\. It adds new stops but lifts none\. Check the list, then use Clear all/);
+    assert.ok(!/900|revision/.test(alert), "no raw number in the owner text");
+    assert.match(textOf(m.host.querySelector(".item") as Element), /Governance no longer lists this/);
+    await click(button(m.host, "Clear all"));
+    const dialog = [...document.querySelectorAll("dialog, [role='dialog']")].find((d) => textOf(d).includes("Clear everyone")) as Element;
+    assert.match(textOf(dialog), /This also ends the hold below: from the next read on, Governance’s current list decides/);
+    await m.unmount();
   });
 
   it("Clear all sends no holder", async () => {
