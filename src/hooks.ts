@@ -206,18 +206,76 @@ export function recipientFacts(fx: FleetFacts, handles: readonly string[] | null
   });
 }
 
+/** What a recipient value can be named as. A value in no form names nobody. Numbers too: Telegram chat ids are often JSON numbers. A leading zero or a space does not get past (Connect reads them the same way). */
+function handlesOfValue(v: unknown): string[] {
+  const text = typeof v === "number" && Number.isSafeInteger(v) ? String(v) : typeof v === "string" ? v.trim() : "";
+  if (!text) return [];
+  const digits = /^(-?)0*([1-9][0-9]*)$/.exec(text);
+  const forms = [text, `buzz:${text}`, `slack:${text}`, digits ? `telegram:${digits[1]}${digits[2]}` : ""];
+  return forms.flatMap((f) => normalizeHandle(f) ?? []);
+}
+
+/**
+ * C380 A29: the bridge sends no `target.recipients` yet (cap `hook_recipients` waits on bridge feat/c373-recipients-p2), so the floor reads who Connect's send
+ * ops name from the call's own input, which the hook sees. Only Connect sends outward. The op input is what the op runs on, so this cannot be claimed away, and
+ * a wrong value can only refuse more. It serves the floor only: `recipientsOf` stays what recipient RULES read, so they stay fail closed until the bridge sends the list.
+ * test/c380-floor-input.test.ts binds this table to Connect's manifest. What the input does not name stays with Connect's own bar: `channel_reply` (a seq), a Buzz
+ * channel id, a Slack `C…` or `D…` conversation, an email.
+ */
+const CONNECT_RECIPIENT_FIELDS: ReadonlyMap<string, string> = new Map([
+  ["buzz_dm", "to"],
+  ["buzz_dm_first", "to"],
+  ["channel_dm", "person"],
+  ["channel_dm_first", "person"],
+  ["channel_send", "conversation"],
+  ["channel_edit", "conversation"],
+  ["channel_react", "conversation"],
+]);
+/** The arguments of Connect's connected tools that name someone: Connect's own `RECIPIENT_KEYS` (src/effect.ts, the first-contact gate) that can hold a chat handle, compared the way it compares them, plus `users`. */
+export const CONNECT_TOOL_RECIPIENT_KEYS: ReadonlySet<string> = new Set(["to", "cc", "bcc", "recipient", "recipients", "torecipients", "ccrecipients", "bccrecipients", "attendees", "invitees", "channel", "channelid", "chatid", "conversationid", "userid", "username", "user", "users", "phone", "phonenumber", "tonumber"]);
+/** More values than this in one call cannot be checked, so the gate refuses it (FAIL_CLOSED). Connect's bar cuts its own list at 100; this keeps the gate inside its time budget on a 2 MB input. */
+export const FLOOR_INPUT_VALUES_MAX = 1000;
+const FLOOR_INPUT_DEPTH = 4;
+
+/** Every value under one field: a string, a number, a list in one string, an array, an object's values, as Connect's `collect` reads them. */
+function collectValues(v: unknown, out: unknown[], depth: number): void {
+  if (depth > FLOOR_INPUT_DEPTH || v === null || v === undefined) return;
+  if (typeof v === "string") out.push(...v.split(/[,;\n]+/u, FLOOR_INPUT_VALUES_MAX + 1));
+  else if (typeof v === "number") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) collectValues(x, out, depth + 1);
+  else if (isObj(v)) for (const x of Object.values(v)) collectValues(x, out, depth + 1);
+  if (out.length > FLOOR_INPUT_VALUES_MAX) throw new Error("too many recipient values to check");
+}
+
+export function connectInputRecipients(target: { product: string; op: string; tool?: unknown; effect?: unknown }, input: unknown): string[] {
+  if (target.product !== "connect" || !isObj(input)) return [];
+  const values: unknown[] = [];
+  if (target.tool !== undefined) {
+    // a read tool names nobody it talks to, and answering there would be a free test of who is stopped
+    if (target.effect === "read" || !isObj(input.arguments)) return [];
+    for (const [key, v] of Object.entries(input.arguments)) if (CONNECT_TOOL_RECIPIENT_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/gu, ""))) collectValues(v, values, 0);
+  } else {
+    const field = CONNECT_RECIPIENT_FIELDS.get(target.op);
+    if (field !== undefined) collectValues(input[field], values, 0);
+  }
+  return values.flatMap(handlesOfValue);
+}
+
 /**
  * C380: every well-formed recipient of the call, also from a list `recipientsOf` calls unknown. A partial list still names the people it names, so
- * `recipientsIncomplete`, a list over the cap or one bad value never hides a stopped recipient. A value that reads as no handle is skipped.
+ * `recipientsIncomplete`, a list over the cap or one bad value never hides a stopped recipient. A value that reads as no handle is skipped. `input`: the call's own
+ * input, read for Connect's send ops (see `connectInputRecipients`).
  */
-export function floorRecipients(target: unknown): string[] {
-  const raw = isObj(target) ? target.recipients : undefined;
-  if (!Array.isArray(raw)) return [];
+export function floorRecipients(target: unknown, input?: unknown): string[] {
+  const t = isObj(target) ? target : {};
   const out = new Set<string>();
-  for (const v of raw) {
-    const h = typeof v === "string" ? normalizeHandle(v) : null;
-    if (h) out.add(h);
+  if (Array.isArray(t.recipients)) {
+    for (const v of t.recipients) {
+      const h = typeof v === "string" ? normalizeHandle(v) : null;
+      if (h) out.add(h);
+    }
   }
+  if (typeof t.product === "string" && typeof t.op === "string") for (const h of connectInputRecipients(t as { product: string; op: string; tool?: unknown; effect?: unknown }, input)) out.add(h);
   return [...out];
 }
 
@@ -233,7 +291,7 @@ export function floorSubjectsOf(req: HookRequest): FloorSubjects | null {
   if (target.product === "rules" && FLOOR_EXEMPT_OPS.has(target.op)) return null;
   if (callerProductOf(caller) === "rules" && target.product === "fleet" && target.op === "directory_feed") return null;
   const ctx = (req.context ?? {}) as Record<string, unknown>;
-  return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target) };
+  return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target, req.call.input) };
 }
 
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
@@ -326,8 +384,9 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
       noteGate(ctx.db, Date.now());
       const facts = factsOf(req, ctx.db);
       // C380 S1-1: the company floor, before every rule, in all modes. It reads its own table, never `fleetFacts().available`.
-      const subjects = floorSubjectsOf(req);
-      const hit = subjects ? floorHit(floorIndex(ctx.db), subjects) : null;
+      const index = floorIndex(ctx.db);
+      const subjects = index.size > 0 ? floorSubjectsOf(req) : null;
+      const hit = subjects ? floorHit(index, subjects) : null;
       // the default mode decides a call no rule matches (C373c); cached like the rules, no query per call
       const v = hit ? floorVerdict(hit) : evaluate(liveRules(ctx.db), facts, currentMode(ctx.db));
       const { answer, answered } = gateAnswer(v, opts.holdSupported ?? HOLD_SUPPORTED);
