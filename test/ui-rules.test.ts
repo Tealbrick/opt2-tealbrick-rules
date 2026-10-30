@@ -58,7 +58,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const OUTPUTS: Record<string, unknown> = {
   "tb.agents_list": { agents: [{ id: "agt_1", name: "Front desk", mode: "free", status: "active", access: [] }] },
   floor_list: { entries: [], total: 0, feedRevision: 3, readAt: "2026-10-17T09:00:00.000Z", lastGateAt: null, governanceReadable: true },
-  fleet_status: { source: "fleet", available: true, revision: 3, syncedAt: "2026-10-17T09:00:00.000Z", error: null, teams: [{ id: "tm_x", name: "Team X", people: 1, agents: 1 }] },
+  fleet_status: { source: "fleet", available: true, revision: 3, syncedAt: "2026-10-17T09:00:00.000Z", error: null, teams: [{ id: "tm_x", name: "Team X", people: 1, agents: 1 }], roles: [{ id: "rol_con", name: "Contractor", people: 1, agents: 2 }, { id: "rol_stf", name: "Staff", people: 3, agents: 0 }] },
   drafts_list: { drafts: [GOOD, BAD] },
   rules_list: { rules: [RULE], holdSupported: true, defaultDecision: "allow", catalog: { generatedAt: null, syncedAt: null, error: null, products: 3, productIds: ["connect", "crm", "knowledge"] } },
   draft_decide: { draft: GOOD },
@@ -637,5 +637,58 @@ describe("C237: calls from apps", () => {
     assert.match(unverified ?? "", /the calling app’s product could not be verified, so this rule applied strictly/);
     await m.unmount();
     OUTPUTS.decisions_list = saved;
+  });
+});
+
+describe("C380 T2-a: caller roles", () => {
+  it("a rule list line names the role by its name; a rule without the criterion says nothing about roles", async () => {
+    reset();
+    const r = { ...RULE, spec: { ...spec("Contractors wait", "hold"), match: { callerRoles: ["rol_con"] } } };
+    const saved = OUTPUTS.rules_list;
+    OUTPUTS.rules_list = { ...(saved as object), rules: [r, RULE] };
+    const m = await mount(h(rules.RulesPage));
+    const lines = [...m.host.querySelectorAll(".item p")].map((p) => p.textContent ?? "");
+    assert.match(lines[0] ?? "", /^caller has role Contractor → because/);
+    assert.doesNotMatch(lines[1] ?? "", /caller has role/);
+    await m.unmount();
+    OUTPUTS.rules_list = saved;
+  });
+
+  it("the editor offers Governance's roles as chips and saves the chosen ones; untouched, it sends no callerRoles; it says a role changes nothing until a rule names it", async () => {
+    reset();
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "Edit"));
+    const dialog = document.querySelector("dialog") as HTMLElement;
+    const group = dialog.querySelector('[role="group"][aria-label="Caller has the role (from Governance)"]');
+    assert.deepEqual([...(group?.querySelectorAll("button") ?? [])].map((b) => b.textContent), ["Contractor", "Staff"]);
+    assert.match(dialog.textContent ?? "", /A role is a record Governance keeps: it changes nothing until a rule names it/);
+    await click(button(dialog, "Save rule"));
+    await flush();
+    assert.equal("callerRoles" in lastCall("rules_set").rule.match, false, "quiet: nothing chosen");
+    await click(button(m.host, "Edit"));
+    const again = document.querySelector("dialog") as HTMLElement;
+    await click(chipOf(again, "Caller has the role (from Governance)", "Contractor"));
+    assert.equal(chipOf(again, "Caller has the role (from Governance)", "Contractor").getAttribute("aria-pressed"), "true");
+    await click(button(again, "Save rule"));
+    await flush();
+    assert.deepEqual(lastCall("rules_set").rule.match.callerRoles, ["rol_con"]);
+    await m.unmount();
+  });
+
+  it("a rule that names a role the list no longer has (ended or archived) keeps it as a chip, and the role can be switched off", async () => {
+    reset();
+    const r = { ...RULE, spec: { ...RULE.spec, match: { callerRoles: ["rol_old"] } } };
+    const saved = OUTPUTS.rules_list;
+    OUTPUTS.rules_list = { ...(saved as object), rules: [r] };
+    const m = await mount(h(rules.RulesPage));
+    await click(button(m.host, "Edit"));
+    const dialog = document.querySelector("dialog") as HTMLElement;
+    assert.equal(chipOf(dialog, "Caller has the role (from Governance)", "rol_old (no longer listed)").getAttribute("aria-pressed"), "true");
+    await click(chipOf(dialog, "Caller has the role (from Governance)", "rol_old (no longer listed)"));
+    await click(button(dialog, "Save rule"));
+    await flush();
+    assert.equal("callerRoles" in lastCall("rules_set").rule.match, false);
+    await m.unmount();
+    OUTPUTS.rules_list = saved;
   });
 });

@@ -260,6 +260,13 @@ function Editor({
           onChange={(v) => setMatch({ callerTeams: v })}
         />
         <ChipChoice
+          label="Caller has the role (from Governance)"
+          hint="none = any. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. Roles that have ended or are archived match no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
+          options={[...dir.roles.map((r) => ({ value: r.id, label: r.name })), ...(m.callerRoles ?? []).filter((id) => !dir.roles.some((r) => r.id === id)).map((id) => ({ value: id, label: `${id} (no longer listed)` }))]}
+          value={m.callerRoles}
+          onChange={(v) => setMatch({ callerRoles: v })}
+        />
+        <ChipChoice
           label="Calling agent’s trust (from Governance)"
           hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed, and an app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={TRUSTS.map((t) => ({ value: t, label: t }))}
@@ -522,7 +529,7 @@ function Preview({ candidate, ruleId, dir }: { candidate?: RuleSpec; ruleId?: st
           {result.narrowing ? <p className="tb-soft">Narrowed to {narrowingParts(result.narrowing).join(" · ")}</p> : null}
           {result.fleetAvailable ? (
             <p className="tb-hint">
-              Caller teams: {result.callerTeams.length ? result.callerTeams.map(dir.teamName).join(", ") : "none"} · requester teams: {result.teams.length ? result.teams.map(dir.teamName).join(", ") : "none"} ·
+              Caller teams: {result.callerTeams.length ? result.callerTeams.map(dir.teamName).join(", ") : "none"} · caller roles: {result.callerRoles?.length ? result.callerRoles.map(dir.roleName).join(", ") : "none"} · requester teams: {result.teams.length ? result.teams.map(dir.teamName).join(", ") : "none"} ·
               requester trust: {result.trust ?? "unknown"} · caller trust: {result.callerTrust ?? "none (an app)"}
             </p>
           ) : (
@@ -708,7 +715,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                 {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
               </h3>
               <p>
-                {matchText(r.spec, dir.teamName, dir.agentName)} → {safeText(r.spec.outcome.reason)}
+                {matchText(r.spec, dir.teamName, dir.agentName, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
                 {narrowingText(r.spec.narrowing)}
               </p>
               {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}

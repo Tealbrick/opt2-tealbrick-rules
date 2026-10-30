@@ -9,6 +9,7 @@ export type RuleSpec = RuleRow["spec"];
 export type DraftRow = Out<"drafts_list">["drafts"][number];
 export type DecisionRow = Out<"decisions_list">["items"][number];
 export type Team = Out<"fleet_status">["teams"][number];
+export type Role = Out<"fleet_status">["roles"][number];
 
 export function run<K extends keyof PersonOps>(op: K, input: In<K>): Promise<Out<K>> {
   return callOp<Out<K>>(op, input as never);
@@ -98,7 +99,7 @@ export function emptyLists(m: unknown): string[] {
 }
 
 /** One line that says what a rule matches, for lists. */
-export function matchText(s: RuleSpec, teamName: (id: string) => string, agentName: (id: string) => string, titles?: Record<string, string>): string {
+export function matchText(s: RuleSpec, teamName: (id: string) => string, agentName: (id: string) => string, titles?: Record<string, string>, roleName: (id: string) => string = (id) => id): string {
   const m = s.match;
   const parts: string[] = [];
   if (m.agents?.length) parts.push(`callers ${m.agents.map(agentName).join(", ")}`);
@@ -108,6 +109,7 @@ export function matchText(s: RuleSpec, teamName: (id: string) => string, agentNa
   if (m.tools?.length) parts.push(`tools ${m.tools.join(", ")}`);
   if (m.effects?.length) parts.push(`effects ${m.effects.join(", ")}`);
   if (m.callerTeams?.length) parts.push(`caller in team ${m.callerTeams.map(teamName).join(", ")}`);
+  if (m.callerRoles?.length) parts.push(`caller has role ${m.callerRoles.map(roleName).join(", ")}`);
   if (m.callerTrust?.length) parts.push(`calling agent's trust ${m.callerTrust.join(", ")}`);
   if (m.callerProducts?.length) parts.push(`calls from app ${m.callerProducts.join(", ")}`);
   if (m.callerWorkflows?.length) parts.push(`from workflow ${m.callerWorkflows.join(", ")}`);
@@ -137,7 +139,7 @@ export function cutsOffGovernance(s: RuleSpec): boolean {
   if (m.callerProducts?.length && !m.callerProducts.includes("rules")) return false;
   if (m.effects?.length && !m.effects.includes("read")) return false;
   if (m.operations?.length && !m.operations.includes("directory_feed")) return false;
-  if (m.modes?.length || m.callerTeams?.length || m.callerTrust?.length || m.callerWorkflows?.length || m.recipients || m.tools?.length) return false;
+  if (m.modes?.length || m.callerTeams?.length || m.callerRoles?.length || m.callerTrust?.length || m.callerWorkflows?.length || m.recipients || m.tools?.length) return false;
   return !(m.agents?.length && m.agents.every((a) => a.startsWith("agt_")));
 }
 
