@@ -35,7 +35,7 @@ export interface FloorRead {
   revision: number;
   aware: boolean;
   blindHolders?: ReadonlySet<string>;
-  /** the feed's `epoch` (an aware answer only): another value than the last one means another origin. Absent on a Governance that sends none */
+  /** the feed's `epoch`: another value than the last one means another origin. Absent on a Governance that sends none */
   epoch?: string;
 }
 /** The stops a read with no lifecycle facts can see, so it may also lift them. Every other code is a lifecycle stop. */
@@ -65,11 +65,12 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
   const state = db.prepare("SELECT high_revision, epoch, regressed_at FROM floor_state WHERE id = 1").get();
   const high = state?.high_revision == null ? null : Number(state.high_revision);
   const epoch = state?.epoch == null ? null : String(state.epoch);
-  // an epoch is compared on an aware read only: a read without lifecycle facts may simply not carry it
-  const why = high !== null && read.revision < high ? "revision" : read.aware && epoch !== null && read.epoch !== epoch ? "epoch" : null;
+  // another epoch is another origin, also on an empty directory (no row says `floor`). A missing one counts only on an aware read: the fallback read asks for none
+  const otherEpoch = epoch !== null && (read.epoch !== undefined ? read.epoch !== epoch : read.aware);
+  const why = high !== null && read.revision < high ? "revision" : otherEpoch ? "epoch" : null;
   const regressed = state?.regressed_at != null || why !== null;
   if (state?.regressed_at == null && why !== null) db.prepare("UPDATE floor_state SET regressed_at = ?, regressed_from = ?, regressed_to = ?, regressed_why = ? WHERE id = 1").run(now, high, read.revision, why);
-  if (!regressed) db.prepare("UPDATE floor_state SET high_revision = MAX(COALESCE(high_revision, ?), ?), epoch = COALESCE(?, epoch) WHERE id = 1").run(read.revision, read.revision, read.aware ? (read.epoch ?? null) : null);
+  if (!regressed) db.prepare("UPDATE floor_state SET high_revision = MAX(COALESCE(high_revision, ?), ?), epoch = COALESCE(?, epoch) WHERE id = 1").run(read.revision, read.revision, read.epoch ?? null);
 
   const current = new Map<string, { code: string; holder: string }>();
   for (const r of db.prepare("SELECT kind, id, code, holder FROM floor_entries").all()) current.set(keyOf(String(r.kind), String(r.id)), { code: String(r.code), holder: String(r.holder) });
@@ -83,7 +84,8 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
     if (regressed) {
       // nothing is lifted; the page shows what Governance's list no longer has
       out.set(key, next.get(key)?.code ?? was.code);
-      if (!next.has(key)) listed.run(0, kind, id);
+      // a row with no `floor` still lists its holder: it just cannot speak for a lifecycle stop
+      if (!next.has(key) && !(read.blindHolders?.has(was.holder) && isLifecycleStop(was.code))) listed.run(0, kind, id);
     } else if ((!read.aware || read.blindHolders?.has(was.holder)) && isLifecycleStop(was.code)) {
       // a blind read, or a blind row of an aware read, neither lifts nor rewrites a lifecycle stop
       out.set(key, was.code);
@@ -101,6 +103,16 @@ export function writeFloor(db: Db, read: FloorRead, now: number): Map<string, st
   // they add, so a stop made after the restore really is in the table, and Governance's revisions have started again from the lower number.
   if (read.aware) db.prepare("UPDATE floor_state SET feed_revision = ?, read_at = ? WHERE id = 1").run(read.revision, now);
   return out;
+}
+
+/**
+ * An `unchanged` answer from another origin: a restored Governance can reach the very revision Rules asked about, with other data. It does not touch the floor; the caller then
+ * reads in full, where `writeFloor` marks it. Not while regressed: that state already holds everything, and a full read a minute would add nothing.
+ */
+export function otherOriginUnchanged(db: Db, epoch: string | undefined): boolean {
+  if (epoch === undefined) return false;
+  const r = db.prepare("SELECT epoch, regressed_at FROM floor_state WHERE id = 1").get();
+  return r?.regressed_at == null && r?.epoch != null && String(r.epoch) !== epoch;
 }
 
 export function commitFloor(db: Db, index: Map<string, string>): void {

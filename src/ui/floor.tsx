@@ -141,7 +141,7 @@ export function FloorCard({ agentName }: { agentName: (id: string) => string }) 
         </div>
       ) : null}
       {cut && data ? <p className="tb-hint">Showing the newest {data.entries.length} of {data.total} entries.</p> : null}
-      {data && (holders.length > 1 || cut || (data.regressed && holders.length > 0)) ? (
+      {data && (holders.length > 1 || cut || data.regressed) ? (
         <div className="tb-ctas">
           <Button size="sm" onClick={() => setAsking({ what: "everyone on the company floor", holder: null })}>
             Clear all

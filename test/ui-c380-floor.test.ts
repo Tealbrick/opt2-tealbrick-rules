@@ -243,6 +243,13 @@ describe("Company floor card", () => {
     await m.unmount();
   });
 
+  it("regressed with nothing left to list: Clear all is still there, or the hold could not end", async () => {
+    stub.floor = { ...EMPTY, regressed: { at: "2026-10-30T21:00:00.000Z", fromRevision: 10, toRevision: 3, why: "revision" } };
+    const m = await mount(h(floor.FloorCard, { agentName: name }));
+    assert.ok(button(m.host, "Clear all"));
+    await m.unmount();
+  });
+
   it("Clear all sends no holder", async () => {
     stub.floor = STOPPED;
     stub.calls = [];

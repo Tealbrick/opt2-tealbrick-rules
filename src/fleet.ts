@@ -16,8 +16,8 @@ import { normalizeHandle, validateAgainstSchema } from "@opt2-tealbrick/manifest
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import feedSchema from "./contracts/fleet.directory_feed.1.lifecycle.schema.json" with { type: "json" };
 import type { Trust } from "./engine.ts";
-import { type FloorEntry, isLifecycleStop } from "./floor.ts";
-import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
+import { type FloorEntry, isLifecycleStop, otherOriginUnchanged } from "./floor.ts";
+import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, markFleetStale, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
 
 export const FLEET_PRODUCT = "fleet";
 export const FLEET_OP = "directory_feed";
@@ -126,6 +126,8 @@ const CAPS = (feedSchema as unknown as FullSchema).$defs.full.properties;
  */
 function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   if (!isObj(out)) throw feedInvalid("directory_feed answered no object");
+  if (out.epoch !== undefined && (typeof out.epoch !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(out.epoch))) throw feedInvalid("epoch is not an id");
+  const epochOf = typeof out.epoch === "string" ? { epoch: out.epoch } : {};
   const schema = feedSchema as unknown as Parameters<typeof validateAgainstSchema>[0];
   const check = (doc: Json) => {
     const v = validateAgainstSchema(schema, doc);
@@ -133,7 +135,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   };
   if (out.unchanged === true) {
     check(out as Json);
-    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false, floorBlind: new Set() };
+    return { revision: out.revision as number, unchanged: true, model: emptyFleet(), floor: [], floorAware: false, floorBlind: new Set(), ...epochOf };
   }
   // Validate in slices (the same schema, each slice a full document with the other arrays empty), then the array caps.
   const teamsIn = Array.isArray(out.teams) ? (out.teams as { id: string; name?: string; members: { kind: string; id: string }[] }[]) : null;
@@ -265,7 +267,6 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
   for (const [id, ts] of contactTeams) if (!known.contact.has(id)) place(`contact:${id}`, ts, none);
   for (const [id, ts] of agentTeams) if (!known.agent.has(id)) place(`agent:${id}`, ts, none);
   // C380: the floor rows of this answer. A handle two holders share is listed when either is stopped; a lifecycle stop names it first.
-  if (out.epoch !== undefined && (typeof out.epoch !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(out.epoch))) throw feedInvalid("epoch is not an id");
   const floorRows = new Map<string, FloorEntry>();
   let floorAware = false;
   const floorBlind = new Set<string>();
@@ -286,7 +287,7 @@ function* parseSteps(out: unknown): Generator<void, ParsedFeed, void> {
       if (tick(1 + (row.handles?.length ?? 0))) yield;
     }
   }
-  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind, ...(typeof out.epoch === "string" ? { epoch: out.epoch } : {}) };
+  return { revision: out.revision as number, unchanged: false, model: { teams: out2, trust }, floor: [...floorRows.values()], floorAware, floorBlind, ...epochOf };
 }
 
 /** Read an answer in one go (small answers, tests). */
@@ -371,6 +372,11 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);
     // S3-1: the copy says whether it lists agent handles (a read without them makes every recipient unknown at the gate)
+    // C380 N2-2: "unchanged" from another origin proves nothing about the revision: read in full (the sync loop runs once more on the mark)
+    if (d.unchanged && otherOriginUnchanged(db, d.epoch)) {
+      markFleetStale(db);
+      return;
+    }
     // C380 S1-1: only a full valid read changes the floor, and only an answer with lifecycle facts can lift a lifecycle stop (the fallback read without `accept` has none)
     const floor = d.unchanged ? {} : { floor: { entries: d.floor, revision: d.revision, aware: withHandles && d.floorAware, blindHolders: d.floorBlind, ...(d.epoch !== undefined ? { epoch: d.epoch } : {}) } };
     await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, ...floor }, now());

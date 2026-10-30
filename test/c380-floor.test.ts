@@ -457,6 +457,55 @@ test("N2-2: an epoch that disappears on an aware read is another origin; a blind
   assert.equal(floorState(b).regressed?.why, "revision", "rollback to Governance 0.3.2 with its data");
 });
 
+test("review N2-2: a restore that reaches the revision Rules asked about: unchanged from another origin forces a full read, which marks it", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(floorFeed({ revision: 10, epoch: "ep_1" })));
+  const asked: Json[] = [];
+  const restored: CallApp = async (_p, _o, input) => {
+    asked.push(input);
+    return { status: "ok", output: (input as { sinceRevision?: number }).sinceRevision === 10 ? { v: 1, revision: 10, unchanged: true, epoch: "ep_2" } : lifted(10, { epoch: "ep_2" }) };
+  };
+  await syncFleet(db, restored);
+  assert.equal((asked[0] as { sinceRevision?: number }).sinceRevision, 10);
+  assert.equal((asked.at(-1) as { sinceRevision?: number }).sinceRevision, undefined, "one more read, a full one");
+  assert.equal(floorState(db).regressed?.why, "epoch");
+  assert.ok(refusedAsFloor(await gate(db)), "A stays");
+  assert.ok(refusedAsFloor(await gate(db, { caller: AGENT_B })), "the stop made after the restore lands");
+  // while held, the same answer does not mean a full read a minute
+  asked.length = 0;
+  await syncFleet(db, restored);
+  assert.equal(asked.length, 1);
+  // quiet: the same epoch stays a plain unchanged
+  const { db: same } = migratedDb();
+  await syncFleet(same, answer(floorFeed({ revision: 10, epoch: "ep_1" })));
+  let reads = 0;
+  await syncFleet(same, async () => {
+    reads++;
+    return { status: "ok", output: { v: 1, revision: 10, unchanged: true, epoch: "ep_1" } };
+  });
+  assert.equal(reads, 1);
+  assert.equal(floorState(same).regressed, null);
+});
+
+test("review N2-2: a fresh install's empty directory with a new epoch is another origin, and lifts no blocked entry, at any revision", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(feed({ revision: 10, epoch: "ep_1", teams: [], contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "blocked", owner: null, floor: true }] })));
+  await syncFleet(db, answer(feed({ revision: 10, epoch: "ep_2", teams: [], contacts: [], agents: [] })));
+  assert.equal(floorState(db).regressed?.why, "epoch");
+  assert.ok(refusedAsFloor(await gate(db)));
+});
+
+test("review N2-2: listed is true to the read: a blind row does not say a lifecycle stop left Governance; an aware floor false and a missing row do", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(floorFeed({ revision: 10, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "suspended", floor: true }, { id: AGENT_B, status: "active", trust: "blocked", owner: null, floor: true }] })));
+  await syncFleet(db, answer(feed({ revision: 3, teams: [], contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }, { id: AGENT_B, status: "active", trust: "trusted", owner: null }] })));
+  const row = (id: string) => floorRows(db, 5).find((r) => r.id === id)?.listed;
+  assert.equal(row(AGENT_A), true, "blind row: it cannot say");
+  assert.equal(row(AGENT_B), false, "a block it can see is gone");
+  await syncFleet(db, answer(floorFeed({ revision: 4, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
+  assert.equal(row(AGENT_A), false);
+});
+
 test("N2-2: a refusal, an outage or unchanged does not regress or move the high mark", async () => {
   const { db } = await stopped();
   await syncFleet(db, failing("no_grant"));
