@@ -2,7 +2,7 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
-## 0.7.0 - unreleased
+## 0.7.0-dev.1 - DEV pre-release (C380, not for stable until the owner decides D2, D3)
 
 ### Added
 - The company floor (C380, overrides C84, DEV only until the owner decides). One line before every rule, in all modes: a caller agent, an acting agent, a claimed requester or a known recipient that Governance lists as stopped (suspended, leaving, closed, not started yet, blocked; on an older Governance: blocked or departed) is refused. The caller reads only "Refused by company policy"; Decisions keeps the full reason. It reads its own table, written only by a full valid read of the feed, so a paused Governance, a lapsed licence, an outage, an invalid answer or a restart do not lift a stop. Exempt: `rules_explain`, `draft_status`, `floor_status`. Owner actions are never seen by hooks.
@@ -12,6 +12,7 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`
 ### Changed
 - `directory_feed` is read with `accept: ["agent_handles", "lifecycle"]`. Schema `fleet.directory_feed.1.lifecycle` (spec 0.1.89).
 - A rollback of Governance to a release with no lifecycle facts does not lift a lifecycle stop: the owner clears it on the Rules page.
+- `upgradeFrom` is `<0.7.0`. `requires.bridge` stays 0.2.13.
 - **On update:** entries Governance already marks blocked, and departed contacts, start to be refused at the first read of the feed. List them before any promotion.
 
 ## 0.6.0 - unreleased
