@@ -166,28 +166,31 @@ test("S1-1: crash at EVERY statement of a replacing write: the old floor stays w
       },
     };
   };
-  const opened = floorFeed({ revision: 8, agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }], contacts: [] });
+  let revision = 8;
+  const opened = () => floorFeed({ revision, agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }], contacts: [] });
   const probe = counted(Number.MAX_SAFE_INTEGER);
-  await syncFleet(probe as unknown as Db, answer(opened));
+  await syncFleet(probe as unknown as Db, answer(opened()));
   total = probe.count;
   assert.ok(total > 3, `the write ran ${total} statements`);
   // back to the stopped state
-  const reset = restarted(db);
-  await syncFleet(reset, answer(floorFeed({ revision: 9 })));
+  await syncFleet(restarted(db), answer(floorFeed({ revision: ++revision })));
   for (let i = 1; i <= total; i++) {
+    revision++;
     const crashing = counted(i) as unknown as Db;
-    await syncFleet(crashing, answer(opened));
+    await syncFleet(crashing, answer(opened()));
     const after = restarted(db);
     const state = raw.prepare("SELECT revision, usable FROM fleet_sync WHERE id = 1").get() as { revision: number | null; usable: number };
-    const committed = state.usable === 1 && state.revision === 8;
+    const committed = state.usable === 1 && state.revision === revision;
     assert.ok(refusedAsFloor(await gate(after)) || committed, `crash at statement ${i}: ${JSON.stringify(state)}`);
     if (committed) {
       // that statement was after the commit point; put the stop back for the next round
-      await syncFleet(restarted(db), answer(floorFeed({ revision: 9 })));
+      await syncFleet(restarted(db), answer(floorFeed({ revision: ++revision })));
     }
   }
   const last = restarted(db);
-  await syncFleet(last, answer(opened));
+  revision++;
+  await syncFleet(last, answer(opened()));
+  assert.equal(floorState(last).regressed, null);
   assert.equal((await gate(last)).allow, true, "the next good read lifts it");
 });
 
@@ -222,18 +225,18 @@ test("S1-1: the floor table cannot be read: the gate refuses, it does not pass",
 });
 
 test("review #34: a full valid read with no lifecycle facts (rollback, Governance ignores accept, empty directory) cannot lift a lifecycle stop, and confirms no revision", async () => {
-  const blind = (over: Record<string, unknown>) => answer(floorFeed({ revision: 6, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }], ...over }));
+  const blind = (over: Record<string, unknown>) => answer(floorFeed({ revision: 8, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }], ...over }));
   const { db } = await stopped();
   await syncFleet(db, blind({}));
   assert.ok(refusedAsFloor(await gate(db)), "A stays");
   assert.equal(floorState(db).feedRevision, 7);
-  await syncFleet(db, blind({ revision: 8, agents: [] }));
+  await syncFleet(db, blind({ revision: 9, agents: [] }));
   assert.ok(refusedAsFloor(await gate(db)), "an empty directory does not lift it either");
   assert.ok(refusedAsFloor(await gate(restarted(db))));
   // the next read with lifecycle facts does
-  await syncFleet(db, answer(floorFeed({ revision: 9, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
+  await syncFleet(db, answer(floorFeed({ revision: 10, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
   assert.equal((await gate(db)).allow, true);
-  assert.equal(floorState(db).feedRevision, 9);
+  assert.equal(floorState(db).feedRevision, 10);
 });
 
 test("review #34: a read with no lifecycle facts still decides what it can see: an unblocked agent and a returned contact are lifted (Rules dev on Governance 0.3.2)", async () => {
@@ -390,6 +393,161 @@ test("fuzz: over any sequence of reads, an agent is refused exactly when the las
       assert.equal(a.allow, !listed, `seed ${seed} step ${i}: listed ${listed}, answered ${JSON.stringify(a)}`);
     }
   }
+});
+
+// ── N2-2: Governance goes back ─────────────────────────────────────────────────────────
+const lifted = (revision: number, extra: Record<string, unknown> = {}) => floorFeed({ revision, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }, { id: AGENT_B, status: "active", trust: "trusted", owner: null, lifecycle: "suspended", floor: true }], ...extra });
+const statusOf = (db: Db) => run(OP.floorStatus)({}, callerCtx(db, { type: "app", id: APP_INSTANCE, name: "G", product: "fleet", listed: true }));
+
+test("N2-2: a restored Governance (revision goes back, aware, says floor false) lifts nothing; a stop made after the restore is added; the state says why", async () => {
+  const { db } = await stopped();
+  await syncFleet(db, answer(floorFeed({ revision: 900 })));
+  await syncFleet(db, answer(lifted(12)));
+  assert.ok(refusedAsFloor(await gate(db)), "A stays");
+  assert.ok(refusedAsFloor(await gate(db, { caller: AGENT_B })), "a new stop still lands");
+  assert.ok(refusedAsFloor(await gate(restarted(db))), "and after a restart");
+  const st = await statusOf(db);
+  assert.equal(st.regressed.fromRevision, 900);
+  assert.equal(st.regressed.toRevision, 12);
+  assert.equal(st.regressed.why, "revision");
+  assert.equal(st.feedRevision, 12, "stops made after the restore are confirmed at Governance's new revisions");
+  assert.ok(st.unlisted >= 3, "the leaving contact and its handles are gone from Governance's list; the agent row says floor false");
+  // later reads, also forward past the old high, stay add-only
+  await syncFleet(db, answer(lifted(901)));
+  assert.ok(refusedAsFloor(await gate(db)));
+});
+
+test("N2-2: reinstalled Governance (empty, revision 0 or a blocked entry gone): nothing is lifted, a blocked entry neither", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(feed({ revision: 50, teams: [], contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "blocked", owner: null, floor: true }] })));
+  await syncFleet(db, answer(feed({ revision: 3, teams: [], contacts: [], agents: [{ id: AGENT_B, status: "active", trust: "trusted", owner: null, lifecycle: "proposed", floor: false }] })));
+  assert.ok(refusedAsFloor(await gate(db)));
+  await syncFleet(db, answer(feed({ revision: 0, teams: [], contacts: [], agents: [] })));
+  assert.ok(refusedAsFloor(await gate(db)));
+  assert.equal(floorRows(db, 5).find((r) => r.id === AGENT_A)?.listed, false);
+});
+
+test("N2-2: another epoch is another origin, also with a HIGHER revision (restore then forward bumps, or a busy fresh install); no epoch before: no alarm", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(floorFeed({ revision: 100 })));
+  await syncFleet(db, answer(floorFeed({ revision: 101, epoch: "ep_1" })));
+  assert.equal(floorState(db).regressed, null, "a Governance that starts to send one is not a new origin");
+  await syncFleet(db, answer(floorFeed({ revision: 102, epoch: "ep_1" })));
+  assert.equal(floorState(db).regressed, null);
+  await syncFleet(db, answer(lifted(190, { epoch: "ep_2" })));
+  assert.ok(refusedAsFloor(await gate(db)), "revision alone would have lifted this");
+  assert.equal(floorState(db).regressed?.why, "epoch");
+  for (const bad of [7, "", "not ok", "x".repeat(65), null]) {
+    const fresh = migratedDb().db;
+    await syncFleet(fresh, answer(floorFeed({ epoch: bad as never })));
+    assert.equal(floorState(fresh).feedRevision, null, `epoch ${JSON.stringify(bad)} refuses the answer`);
+  }
+});
+
+test("N2-2: an epoch that disappears on an aware read is another origin; a blind read does not compare epochs; a blind read that goes back does regress", async () => {
+  const a = migratedDb().db;
+  await syncFleet(a, answer(floorFeed({ epoch: "ep_1" })));
+  await syncFleet(a, answer(lifted(8)));
+  assert.equal(floorState(a).regressed?.why, "epoch");
+  const b = migratedDb().db;
+  await syncFleet(b, answer(floorFeed({ epoch: "ep_1" })));
+  await syncFleet(b, answer(feed({ revision: 8, teams: [], contacts: [], agents: [] })));
+  assert.equal(floorState(b).regressed, null, "blind, forward");
+  await syncFleet(b, answer(feed({ revision: 2, teams: [], contacts: [], agents: [] })));
+  assert.equal(floorState(b).regressed?.why, "revision", "rollback to Governance 0.3.2 with its data");
+});
+
+test("review N2-2: a restore that reaches the revision Rules asked about: unchanged from another origin forces a full read, which marks it", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(floorFeed({ revision: 10, epoch: "ep_1" })));
+  const asked: Json[] = [];
+  const restored: CallApp = async (_p, _o, input) => {
+    asked.push(input);
+    return { status: "ok", output: (input as { sinceRevision?: number }).sinceRevision === 10 ? { v: 1, revision: 10, unchanged: true, epoch: "ep_2" } : lifted(10, { epoch: "ep_2" }) };
+  };
+  await syncFleet(db, restored);
+  assert.equal((asked[0] as { sinceRevision?: number }).sinceRevision, 10);
+  assert.equal((asked.at(-1) as { sinceRevision?: number }).sinceRevision, undefined, "one more read, a full one");
+  assert.equal(floorState(db).regressed?.why, "epoch");
+  assert.ok(refusedAsFloor(await gate(db)), "A stays");
+  assert.ok(refusedAsFloor(await gate(db, { caller: AGENT_B })), "the stop made after the restore lands");
+  // while held, the same answer does not mean a full read a minute
+  asked.length = 0;
+  await syncFleet(db, restored);
+  assert.equal(asked.length, 1);
+  // quiet: the same epoch stays a plain unchanged
+  const { db: same } = migratedDb();
+  await syncFleet(same, answer(floorFeed({ revision: 10, epoch: "ep_1" })));
+  let reads = 0;
+  await syncFleet(same, async () => {
+    reads++;
+    return { status: "ok", output: { v: 1, revision: 10, unchanged: true, epoch: "ep_1" } };
+  });
+  assert.equal(reads, 1);
+  assert.equal(floorState(same).regressed, null);
+});
+
+test("review N2-2: a fresh install's empty directory with a new epoch is another origin, and lifts no blocked entry, at any revision", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(feed({ revision: 10, epoch: "ep_1", teams: [], contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "blocked", owner: null, floor: true }] })));
+  await syncFleet(db, answer(feed({ revision: 10, epoch: "ep_2", teams: [], contacts: [], agents: [] })));
+  assert.equal(floorState(db).regressed?.why, "epoch");
+  assert.ok(refusedAsFloor(await gate(db)));
+});
+
+test("review N2-2: listed is true to the read: a blind row does not say a lifecycle stop left Governance; an aware floor false and a missing row do", async () => {
+  const { db } = migratedDb();
+  await syncFleet(db, answer(floorFeed({ revision: 10, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "suspended", floor: true }, { id: AGENT_B, status: "active", trust: "blocked", owner: null, floor: true }] })));
+  await syncFleet(db, answer(feed({ revision: 3, teams: [], contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null }, { id: AGENT_B, status: "active", trust: "trusted", owner: null }] })));
+  const row = (id: string) => floorRows(db, 5).find((r) => r.id === id)?.listed;
+  assert.equal(row(AGENT_A), true, "blind row: it cannot say");
+  assert.equal(row(AGENT_B), false, "a block it can see is gone");
+  await syncFleet(db, answer(floorFeed({ revision: 4, contacts: [], agents: [{ id: AGENT_A, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
+  assert.equal(row(AGENT_A), false);
+});
+
+test("N2-2: a refusal, an outage or unchanged does not regress or move the high mark", async () => {
+  const { db } = await stopped();
+  await syncFleet(db, failing("no_grant"));
+  await syncFleet(db, failing("internal_error", 500));
+  assert.equal(floorState(db).regressed, null);
+  await syncFleet(db, answer(floorFeed({ revision: 7 })));
+  assert.equal(floorState(db).regressed, null, "the same revision is not backward");
+});
+
+test("N2-2: only Clear all ends it: one holder does not; after Clear all the current list decides, including a lower revision; a second restore is seen again", async () => {
+  const { db } = await stopped();
+  await syncFleet(db, answer(floorFeed({ revision: 900, epoch: "ep_1" })));
+  await syncFleet(db, answer(lifted(12, { epoch: "ep_2" })));
+  await run(OP.floorClear)({ confirm: true, holder: "contact:ct_left" }, ownerCtx(db));
+  assert.ok(floorState(db).regressed, "one holder leaves the hold on");
+  await run(OP.floorClear)({ confirm: true }, ownerCtx(db));
+  assert.equal(floorState(db).regressed, null);
+  await syncFleet(db, answer(lifted(12, { epoch: "ep_2" })));
+  assert.equal((await gate(db)).allow, true, "A: not listed");
+  assert.ok(refusedAsFloor(await gate(db, { caller: AGENT_B })), "B: listed");
+  await syncFleet(db, answer(lifted(13, { epoch: "ep_2", agents: [{ id: AGENT_B, status: "active", trust: "trusted", owner: null, lifecycle: "active", floor: false }] })));
+  assert.equal((await gate(db, { caller: AGENT_B })).allow, true, "a normal lift works again");
+  await syncFleet(db, answer(lifted(5, { epoch: "ep_2" })));
+  assert.equal(floorState(db).regressed?.fromRevision, 13);
+});
+
+test("N2-2: crash during the read that detects it: all or nothing", async () => {
+  const { db, raw } = await stopped();
+  await syncFleet(db, answer(floorFeed({ revision: 900 })));
+  const breaking = {
+    exec: (s: string) => db.exec(s),
+    prepare: (s: string) => {
+      if (s.startsWith("UPDATE floor_entries SET listed")) throw new Error("crash");
+      return db.prepare(s);
+    },
+    transaction: <T>(f: () => T) => db.transaction(f),
+  } as unknown as Db;
+  await syncFleet(breaking, answer(lifted(12)));
+  assert.ok(refusedAsFloor(await gate(restarted(db))));
+  assert.equal((raw.prepare("SELECT regressed_at FROM floor_state WHERE id = 1").get() as { regressed_at: number | null }).regressed_at, null, "rolled back with the rest");
+  await syncFleet(restarted(db), answer(lifted(12)));
+  assert.ok(floorState(db).regressed, "the next read sees it");
 });
 
 // ── who it reaches ───────────────────────────────────────────────────────────────────────

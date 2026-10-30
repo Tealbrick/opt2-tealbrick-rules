@@ -219,8 +219,8 @@ function handlesOfValue(v: unknown): string[] {
  * C380 A29: the bridge sends no `target.recipients` yet (cap `hook_recipients` waits on bridge feat/c373-recipients-p2), so the floor reads who Connect's send
  * ops name from the call's own input, which the hook sees. Only Connect sends outward. The op input is what the op runs on, so this cannot be claimed away, and
  * a wrong value can only refuse more. It serves the floor only: `recipientsOf` stays what recipient RULES read, so they stay fail closed until the bridge sends the list.
- * test/c380-floor-input.test.ts binds this table to Connect's manifest. What the input does not name stays with Connect's own bar: `channel_reply` (a seq), a Buzz
- * channel id, a Slack `C…` or `D…` conversation, an email.
+ * test/c380-floor-input.test.ts binds this table to Connect's manifest. What the input does not name stays with Connect's own bar: `channel_reply` (a seq: only
+ * Connect's inbox knows whose it is, and a hook makes no app call, G3), a Buzz channel id, a Slack `C…` or `D…` conversation, an email.
  */
 const CONNECT_RECIPIENT_FIELDS: ReadonlyMap<string, string> = new Map([
   ["buzz_dm", "to"],
@@ -247,13 +247,25 @@ function collectValues(v: unknown, out: unknown[], depth: number): void {
   if (out.length > FLOOR_INPUT_VALUES_MAX) throw new Error("too many recipient values to check");
 }
 
+/** Finds the recipient keys at any depth (a catalog tool names `body.to`). A value under another key is not a recipient: a body text is never read. */
+function collectToolArgs(v: unknown, out: unknown[], depth: number): void {
+  if (depth > FLOOR_INPUT_DEPTH) return;
+  if (Array.isArray(v)) for (const x of v) collectToolArgs(x, out, depth + 1);
+  else if (isObj(v)) {
+    for (const [key, x] of Object.entries(v)) {
+      if (CONNECT_TOOL_RECIPIENT_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/gu, ""))) collectValues(x, out, 0);
+      else collectToolArgs(x, out, depth + 1);
+    }
+  }
+}
+
 export function connectInputRecipients(target: { product: string; op: string; tool?: unknown; effect?: unknown }, input: unknown): string[] {
   if (target.product !== "connect" || !isObj(input)) return [];
   const values: unknown[] = [];
   if (target.tool !== undefined) {
     // a read tool names nobody it talks to, and answering there would be a free test of who is stopped
     if (target.effect === "read" || !isObj(input.arguments)) return [];
-    for (const [key, v] of Object.entries(input.arguments)) if (CONNECT_TOOL_RECIPIENT_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/gu, ""))) collectValues(v, values, 0);
+    collectToolArgs(input.arguments, values, 0);
   } else {
     const field = CONNECT_RECIPIENT_FIELDS.get(target.op);
     if (field !== undefined) collectValues(input[field], values, 0);
