@@ -49,7 +49,21 @@ async function saveAccess(caller: Caller, s: AccessSetting, cat: AccessCatalog, 
     for (const m of made) await run("rules_delete", { id: m.id, expectedRev: m.rev }).catch(() => undefined);
     throw e;
   }
-  for (const r of old) await run("rules_delete", { id: r.id, expectedRev: r.rev });
+  // The old rules go last. If the first one will not go, nothing has changed yet: the new ones are removed again, and the old ones stay.
+  // After that the setting is half saved, and the owner must hear it.
+  let gone = 0;
+  try {
+    for (const r of old) {
+      await run("rules_delete", { id: r.id, expectedRev: r.rev });
+      gone++;
+    }
+  } catch (e) {
+    if (gone === 0) {
+      for (const m of made) await run("rules_delete", { id: m.id, expectedRev: m.rev }).catch(() => undefined);
+      throw e;
+    }
+    throw Object.assign(new Error(`The new level is saved, but some old rules could not be removed. Open this agent and save it again. ${errorText(e)}`), { code: "input_invalid" });
+  }
   return `${specs.length} ${specs.length === 1 ? "rule" : "rules"} saved.`;
 }
 
@@ -262,7 +276,10 @@ const BULK_SCOPE = { id: "access", name: "Access" };
 const LEVEL_CHOICES = LEVELS.map((l) => ({ id: String(l.level), label: l.title, hint: l.text }));
 
 /** One level for several agents, by the save of the dialog, one agent at a time. Each agent keeps what happens beyond the level, its apps and its tools. */
-function ManyAgents({ agents, byCaller, cat, modeName, onBack, reload }: { agents: readonly Caller[]; byCaller: ReadonlyMap<string, { setting: AccessSetting; rules: RuleRow[] }>; cat: AccessCatalog; modeName: string; onBack: () => void; reload: () => void }) {
+function ManyAgents({ agents, byCaller: loaded, cat, modeName, onBack, reload }: { agents: readonly Caller[]; byCaller: ReadonlyMap<string, { setting: AccessSetting; rules: RuleRow[] }>; cat: AccessCatalog; modeName: string; onBack: () => void; reload: () => void }) {
+  // What the last read gave, kept here: the next click must delete the rules that exist now, not the ones the page read before this click.
+  const [fresh, setFresh] = useState<ReadonlyMap<string, { setting: AccessSetting; rules: RuleRow[] }> | null>(null);
+  const byCaller = fresh ?? loaded;
   const [beyond, setBeyond] = useState<AccessSetting["beyond"]>("hold");
   // A setting edited by hand on the Rules page has rules the setting does not build: a save would overwrite them, so it is changed one by one.
   const handEdited = useMemo(() => agents.filter((c) => { const f = byCaller.get(callerKey(c)); return f ? isEdited(c, f, cat) : false; }), [agents, byCaller, cat]);
@@ -286,9 +303,10 @@ function ManyAgents({ agents, byCaller, cat, modeName, onBack, reload }: { agent
     await saveAccess(caller, next, cat, found?.rules ?? []);
   };
   const read = useCallback(async () => {
-    const fresh = await loadRules();
+    const next = accessOf((await loadRules()).rules);
+    setFresh(next);
     reload();
-    return accessCells(accessOf(fresh.rules), BULK_SCOPE.id);
+    return accessCells(next, BULK_SCOPE.id);
   }, [reload]);
   return (
     <AccessBulk

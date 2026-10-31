@@ -33,6 +33,7 @@ g.requestAnimationFrame = (cb: () => void) => setTimeout(cb, 0);
 const AGENT = { id: "agt_01J0000000000000000000000A", name: "Front desk", mode: "free", status: "active", access: [] };
 let agentRows: unknown[] = [AGENT];
 let refuseSet: ((rule: unknown) => { status: number; body: unknown } | undefined) | null = null;
+let refuseDelete: ((id: string | undefined) => { status: number; body: unknown } | undefined) | null = null;
 const CATALOG = { generatedAt: null, syncedAt: null, error: null, products: 3, productIds: ["connect", "kanban", "rules"], dynamicOps: ["connect.tools"], skipped: [] };
 const LIST = (rules: unknown[]) => ({ rules, holdSupported: true, defaultDecision: "allow", mode: { mode: "permissive", changedAt: null, changedBy: null }, system: [], catalog: CATALOG });
 const FLEET = { source: "fleet", available: true, revision: 3, syncedAt: "2026-10-17T09:00:00.000Z", error: null, teams: [] };
@@ -65,6 +66,8 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     return json(200, { status: "ok", output: { rule: r } });
   }
   if (op === "rules_delete") {
+    const held = refuseDelete?.(body.input?.id);
+    if (held) return json(held.status, held.body);
     saved = saved.filter((r) => (r as { id: string }).id !== body.input?.id);
     return json(200, { status: "ok", output: { id: body.input?.id, rev: 2 } });
   }
@@ -251,6 +254,50 @@ describe("C374: Access page", () => {
     refuseSet = null;
     agentRows = [AGENT];
     saved = [];
+  });
+
+  it("many: two clicks in a row delete the rules of the last read, so no second set stays behind", async () => {
+    seed();
+    const m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    await click(button(m.host, "Read and change"));
+    await click(button(m.host, "Also outward"));
+    assert.deepEqual(specsFor("agt_A"), accessSpecs(caller(A), { level: 3, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] }, CATALOG));
+    assert.doesNotMatch(m.host.textContent ?? "", /Failed:/);
+    await m.unmount();
+  });
+
+  it("many: an old rule that will not go leaves the setting as it was, and a half save says so", async () => {
+    seed();
+    const before = JSON.stringify(specsFor("agt_A"));
+    let m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    let tried = 0;
+    refuseDelete = () => {
+      tried++;
+      return tried === 1 ? { status: 409, body: { error: { code: "revision_conflict", message: "the rule changed; reload and edit again" } } } : undefined;
+    };
+    await click(button(m.host, "Read and change"));
+    refuseDelete = null;
+    assert.equal(JSON.stringify(specsFor("agt_A")), before, "the new rules went again; the old ones stayed");
+    assert.match(m.host.textContent ?? "", /Failed: Alpha\. the rule changed/);
+    await m.unmount();
+    // the second old rule will not go: the first is gone, so the setting is half saved
+    seed();
+    let deletes = 0;
+    refuseDelete = (id) => (++deletes === 2 && id ? { status: 409, body: { error: { code: "revision_conflict", message: "the rule changed; reload and edit again" } } } : undefined);
+    m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    await click(button(m.host, "Read and change"));
+    refuseDelete = null;
+    assert.match(m.host.textContent ?? "", /Failed: Alpha\. The new level is saved, but some old rules could not be removed\./);
+    assert.notEqual(JSON.stringify(specsFor("agt_A")), before);
+    await m.unmount();
+    saved = [];
+    agentRows = [AGENT];
   });
 
   it("bulkSetting: the level changes and nothing else", () => {
