@@ -269,7 +269,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={m.callerTeams}
           onChange={(v) => setMatch({ callerTeams: v })}
-          filter={{ screen: "rules:chips:teams", label: "Filter the teams", noun: TEAM_NOUN }}
+          filter={{ screen: "rules:chips:teams", label: "Filter the teams the caller may be in", noun: TEAM_NOUN }}
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
@@ -281,7 +281,7 @@ function Editor({
           ]}
           value={m.callerRoles}
           onChange={(v) => setMatch({ callerRoles: v })}
-          filter={{ screen: "rules:chips:roles", label: "Filter the roles", noun: { one: "role", many: "roles" } }}
+          filter={{ screen: "rules:chips:roles", label: "Filter the roles the caller may have", noun: { one: "role", many: "roles" } }}
         />
         <ChipChoice
           label="Calling agent’s trust (from Governance)"
@@ -296,7 +296,7 @@ function Editor({
           options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
           value={m.callerProducts}
           onChange={(v) => setMatch({ callerProducts: v })}
-          filter={{ screen: "rules:chips:apps", label: "Filter the apps", noun: { one: "app", many: "apps" } }}
+          filter={{ screen: "rules:chips:apps", label: "Filter the apps that may call", noun: { one: "app", many: "apps" } }}
         />
         <Field
           label="Calls from workflows"
@@ -309,7 +309,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={obo.teams}
           onChange={(v) => setObo({ teams: v })}
-          filter={{ screen: "rules:chips:requester-teams", label: "Filter the teams", noun: TEAM_NOUN }}
+          filter={{ screen: "rules:chips:requester-teams", label: "Filter the teams the requester may be in", noun: TEAM_NOUN }}
         />
         <ChipChoice
           label="Requester trust (from Governance)"
@@ -327,7 +327,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={rcp.teams}
           onChange={(v) => setRcp({ teams: v })}
-          filter={{ screen: "rules:chips:recipient-teams", label: "Filter the teams", noun: TEAM_NOUN }}
+          filter={{ screen: "rules:chips:recipient-teams", label: "Filter the teams that may receive", noun: TEAM_NOUN }}
         />
         <ChipChoice label="Recipients with trust (from Governance)" hint="none = any. A recipient Governance doesn’t list counts as unreviewed." options={TRUSTS.map((t) => ({ value: t, label: t }))} value={rcp.trust} onChange={(v) => setRcp({ trust: v })} />
         <Field label="Unknown recipients" hint="Whether the recipient is a contact or agent that Governance lists.">
@@ -669,14 +669,14 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
   const rules = allRules.filter((r) => {
     const named = r.spec.match.agents ?? [];
     if (agent === NO_AGENT ? named.length > 0 : agentOn && !named.includes(agent)) return false;
-    return textFilter.test([r.spec.title, r.spec.outcome.reason, DECISION_LABEL[r.spec.outcome.decision], matchText(r.spec, dir.teamName, dir.agentName, undefined, dir.roleName), r.deleted ? "deleted" : r.spec.active ? "" : "inactive", r.problem ? "never matches" : ""].join(" "));
+    return textFilter.test([r.spec.title, r.spec.outcome.reason, DECISION_LABEL[r.spec.outcome.decision], matchText(r.spec, dir.teamName, dir.agentLabel, undefined, dir.roleName), r.deleted ? "deleted" : r.spec.active ? "" : "inactive", r.problem ? "never matches" : ""].join(" "));
   });
   const showBar = allRules.length >= FILTER_FROM || query.trim() !== "" || agentOn;
   const agentChoices: SelectOption[] = [
     { value: ALL_AGENTS, label: "All agents" },
     { value: NO_AGENT, label: "Rules that name no agent" },
     ...[...new Set(allRules.flatMap((r) => r.spec.match.agents ?? []).concat(agentOn && agent !== NO_AGENT ? [agent] : []))]
-      .map((id) => ({ value: id, label: dir.agentName(id) }))
+      .map((id) => ({ value: id, label: dir.agentLabel(id) }))
       .sort((a, b) => a.label.localeCompare(b.label)),
   ];
   const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
@@ -777,7 +777,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
                   {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
                 </h3>
                 <p>
-                  {matchText(r.spec, dir.teamName, dir.agentName, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
+                  {matchText(r.spec, dir.teamName, dir.agentLabel, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
                   {narrowingText(r.spec.narrowing)}
                 </p>
                 {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}

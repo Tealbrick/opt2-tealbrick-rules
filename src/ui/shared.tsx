@@ -80,6 +80,8 @@ export interface Directory {
   /** the flat roles of Governance (C380 T2-a) */
   roles: readonly Role[];
   agentName: (id: string) => string;
+  /** like agentName, but an agent the read directory does not list is "An agent that is no longer listed", never its id (ids stay while the directory is not read) */
+  agentLabel: (id: string) => string;
   teamName: (id: string) => string;
   roleName: (id: string) => string;
   /** plain messages of what could not be loaded (RUL-14); names fall back to ids meanwhile */
@@ -89,6 +91,9 @@ export interface Directory {
   loading: boolean;
   reload: () => void;
 }
+
+/** What the owner reads for an agent id that the agent list does not have (removed). */
+export const UNLISTED_AGENT = "An agent that is no longer listed";
 
 /** What the owner reads for a role id that Governance does not list (archived, or gone). */
 export const UNLISTED_ROLE = "a role that is archived or gone";
@@ -103,6 +108,7 @@ export function useDirectory(): Directory {
   const [roles, setRoles] = useState<readonly Role[]>([]);
   const [errors, setErrors] = useState<readonly string[]>([]);
   const [fleetAvailable, setFleetAvailable] = useState<boolean | null>(null);
+  const [agentsRead, setAgentsRead] = useState(false);
   const [loading, setLoading] = useState(true);
   const seq = useRef(0);
   const reload = useCallback(() => {
@@ -111,8 +117,10 @@ export function useDirectory(): Directory {
     Promise.allSettled([callOp<{ agents: Agent[] }>("tb.agents_list", {}), run("fleet_status", {})]).then(([a, t]) => {
       if (mine !== seq.current) return;
       const errs: string[] = [];
-      if (a.status === "fulfilled") setAgents(a.value.agents);
-      else errs.push(`Couldn’t load your agents, so their names show as ids. ${errorText(a.reason)}`);
+      if (a.status === "fulfilled") {
+        setAgents(a.value.agents);
+        setAgentsRead(true);
+      } else errs.push(`Couldn’t load your agents, so their names show as ids. ${errorText(a.reason)}`);
       if (t.status === "fulfilled") {
         setTeams(t.value.teams);
         setRoles(t.value.roles ?? []);
@@ -127,10 +135,11 @@ export function useDirectory(): Directory {
   }, []);
   useEffect(reload, [reload]);
   const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? id, [agents]);
+  const agentLabel = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? (agentsRead ? UNLISTED_AGENT : id), [agents, agentsRead]);
   const teamName = useCallback((id: string) => teams.find((t) => t.id === id)?.name ?? id, [teams]);
   // A role the list does not have is archived or gone (Governance leaves an archived role out): say that, never its id. While the list loads, or when it could not be read, say only "a role".
   const roleName = useCallback((id: string) => roles.find((r) => r.id === id)?.name ?? (loading || fleetAvailable === null ? "a role" : UNLISTED_ROLE), [roles, loading, fleetAvailable]);
-  return { agents, teams, roles, agentName, teamName, roleName, errors, fleetAvailable, loading, reload };
+  return { agents, teams, roles, agentName, agentLabel, teamName, roleName, errors, fleetAvailable, loading, reload };
 }
 
 /** Why the directory is incomplete, with Try again. */
@@ -144,20 +153,24 @@ export function DirectoryErrors({ dir }: { dir: Directory }) {
 }
 
 /** The agents of this workspace (one `tb.agents_list` read); empty while it loads or when it could not be read (quietly: the page never waits for it). */
-export function useAgents(): readonly Agent[] {
+export function useAgents(): { agents: readonly Agent[]; read: boolean } {
   const [agents, setAgents] = useState<readonly Agent[]>([]);
+  const [read, setRead] = useState(false);
   useEffect(() => {
     let live = true;
     callOp<{ agents: Agent[] }>("tb.agents_list", {})
       .then((r) => {
-        if (live) setAgents(r.agents);
+        if (live) {
+          setAgents(r.agents);
+          setRead(true);
+        }
       })
       .catch(() => undefined);
     return () => {
       live = false;
     };
   }, []);
-  return agents;
+  return { agents, read };
 }
 
 /**
@@ -165,7 +178,7 @@ export function useAgents(): readonly Agent[] {
  * (quietly; the page never waits for it or blocks on it).
  */
 export function useAgentNames(): (id: string) => string {
-  const agents = useAgents();
+  const { agents } = useAgents();
   return useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? id, [agents]);
 }
 

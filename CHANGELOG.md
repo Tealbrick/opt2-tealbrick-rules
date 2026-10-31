@@ -9,6 +9,7 @@ C382 batch 4, DEV only. No function or CLI change; ui 0.7.0.
 - Holds and Receipts: a filter by agent and by text. A filter always shows "Showing N of M" and Clear. Receipts filters by agent on the server; the text filter reads the loaded rows and says so while more are not loaded, with Show older in reach. Held approvals that a filter hides are counted above the list.
 - Rules list: a filter by text and by the agent a rule names. Rules answers every rule at once, so the filter reads them all.
 - Rule editor: the long lists of agents, teams, roles and apps get a filter and "Select all shown" (and "Unselect all shown"). They change only the chips the filter shows. A chosen chip the filter hides stays chosen and is counted ("3 selected, 1 hidden by the filter").
+- A rule or decision that names an agent no longer listed says "An agent that is no longer listed", not its id. Each chip filter in the editor has its own label. In Decisions, rows of an older filter are never shown under a new one, also when the new load fails.
 - Decisions: an Agent choice (the server filters, so it covers every decision) and a text filter. The text reads only the decisions loaded so far while more are not loaded, and says so, with Load more in reach.
 
 ## 0.7.0-dev.7 (2026-10-31)

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type DecisionRow, errorText, run, safeText, shortId, when } from "./api.ts";
 import { FILTER_FROM, filterKey } from "./list-filter.ts";
 import { modeTraceText } from "./mode.tsx";
-import { DecisionTag, Head, LoadError, Loading, useAgents } from "./shared.tsx";
+import { DecisionTag, Head, LoadError, Loading, UNLISTED_AGENT, useAgents } from "./shared.tsx";
 
 type DecisionFilter = "" | "allow" | "deny" | "hold";
 const ALL_AGENTS = "__all";
@@ -16,10 +16,11 @@ const SHOW = [
 ];
 
 export function DecisionsPage() {
-  const agents = useAgents();
-  const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? id, [agents]);
-  const [items, setItems] = useState<DecisionRow[] | null>(null);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const { agents, read: agentsRead } = useAgents();
+  // an agent the read list does not have is "no longer listed", never a raw id (the ids stay while the list is not read)
+  const agentName = useCallback((id: string) => agents.find((a) => a.id === id)?.name ?? (agentsRead ? UNLISTED_AGENT : id), [agents, agentsRead]);
+  // the rows come with the filter they were loaded for: rows of an older filter are never shown under a new one, also when the new load fails
+  const [loaded, setLoaded] = useState<{ key: string; items: DecisionRow[]; cursor: string | null } | null>(null);
   const [filter, setFilter] = useState<{ callId: string; decision: DecisionFilter; caller: string }>({ callId: "", decision: "", caller: "" });
   const [error, setError] = useState<string | null>(null);
   const [moreError, setMoreError] = useState<string | null>(null);
@@ -27,9 +28,11 @@ export function DecisionsPage() {
   const [paging, setPaging] = useState(false);
   const seq = useRef(0);
   const query = useMemo(() => ({ ...(filter.callId ? { callId: filter.callId } : {}), ...(filter.decision ? { decision: filter.decision } : {}), ...(filter.caller ? { caller: filter.caller } : {}), limit: 50 }), [filter]);
+  const queryKey = JSON.stringify(query);
   const load = useCallback(
     (more?: string | null) => {
       const mine = ++seq.current;
+      const key = JSON.stringify(query);
       setLoading(true);
       setPaging(Boolean(more));
       if (more) setMoreError(null);
@@ -37,8 +40,7 @@ export function DecisionsPage() {
       run("decisions_list", { ...query, ...(more ? { cursor: more } : {}) })
         .then((r) => {
           if (mine !== seq.current) return;
-          setItems((prev) => (more ? [...(prev ?? []), ...r.items] : r.items));
-          setCursor(r.nextCursor);
+          setLoaded((prev) => (more && prev?.key === key ? { key, items: [...prev.items, ...r.items], cursor: r.nextCursor } : { key, items: r.items, cursor: r.nextCursor }));
         })
         .catch((e) => {
           if (mine !== seq.current) return;
@@ -55,6 +57,9 @@ export function DecisionsPage() {
   // C382 batch 4: a text filter over the decisions loaded. The agent, the decision and the call id are the server's (they cover every decision); the text is not, so a paged log says it reads only the loaded rows.
   const [text, setText] = useAccessFilter(filterKey("decisions"));
   const textFilter = accessFilter(text);
+  const current = loaded?.key === queryKey ? loaded : null;
+  const items = current?.items ?? null;
+  const cursor = current?.cursor ?? null;
   const all = items ?? [];
   const rows = all.filter((d) =>
     textFilter.test(
@@ -75,12 +80,16 @@ export function DecisionsPage() {
   );
   const serverOn = filter.callId !== "" || filter.decision !== "" || filter.caller !== "";
   const filterOn = serverOn || text.trim() !== "";
-  const showBar = items !== null && (all.length >= FILTER_FROM || cursor !== null || filterOn);
+  const barSeen = useRef(false);
+  const wants = items !== null && (all.length >= FILTER_FROM || cursor !== null || filterOn);
+  if (wants) barSeen.current = true;
+  // once shown, the bar stays while another filter loads (the focus is kept); a failed load shows its error instead of a count
+  const showBar = items !== null ? wants : barSeen.current && !error;
   const agentChoices: SelectOption[] = [
     { value: ALL_AGENTS, label: "All agents" },
     ...agents.map((a) => ({ value: a.id, label: a.name })).sort((a, b) => a.label.localeCompare(b.label)),
     // a remembered or chosen agent that is not listed stays selectable, so the filter never hides
-    ...(filter.caller !== "" && !agents.some((a) => a.id === filter.caller) ? [{ value: filter.caller, label: "An agent that is no longer listed" }] : []),
+    ...(filter.caller !== "" && !agents.some((a) => a.id === filter.caller) ? [{ value: filter.caller, label: UNLISTED_AGENT }] : []),
   ];
   return (
     <section className="app-page" aria-label="Decisions">
@@ -113,7 +122,7 @@ export function DecisionsPage() {
           total={all.length}
           facets={serverOn}
           more={cursor !== null}
-          busy={loading && !paging}
+          busy={loading && !paging && !error}
           onLoadMore={() => load(cursor)}
           loadMoreLabel="Load more"
           loadingMore={loading}

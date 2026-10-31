@@ -60,8 +60,10 @@ interface Stub {
   rules: ReturnType<typeof rule>[];
   decisions: ReturnType<typeof decisionRow>[];
   calls: { op: string; input: Record<string, unknown> }[];
+  /** decisions_list answers 500 while a caller filter is sent */
+  failCaller: boolean;
 }
-const stub: Stub = { rules: [], decisions: [], calls: [] };
+const stub: Stub = { rules: [], decisions: [], calls: [], failCaller: false };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const catalog = { generatedAt: null, syncedAt: null, error: null, products: 1, productIds: ["connect"] };
 const OUTPUTS: Record<string, () => unknown> = {
@@ -80,6 +82,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const inp = (JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> }).input ?? {};
   stub.calls.push({ op, input: inp });
   if (op === "decisions_list") {
+    if (stub.failCaller && inp.caller) return json(500, { error: { code: "internal_error", message: "raw upstream text", requestId: "req_9" } });
     const all = stub.decisions.filter((d) => (!inp.caller || d.caller.id === inp.caller) && (!inp.decision || d.decision === inp.decision) && (!inp.callId || d.callId === inp.callId));
     const from = inp.cursor ? Number(inp.cursor) : 0;
     return json(200, { status: "ok", output: { items: all.slice(from, from + PAGE), nextCursor: from + PAGE < all.length ? String(from + PAGE) : null } });
@@ -127,6 +130,7 @@ const reset = () => {
   stub.rules = [];
   stub.decisions = [];
   stub.calls = [];
+  stub.failCaller = false;
 };
 
 type Rules = typeof import("../src/ui/rules.tsx");
@@ -282,6 +286,75 @@ describe("Editor chips filter", () => {
     const { m, chips, field } = await openEditor();
     assert.equal(chips("Caller agents").length, 1);
     assert.match(text(field("Caller agents")), /Showing 1 of 10 agents\./);
+    await m.unmount();
+  });
+});
+
+describe("Review round 1", () => {
+  it("a vanished agent is 'An agent that is no longer listed' in the rule row, the text filter and the agent choice, never its id", async () => {
+    reset();
+    stub.rules = Array.from({ length: 9 }, (_, i) => ({ ...rule(i), spec: { ...rule(i).spec, match: i === 4 ? { agents: ["agt_gone"] } : { products: ["connect"] } } }));
+    const m = await mount(h(rules.RulesPage));
+    assert.match(text(m.host), /callers An agent that is no longer listed/);
+    assert.doesNotMatch(text(m.host), /agt_gone/);
+    await type(ruleBar(m.host), "no longer listed");
+    assert.equal(items(m.host), 1);
+    await m.unmount();
+  });
+
+  it("each chip filter in the editor has its own label", async () => {
+    reset();
+    for (const k of ["agents", "teams", "roles", "apps", "requester-teams", "recipient-teams"]) remember(`rules:chips:${k}`, "x");
+    const m = await mount(h(rules.RulesPage));
+    await click(buttons(m.host, "New rule")[0] as Element);
+    const d = document.querySelector("dialog") as HTMLElement;
+    const labels = [...d.querySelectorAll(".tb-listfilter .tb-label")].map((l) => l.textContent?.trim()).filter((t) => t?.startsWith("Filter"));
+    assert.equal(labels.length, 6, labels.join(" | "));
+    assert.equal(new Set(labels).size, 6, `labels are distinct: ${labels.join(" | ")}`);
+    await m.unmount();
+  });
+
+  it("Decisions: when a server filter changes and the load fails, the rows of the old filter are not shown, no count claims them, and busy does not stay on", async () => {
+    reset();
+    stub.decisions = Array.from({ length: 20 }, (_, i) => decisionRow(i));
+    const m = await mount(h(decisions.DecisionsPage));
+    assert.equal(items(m.host), PAGE);
+    stub.failCaller = true;
+    const select = [...m.host.querySelectorAll('[aria-label="Agent"]')].find((e) => e.tagName === "BUTTON" || e.getAttribute("role") === "combobox") as Element;
+    await click(select);
+    await click([...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.trim() === "Agent 01") as Element);
+    assert.equal(items(m.host), 0, "rows of the old filter are gone");
+    assert.doesNotMatch(text(m.host), /Showing 12 of 12/);
+    assert.doesNotMatch(text(m.host), /Loading\./, "busy is not left on after a failed load");
+    assert.doesNotMatch(text(m.host), /No decision matches/, "a failed load is not 'nothing found'");
+    assert.ok([...m.host.querySelectorAll('[role="alert"]')].length >= 1, "the failure is shown with Try again");
+    await m.unmount();
+  });
+
+  it("Decisions: while the new filter loads, the bar says Loading and shows no count for the old rows", async () => {
+    reset();
+    stub.decisions = Array.from({ length: 20 }, (_, i) => decisionRow(i));
+    const m = await mount(h(decisions.DecisionsPage));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (...a: Parameters<typeof fetch>) => {
+      const body = String((a[1] as RequestInit | undefined)?.body ?? "");
+      if (body.includes('"caller"')) await gate;
+      return real(...a);
+    }) as typeof fetch;
+    const select = [...m.host.querySelectorAll('[aria-label="Agent"]')].find((e) => e.tagName === "BUTTON" || e.getAttribute("role") === "combobox") as Element;
+    await click(select);
+    await click([...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.trim() === "Agent 01") as Element);
+    assert.equal(items(m.host), 0);
+    assert.match(text(m.host), /Loading\./);
+    assert.doesNotMatch(text(m.host), /Showing 12 of/);
+    release();
+    await flush();
+    globalThis.fetch = real;
+    assert.ok(items(m.host) > 0);
     await m.unmount();
   });
 });
