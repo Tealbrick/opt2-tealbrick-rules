@@ -352,7 +352,7 @@ function FilterCount({ shown, total, what, onClear }: { shown: number; total: nu
   return (
     <p className="tb-hint">
       {`The filter shows ${shown} of ${total} ${what}.`}{" "}
-      <Button size="sm" onClick={onClear}>
+      <Button onClick={onClear}>
         Clear the filter
       </Button>
     </p>
@@ -428,7 +428,7 @@ export function AccessPage() {
                   <h3>Agents</h3>
                   {agents.length ? (
                     <span ref={opener}>
-                      <Button size="sm" disabled={!!data.catalog.error} onClick={() => setMany(true)}>
+                      <Button disabled={!!data.catalog.error} onClick={() => setMany(true)}>
                         Set a level on many
                       </Button>
                     </span>
