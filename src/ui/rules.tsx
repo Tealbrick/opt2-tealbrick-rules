@@ -1,13 +1,14 @@
 // Rules page: the rule list, the rule editor (a form in a Dialog, saving passes the revision that was edited) and the
 // dry run. Everything goes through person ops; agents can only submit drafts (C84).
-import { Button, Card, Dialog, EmptyState, Field, Notice, Select, Swatch, Switch, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { accessFilter, Button, Card, Dialog, EmptyState, Field, ListFilter, Notice, Select, type SelectOption, Swatch, Switch, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readMark } from "./access-model.ts";
-import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
+import { CUTS_OFF_GOVERNANCE, cutsOffGovernance, DECISION_LABEL, day, EFFECTS, emptyLists, emptySpec, errorText, joinList, list, matchText, narrowingParts, narrowingText, type Out, type RuleRow, type RuleSpec, run, safeText, verifiableProduct, WORKFLOW_ID, when } from "./api.ts";
 import { Composer } from "./compose.tsx";
 import { FloorCard } from "./floor.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery, replanAllow } from "./hold-allow.ts";
+import { FILTER_FROM, filterKey } from "./list-filter.ts";
 import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
@@ -24,6 +25,10 @@ const RECIPIENT_KNOWN = [
   { value: "known", label: "Only recipients Governance knows" },
   { value: "unknown", label: "Recipients Governance doesn’t know" },
 ];
+const ALL_AGENTS = "__all";
+const NO_AGENT = "__none";
+const AGENT_NOUN = { one: "agent", many: "agents" };
+const TEAM_NOUN = { one: "team", many: "teams" };
 /** The dry run's caller choice for "an app" (agents are listed by id). */
 const APP_CALLER = "__app__";
 const MODES = [
@@ -238,7 +243,13 @@ function Editor({
 
       <section className="rules-group" aria-label="When">
         <h3>When</h3>
-        <ChipChoice label="Caller agents" options={dir.agents.map((a) => ({ value: a.id, label: a.name }))} value={m.agents} onChange={(v) => setMatch({ agents: v })} />
+        <ChipChoice
+          label="Caller agents"
+          options={dir.agents.map((a) => ({ value: a.id, label: a.name }))}
+          value={m.agents}
+          onChange={(v) => setMatch({ agents: v })}
+          filter={{ screen: "rules:chips:agents", label: "Filter the caller agents", noun: AGENT_NOUN }}
+        />
         <ChipChoice label="Agent mode" options={MODES} value={m.modes} onChange={(v) => setMatch({ modes: v })} />
         <ChipChoice label="Effect" options={EFFECTS.map((e) => ({ value: e, label: e }))} value={m.effects} onChange={(v) => setMatch({ effects: v })} />
         <div className="rules-form">
@@ -258,6 +269,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={m.callerTeams}
           onChange={(v) => setMatch({ callerTeams: v })}
+          filter={{ screen: "rules:chips:teams", label: "Filter the teams the caller may be in", noun: TEAM_NOUN }}
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
@@ -269,6 +281,7 @@ function Editor({
           ]}
           value={m.callerRoles}
           onChange={(v) => setMatch({ callerRoles: v })}
+          filter={{ screen: "rules:chips:roles", label: "Filter the roles the caller may have", noun: { one: "role", many: "roles" } }}
         />
         <ChipChoice
           label="Calling agent’s trust (from Governance)"
@@ -283,6 +296,7 @@ function Editor({
           options={[...new Set([...products, ...(m.callerProducts ?? [])])].sort().map((p) => ({ value: p, label: p }))}
           value={m.callerProducts}
           onChange={(v) => setMatch({ callerProducts: v })}
+          filter={{ screen: "rules:chips:apps", label: "Filter the apps that may call", noun: { one: "app", many: "apps" } }}
         />
         <Field
           label="Calls from workflows"
@@ -295,6 +309,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={obo.teams}
           onChange={(v) => setObo({ teams: v })}
+          filter={{ screen: "rules:chips:requester-teams", label: "Filter the teams the requester may be in", noun: TEAM_NOUN }}
         />
         <ChipChoice
           label="Requester trust (from Governance)"
@@ -312,6 +327,7 @@ function Editor({
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={rcp.teams}
           onChange={(v) => setRcp({ teams: v })}
+          filter={{ screen: "rules:chips:recipient-teams", label: "Filter the teams that may receive", noun: TEAM_NOUN }}
         />
         <ChipChoice label="Recipients with trust (from Governance)" hint="none = any. A recipient Governance doesn’t list counts as unreviewed." options={TRUSTS.map((t) => ({ value: t, label: t }))} value={rcp.trust} onChange={(v) => setRcp({ trust: v })} />
         <Field label="Unknown recipients" hint="Whether the recipient is a contact or agent that Governance lists.">
@@ -643,6 +659,26 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
     setPrefill(plan.spec);
     setEditing("new");
   }, [incoming, data, dir]);
+  // C382 batch 4: a filter on the list by text and by the agent a rule names. rules_list answers every rule at once (no cursor, no filter), so the filter reads them all.
+  const [query, setQuery] = useAccessFilter(filterKey("rules"));
+  const [agentRaw, setAgent] = useAccessFilter(filterKey("rules:agent"));
+  const textFilter = accessFilter(query);
+  const allRules = data?.rules ?? [];
+  const agent = agentRaw === "" ? ALL_AGENTS : agentRaw;
+  const agentOn = agent !== ALL_AGENTS;
+  const rules = allRules.filter((r) => {
+    const named = r.spec.match.agents ?? [];
+    if (agent === NO_AGENT ? named.length > 0 : agentOn && !named.includes(agent)) return false;
+    return textFilter.test([r.spec.title, r.spec.outcome.reason, DECISION_LABEL[r.spec.outcome.decision], matchText(r.spec, dir.teamName, dir.agentLabel, undefined, dir.roleName), r.deleted ? "deleted" : r.spec.active ? "" : "inactive", r.problem ? "never matches" : ""].join(" "));
+  });
+  const showBar = allRules.length >= FILTER_FROM || query.trim() !== "" || agentOn;
+  const agentChoices: SelectOption[] = [
+    { value: ALL_AGENTS, label: "All agents" },
+    { value: NO_AGENT, label: "Rules that name no agent" },
+    ...[...new Set(allRules.flatMap((r) => r.spec.match.agents ?? []).concat(agentOn && agent !== NO_AGENT ? [agent] : []))]
+      .map((id) => ({ value: id, label: dir.agentLabel(id) }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  ];
   const broken = data?.rules.filter((r) => r.problem && !r.deleted).length ?? 0;
   const startFromTemplate = <Button onClick={() => setPicking(true)}>Start from a template</Button>;
   return (
@@ -706,52 +742,75 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
           {noRulesText(data.mode?.mode)}
         </EmptyState>
       ) : (
-        <div className="ruled">
-          {data.rules.map((r) => (
-            <div className="item" key={r.id}>
-              <Swatch group="control" />
-              <h3>
-                {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
-                {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
-                {readMark(r.spec) ? <> <Tag status="live">Access</Tag></> : null}
-                {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
-                {!r.deleted && emptyLists(r.spec.match).length ? <> <Tag status="needs-you">empty list</Tag></> : null}
-                {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
-              </h3>
-              <p>
-                {matchText(r.spec, dir.teamName, dir.agentName, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
-                {narrowingText(r.spec.narrowing)}
-              </p>
-              {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}
-              {!r.deleted && emptyLists(r.spec.match).length ? (
+        <>
+          {showBar ? (
+            <ListFilter
+              label="Filter the rules"
+              value={query}
+              onChange={setQuery}
+              filter={textFilter}
+              placeholder="Title, agent, app, or a regex"
+              noun={{ one: "rule", many: "rules" }}
+              shown={rules.length}
+              total={allRules.length}
+              facets={agentOn}
+              onClear={() => {
+                setQuery("");
+                setAgent("");
+              }}
+            >
+              <Field label="Agent">
+                <Select aria-label="Agent" options={agentChoices} value={agent} onValueChange={(v) => setAgent(v === ALL_AGENTS ? "" : v)} />
+              </Field>
+            </ListFilter>
+          ) : null}
+          <div className="ruled">
+            {rules.map((r) => (
+              <div className="item" key={r.id}>
+                <Swatch group="control" />
+                <h3>
+                  {safeText(r.spec.title)} <DecisionTag decision={r.spec.outcome.decision} rule /> <span className="tb-hint rules-pri">priority {r.spec.priority}</span>
+                  {r.source.startsWith("drf_") ? <> <Tag>from draft</Tag></> : null}
+                  {readMark(r.spec) ? <> <Tag status="live">Access</Tag></> : null}
+                  {r.problem ? <> <Tag status="needs-you">never matches</Tag></> : null}
+                  {!r.deleted && emptyLists(r.spec.match).length ? <> <Tag status="needs-you">empty list</Tag></> : null}
+                  {r.deleted ? <> <Tag status="idle">deleted</Tag></> : r.spec.active ? null : <> <Tag status="idle">inactive</Tag></>}
+                </h3>
                 <p>
-                  Old rule: {emptyLists(r.spec.match).map((x) => `match.${x}`).join(", ")} {emptyLists(r.spec.match).length === 1 ? "is an empty list" : "are empty lists"}. An empty list means “any”, so this rule matches more than it seems to. It still works as before. Edit it to name
-                  what you mean; Rules does not save a new rule like this.
+                  {matchText(r.spec, dir.teamName, dir.agentLabel, undefined, dir.roleName)} → {safeText(r.spec.outcome.reason)}
+                  {narrowingText(r.spec.narrowing)}
                 </p>
-              ) : null}
-              {!r.deleted && cutsOffGovernance(r.spec) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
-              <span className="meta">
-                revision {r.rev} · {day(r.updatedAt)}
-              </span>
-              <div className="side">
-                {r.deleted ? (
-                  <Button size="sm" aria-label={`History of ${safeText(r.spec.title)}`} onClick={() => setHistory(r)}>
-                    History
-                  </Button>
-                ) : (
-                  <>
-                    <Button size="sm" aria-label={`Edit ${safeText(r.spec.title)}`} onClick={() => setEditing(r)}>
-                      Edit
+                {r.problem ? <p>Never matches: {safeText(r.problem)}</p> : null}
+                {!r.deleted && emptyLists(r.spec.match).length ? (
+                  <p>
+                    Old rule: {emptyLists(r.spec.match).map((x) => `match.${x}`).join(", ")} {emptyLists(r.spec.match).length === 1 ? "is an empty list" : "are empty lists"}. An empty list means “any”, so this rule matches more than it seems to. It still works as before. Edit it to name
+                    what you mean; Rules does not save a new rule like this.
+                  </p>
+                ) : null}
+                {!r.deleted && cutsOffGovernance(r.spec) ? <Notice tone="needs-you">{CUTS_OFF_GOVERNANCE}</Notice> : null}
+                <span className="meta">
+                  revision {r.rev} · {day(r.updatedAt)}
+                </span>
+                <div className="side">
+                  {r.deleted ? (
+                    <Button size="sm" aria-label={`History of ${safeText(r.spec.title)}`} onClick={() => setHistory(r)}>
+                      History
                     </Button>
-                    <Button size="sm" variant="danger" aria-label={`Delete ${safeText(r.spec.title)}`} onClick={() => setDeleting(r)}>
-                      Delete
-                    </Button>
-                  </>
-                )}
+                  ) : (
+                    <>
+                      <Button size="sm" aria-label={`Edit ${safeText(r.spec.title)}`} onClick={() => setEditing(r)}>
+                        Edit
+                      </Button>
+                      <Button size="sm" variant="danger" aria-label={`Delete ${safeText(r.spec.title)}`} onClick={() => setDeleting(r)}>
+                        Delete
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
       {data?.system ? <SystemLines lines={data.system} /> : null}
       {editing ? (
