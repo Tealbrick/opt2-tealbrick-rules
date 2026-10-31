@@ -9,7 +9,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Window } from "happy-dom";
 import type { ReactElement } from "react";
-import { accessSpecs, bulkSetting } from "../src/ui/access-model.ts";
+import { accessSpecs, askBeforeTopLevel, bulkSetting } from "../src/ui/access-model.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test-c374-access");
@@ -300,6 +300,11 @@ describe("C374: Access page", () => {
     agentRows = [AGENT];
   });
 
+  it("the top level on more than one agent asks first and names the count and what it allows; other levels and one agent do not", () => {
+    assert.equal(askBeforeTopLevel(5, 1), null);
+    assert.equal(askBeforeTopLevel(4, 25), null);
+    assert.match(askBeforeTopLevel(5, 2) ?? "", /This gives 2 agents the level Everything\. They may .*delete and overwrite/);
+  });
   it("bulkSetting: the level changes and nothing else", () => {
     const old = { level: 1 as const, beyond: "deny" as const, apps: ["connect"], tools: ["gmail_send"] };
     assert.deepEqual(bulkSetting(old, 3, "hold"), { level: 3, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] });

@@ -2,6 +2,13 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.7 (2026-10-31)
+
+C382 batch 3, DEV only. No function or CLI change; ui 0.6.0.
+
+- Access: "Everything" on more than one agent asks first, with a sentence that names the count and what the level allows. It wrote at one click before, on up to 25 agents.
+- Access: the Yes of a confirmation goes off while the form is not valid (kit).
+
 ## 0.7.0-dev.6 (2026-10-31)
 
 From the DEV check of dev.5 (C382 batch 2). DEV only.
