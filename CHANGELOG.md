@@ -2,6 +2,12 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.6 (2026-10-31)
+
+From the DEV check of dev.5 (C382 batch 2). DEV only.
+
+- Access: "Set a level on many" and "Clear the filter" are full-size targets, 44 px.
+
 ## 0.7.0-dev.5 (2026-10-31)
 
 C382 batch 2, DEV only. No function or CLI change; ui 0.5.0.
