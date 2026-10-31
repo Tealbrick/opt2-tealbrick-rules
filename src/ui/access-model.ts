@@ -20,6 +20,12 @@ export const LEVELS = [
 ] as const;
 export type Level = (typeof LEVELS)[number]["level"];
 
+/** The top level on more than one agent always asks first, whatever the count (C382 batch 3). One agent has its own dialog and its own click. */
+export function askBeforeTopLevel(level: Level, changes: number): string | null {
+  if (level !== 5 || changes < 2) return null;
+  return `This gives ${changes} agents the level Everything. They may read, change things, send messages and posts, run payments, delete and overwrite. Your other rules still apply.`;
+}
+
 export const EFFECT_WORD: Record<AccessEffect, string> = { read: "read", write: "change", outward: "outward", money: "money", destructive: "delete" };
 
 export type Caller = { type: "agent"; id: string; name: string } | { type: "app"; product: string; name: string };

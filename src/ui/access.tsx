@@ -11,6 +11,7 @@ import {
   accessCells,
   accessOf,
   accessSpecs,
+  askBeforeTopLevel,
   bulkSetting,
   type Caller,
   callerKey,
@@ -273,7 +274,7 @@ function Row({ caller, found, cat, modeName, onEdit, onChanged }: { caller: Call
 }
 
 const BULK_SCOPE = { id: "access", name: "Access" };
-const LEVEL_CHOICES = LEVELS.map((l) => ({ id: String(l.level), label: l.title, hint: l.text }));
+const LEVEL_CHOICES = LEVELS.map((l) => ({ id: String(l.level), label: l.title, hint: l.text, ask: (changes: readonly AccessChange[]) => askBeforeTopLevel(l.level, changes.length) }));
 
 /** One level for several agents, by the save of the dialog, one agent at a time. Each agent keeps what happens beyond the level, its apps and its tools. */
 function ManyAgents({ agents, byCaller: loaded, cat, modeName, onBack, reload }: { agents: readonly Caller[]; byCaller: ReadonlyMap<string, { setting: AccessSetting; rules: RuleRow[] }>; cat: AccessCatalog; modeName: string; onBack: () => void; reload: () => void }) {
