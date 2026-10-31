@@ -55,6 +55,9 @@ export const NOT_OFFERED_APPS: readonly string[] = ["rules"];
 const MARK = "access/1 ";
 const NOTE = "Managed on the Access page. Change it there; a change here is shown there as edited by hand.";
 
+/** The line that goes with every list of picked apps: on the dialog and on each row of the Access page. */
+export const ONLY_APPS_LINE = "Apps you do not pick are refused.";
+
 export const allowedEffects = (level: Level): AccessEffect[] => ACCESS_EFFECTS.slice(0, level);
 export const beyondEffects = (level: Level): AccessEffect[] => ACCESS_EFFECTS.slice(level);
 export const callerKey = (c: Caller | { type: "agent"; id: string } | { type: "app"; product: string }): string => (c.type === "agent" ? `agent:${c.id}` : `app:${c.product}`);
@@ -226,4 +229,17 @@ export function settingLine(s: AccessSetting): string {
 export function effectOutcomes(s: AccessSetting): { effect: AccessEffect; decision: "allow" | "hold" | "deny" }[] {
   const allowed = new Set<string>(allowedEffects(s.level));
   return ACCESS_EFFECTS.map((e) => ({ effect: e, decision: allowed.has(e) ? "allow" : s.beyond }));
+}
+
+/**
+ * A level set in bulk: the level changes, and nothing else. An agent with a setting keeps what happens beyond the level, its apps and its tools;
+ * an agent with none gets `beyond` and every app, as the dialog would start it.
+ */
+export function bulkSetting(old: AccessSetting | undefined, level: Level, beyond: AccessSetting["beyond"]): AccessSetting {
+  return old ? { ...old, level } : { level, beyond };
+}
+
+/** The rows of the bulk editor: one per caller with a setting, its level as the value. */
+export function accessCells(byCaller: ReadonlyMap<string, { setting: AccessSetting }>, scope: string): { agent: string; scope: string; level: string }[] {
+  return [...byCaller].map(([key, f]) => ({ agent: key, scope, level: String(f.setting.level) }));
 }

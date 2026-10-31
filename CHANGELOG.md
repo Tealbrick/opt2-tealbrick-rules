@@ -2,6 +2,15 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.5 (2026-10-31)
+
+C382 batch 2, DEV only. No function or CLI change; ui 0.5.0.
+
+- Access: the default mode is in plain view at the top. An agent or app with no setting follows it, and each row says so by name.
+- Access: a filter on the lists (plain text or a regex, remembered per viewer), with how many it shows.
+- Access: "Set a level on many" sets one level on several agents, by the save of the dialog, one agent at a time. An agent with a setting keeps what happens beyond the level, its apps and its tools. It cannot remove a setting: Remove stays on each row, because it loosens to the default mode. An agent whose rules were edited by hand is left out and named on the screen.
+- Access: each row with a setting says that apps not picked are refused, and that Remove gives it back to the default mode.
+
 ## 0.7.0-dev.3 - DEV pre-release (C380)
 
 ### Fixed
