@@ -2,6 +2,12 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.8 (2026-11-01)
+
+C382 batch 4, DEV only. No function or CLI change; ui 0.7.0.
+
+- Holds and Receipts: a filter by agent and by text. A filter always shows "Showing N of M" and Clear. Receipts filters by agent on the server; the text filter reads the loaded rows and says so while more are not loaded, with Show older in reach. Held approvals that a filter hides are counted above the list.
+
 ## 0.7.0-dev.7 (2026-10-31)
 
 C382 batch 3, DEV only. No function or CLI change; ui 0.6.0.
