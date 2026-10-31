@@ -9,7 +9,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Window } from "happy-dom";
 import type { ReactElement } from "react";
-import { accessSpecs } from "../src/ui/access-model.ts";
+import { accessSpecs, bulkSetting } from "../src/ui/access-model.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test-c374-access");
@@ -27,9 +27,13 @@ for (const k of ["window", "document", "navigator", "location", "history", "sess
   }
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
+g.requestAnimationFrame = (cb: () => void) => setTimeout(cb, 0);
 
 // ── stub server ────────────────────────────────────────────────────────────
 const AGENT = { id: "agt_01J0000000000000000000000A", name: "Front desk", mode: "free", status: "active", access: [] };
+let agentRows: unknown[] = [AGENT];
+let refuseSet: ((rule: unknown) => { status: number; body: unknown } | undefined) | null = null;
+let refuseDelete: ((id: string | undefined) => { status: number; body: unknown } | undefined) | null = null;
 const CATALOG = { generatedAt: null, syncedAt: null, error: null, products: 3, productIds: ["connect", "kanban", "rules"], dynamicOps: ["connect.tools"], skipped: [] };
 const LIST = (rules: unknown[]) => ({ rules, holdSupported: true, defaultDecision: "allow", mode: { mode: "permissive", changedAt: null, changedBy: null }, system: [], catalog: CATALOG });
 const FLEET = { source: "fleet", available: true, revision: 3, syncedAt: "2026-10-17T09:00:00.000Z", error: null, teams: [] };
@@ -49,17 +53,21 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const body = JSON.parse(String(init?.body ?? "{}")) as { input?: { rule?: unknown; id?: string } };
   stub.calls.push({ op, input: body.input });
   const out: Record<string, unknown> = {
-    "tb.agents_list": { agents: [AGENT] },
+    "tb.agents_list": { agents: agentRows },
     fleet_status: FLEET,
     rules_list: LIST(saved),
     rules_preview: PREVIEW,
   };
   if (op === "rules_set") {
+    const refused = refuseSet?.(body.input?.rule);
+    if (refused) return json(refused.status, refused.body);
     const r = row(body.input?.rule);
     saved.push(r);
     return json(200, { status: "ok", output: { rule: r } });
   }
   if (op === "rules_delete") {
+    const held = refuseDelete?.(body.input?.id);
+    if (held) return json(held.status, held.body);
     saved = saved.filter((r) => (r as { id: string }).id !== body.input?.id);
     return json(200, { status: "ok", output: { id: body.input?.id, rev: 2 } });
   }
@@ -126,7 +134,7 @@ describe("C374: Access page", () => {
     assert.match(text, /connect/);
     assert.match(text, /kanban/);
     assert.equal([...m.host.querySelectorAll("h3")].some((x) => x.textContent?.trim().startsWith("rules")), false, "Rules itself is not offered");
-    assert.match(text, /Not set: your rules and the default mode decide/);
+    assert.match(text, /Not set: your rules and the default mode \(Permissive\) decide/);
     await click(button(m.host, "Set access"));
     const d = dialog("Access of Front desk");
     assert.match(d.textContent ?? "", /What this does/);
@@ -141,5 +149,160 @@ describe("C374: Access page", () => {
     assert.equal(callsOf("rules_delete").length, want.length);
     assert.equal(saved.length, 0);
     await m.unmount();
+  });
+
+  // ── C382 batch 2 ─────────────────────────────────────────────────────────
+  const A = { id: "agt_A", name: "Alpha", mode: "free", status: "active", access: [] };
+  const B = { id: "agt_B", name: "QA Beta", mode: "free", status: "active", access: [] };
+  const C = { id: "agt_C", name: "QA Gamma", mode: "free", status: "active", access: [] };
+  const D = { id: "agt_D", name: "Delta", mode: "free", status: "active", access: [] };
+  const caller = (a: { id: string; name: string }) => ({ type: "agent" as const, id: a.id, name: a.name });
+  const seed = () => {
+    stub.calls = [];
+    refuseSet = null;
+    agentRows = [A, B, C, D];
+    saved = [];
+    for (const spec of accessSpecs(caller(A), { level: 1, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] }, CATALOG)) saved.push(row(spec));
+    // Delta's rules were edited by hand on the Rules page: one rule no longer matches what its setting builds
+    const edited = accessSpecs(caller(D), { level: 2, beyond: "hold" }, CATALOG);
+    (edited[0] as { priority: number }).priority = 5;
+    for (const spec of edited) saved.push(row(spec));
+  };
+  const specsFor = (id: string) => saved.map((r) => (r as { spec: { match: { agents?: string[] } } }).spec).filter((x) => x.match.agents?.includes(id));
+  const pickName = async (host: Element, name: string) => {
+    const o = [...host.querySelectorAll('[role="option"]')].find((x) => x.querySelector(".tb-access-pick-name")?.textContent === name);
+    assert.ok(o, `option ${name}`);
+    await click(o as Element);
+  };
+
+  it("the list: the mode is in plain view at the top; beyond, the refused apps and Remove show for every agent with a setting; a filter narrows it and hides nothing silently", async () => {
+    seed();
+    const m = await mount(h(access.AccessPage));
+    const text = m.host.textContent ?? "";
+    assert.match(text, /Default mode: Permissive\./);
+    assert.ok(text.indexOf("Default mode: Permissive") < text.indexOf("Alpha"), "the mode comes first");
+    assert.match(text, /Read only · beyond that: refused · only connect/);
+    assert.match(text, /Apps you do not pick are refused\./);
+    assert.match(text, /Not set: your rules and the default mode \(Permissive\) decide/);
+    assert.equal([...m.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").length, 2, "Alpha and Delta");
+    assert.match(text, /Remove gives this agent back to the default mode \(Permissive\)\./);
+    const input = m.host.querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor((window as unknown as { HTMLInputElement: typeof HTMLInputElement }).HTMLInputElement.prototype, "value")?.set?.call(input, "^(?!QA)");
+      input.dispatchEvent(new (window as unknown as { Event: typeof Event }).Event("input", { bubbles: true }));
+    });
+    await flush();
+    const after = m.host.textContent ?? "";
+    assert.match(after, /The filter shows 2 of 4 agents\./);
+    assert.doesNotMatch(after, /QA Beta/);
+    await click(button(m.host, "Clear the filter"));
+    assert.match(m.host.textContent ?? "", /QA Beta/);
+    await m.unmount();
+  });
+
+  it("many: one level, by the dialog's save; an agent keeps beyond, apps and tools; one with no setting gets the chosen beyond; there is no way to remove in bulk; a hand edit is left out and named", async () => {
+    seed();
+    const m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    const text = m.host.textContent ?? "";
+    assert.match(text, /Default mode: Permissive\./, "the mode stays in view");
+    assert.match(text, /Only its level changes\./);
+    assert.match(text, /Not listed here, because their rules were edited by hand: Delta\./);
+    assert.equal([...m.host.querySelectorAll('[role="option"]')].some((o) => o.textContent?.includes("Delta")), false);
+    assert.equal([...m.host.querySelectorAll("button")].some((b) => ["Not set", "Remove"].includes(b.textContent?.trim() ?? "")), false, "no button loosens to the mode");
+    assert.match([...m.host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Alpha"))?.textContent ?? "", /beyond that: refused · only connect · only the tools gmail_send/);
+    const deltaBefore = JSON.stringify(specsFor("agt_D"));
+    await pickName(m.host, "Alpha");
+    await pickName(m.host, "QA Beta");
+    await click(button(m.host, "Read and change"));
+    assert.deepEqual(specsFor("agt_A"), accessSpecs(caller(A), { level: 2, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] }, CATALOG), "only the level moved");
+    assert.deepEqual(specsFor("agt_B"), accessSpecs(caller(B), { level: 2, beyond: "hold" }, CATALOG));
+    assert.equal(JSON.stringify(specsFor("agt_D")), deltaBefore);
+    assert.deepEqual(specsFor("agt_C"), []);
+    assert.match(m.host.textContent ?? "", /Alpha and QA Beta: Read and change\. 2 set\./);
+    await m.unmount();
+  });
+
+  it("many: a setting the level cannot carry fails on its row, and its rules stay; a session failure stops the rest", async () => {
+    seed();
+    let m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    await pickName(m.host, "QA Beta");
+    const alphaBefore = JSON.stringify(specsFor("agt_A"));
+    await click(button(m.host, "Nothing"));
+    assert.match(m.host.textContent ?? "", /Failed: Alpha\. With level Nothing no tool can run/);
+    assert.equal(JSON.stringify(specsFor("agt_A")), alphaBefore);
+    assert.match(m.host.textContent ?? "", /1 set, 1 failed/);
+    await m.unmount();
+
+    seed();
+    agentRows = Array.from({ length: 12 }, (_, i) => ({ id: `agt_${i}`, name: `QA ${i}`, mode: "free", status: "active", access: [] }));
+    saved = [];
+    refuseSet = () => ({ status: 401, body: { error: { code: "session_required", message: "sign in" } } });
+    m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await click(button(m.host, "Select all shown"));
+    await click(button(m.host, "Read only"));
+    const tries = callsOf("rules_set").length;
+    assert.ok(tries <= 4, `${tries} writes: only those in progress`);
+    const done = m.host.textContent ?? "";
+    assert.match(done, /Stopped\. You’re signed out\./);
+    assert.match(done, /8 not tried/);
+    assert.equal(saved.length, 0);
+    await m.unmount();
+    refuseSet = null;
+    agentRows = [AGENT];
+    saved = [];
+  });
+
+  it("many: two clicks in a row delete the rules of the last read, so no second set stays behind", async () => {
+    seed();
+    const m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    await click(button(m.host, "Read and change"));
+    await click(button(m.host, "Also outward"));
+    assert.deepEqual(specsFor("agt_A"), accessSpecs(caller(A), { level: 3, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] }, CATALOG));
+    assert.doesNotMatch(m.host.textContent ?? "", /Failed:/);
+    await m.unmount();
+  });
+
+  it("many: an old rule that will not go leaves the setting as it was, and a half save says so", async () => {
+    seed();
+    const before = JSON.stringify(specsFor("agt_A"));
+    let m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    let tried = 0;
+    refuseDelete = () => {
+      tried++;
+      return tried === 1 ? { status: 409, body: { error: { code: "revision_conflict", message: "the rule changed; reload and edit again" } } } : undefined;
+    };
+    await click(button(m.host, "Read and change"));
+    refuseDelete = null;
+    assert.equal(JSON.stringify(specsFor("agt_A")), before, "the new rules went again; the old ones stayed");
+    assert.match(m.host.textContent ?? "", /Failed: Alpha\. the rule changed/);
+    await m.unmount();
+    // the second old rule will not go: the first is gone, so the setting is half saved
+    seed();
+    let deletes = 0;
+    refuseDelete = (id) => (++deletes === 2 && id ? { status: 409, body: { error: { code: "revision_conflict", message: "the rule changed; reload and edit again" } } } : undefined);
+    m = await mount(h(access.AccessPage));
+    await click(button(m.host, "Set a level on many"));
+    await pickName(m.host, "Alpha");
+    await click(button(m.host, "Read and change"));
+    refuseDelete = null;
+    assert.match(m.host.textContent ?? "", /Failed: Alpha\. The new level is saved, but some old rules could not be removed\./);
+    assert.notEqual(JSON.stringify(specsFor("agt_A")), before);
+    await m.unmount();
+    saved = [];
+    agentRows = [AGENT];
+  });
+
+  it("bulkSetting: the level changes and nothing else", () => {
+    const old = { level: 1 as const, beyond: "deny" as const, apps: ["connect"], tools: ["gmail_send"] };
+    assert.deepEqual(bulkSetting(old, 3, "hold"), { level: 3, beyond: "deny", apps: ["connect"], tools: ["gmail_send"] });
+    assert.deepEqual(bulkSetting(undefined, 3, "hold"), { level: 3, beyond: "hold" });
   });
 });
