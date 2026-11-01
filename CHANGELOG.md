@@ -2,6 +2,14 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0 (2026-11-01)
+
+The final version of the 0.7.0-dev series. See the dev entries below for what is in it. The same code as dev.10.
+
+Upgrade: Core lets Rules 0.7 run with Governance 0.3.2, and Governance 0.4.0 needs Rules 0.7 first. So Rules 0.7 starts to refuse each blocked entry and each person marked as departed at its first read of Governance, while Governance is still 0.3.2. Read People on Governance 0.3.2 before this update: the rows with `departed`, and each Blocked trust tag on People and Agents.
+
+Known limit, D11 (C384, corrected by C384a): all apps share one web address. With a live session of an app in the same browser, a script on another app's page can do what the owner can do on that app's page, including reading its data and changing app-level scopes under Portal's connection. Portal approvals stay out of reach because Portal is another site. QA A17b proved the Fleet read and stop path live. Each app gets its own web address as the next platform job; this limit stays until then.
+
 ## 0.7.0-dev.10 (2026-11-01)
 
 C383, DEV only. Seen in the live check of dev.9: a hold made after the app opened showed only after a reload. The Holds page and its badge read the list again when the page opens and once a minute.
