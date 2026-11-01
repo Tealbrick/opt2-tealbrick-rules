@@ -9,7 +9,7 @@ import { DecisionsPage } from "./decisions.tsx";
 import { DraftsPage } from "./drafts.tsx";
 import { HookStateNotice, hookStateText, useHookState } from "./hook-state.tsx";
 import { RulesPage } from "./rules.tsx";
-import { AgentsPage, HoldsPage, portalHref, standardRoutes, useHoldList, useNav } from "./standard.tsx";
+import { AgentsPage, HoldsPage, portalHref, standardRoutes, useHoldList, useHoldsFresh, useNav } from "./standard.tsx";
 import { TeamsPage } from "./teams.tsx";
 
 const NAME = "Rules & Approvals";
@@ -49,6 +49,7 @@ export function App() {
   useEffect(() => {
     if (status === "signed_in") refreshPending();
   }, [status, refreshPending]);
+  useHoldsFresh(holds.reload, status === "signed_in", nav.page);
   const pages = [
     ...OWN_PAGES.map((p) => (p.id === "drafts" ? { ...p, badge: pending || null } : p)),
     ...STANDARD_SHOWN.map((p) => (p.id === "holds" ? { ...p, badge: holds.holds?.length || null } : p)),

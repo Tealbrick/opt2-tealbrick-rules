@@ -284,6 +284,8 @@ export interface HoldList {
  * The held calls of this app (`tb.holds_list`), with the load error kept. Call it once in the app and pass the result
  * to <HoldsPage list> when the nav shows a count; <HoldsPage> loads its own list otherwise.
  */
+export const HOLDS_FRESH_MS = 60_000;
+
 export function useHoldList(): HoldList {
   const { data, error, loading, reload, set } = useLoad(loadHolds);
   const decide = useCallback(
@@ -295,6 +297,20 @@ export function useHoldList(): HoldList {
     [reload, set],
   );
   return { holds: data?.items ?? null, truncated: data?.truncated ?? false, loading, error, reload, decide };
+}
+
+/** C383 (seen live): a hold made after the app opened showed only after a page reload. Read the list again on every page change and once a minute, so the badge and the page keep up. */
+export function useHoldsFresh(reload: () => Promise<void>, on: boolean, page: string): void {
+  const last = useRef(page);
+  useEffect(() => {
+    if (!on) return;
+    if (last.current !== page) {
+      last.current = page;
+      void reload();
+    }
+    const t = setInterval(() => void reload(), HOLDS_FRESH_MS);
+    return () => clearInterval(t);
+  }, [reload, on, page]);
 }
 
 function HoldRow({ hold, busy, onDecide }: { hold: Hold; busy: boolean; onDecide: (decision: "approve" | "deny") => void }) {
