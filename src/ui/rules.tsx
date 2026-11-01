@@ -9,7 +9,7 @@ import { FloorCard } from "./floor.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery, replanAllow } from "./hold-allow.ts";
 import { FILTER_FROM, filterKey } from "./list-filter.ts";
-import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
+import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, RulesLimits, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
 
@@ -265,7 +265,7 @@ function Editor({
         </div>
         <ChipChoice
           label="Caller is a member of team (from Governance)"
-          hint="none = any. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={m.callerTeams}
           onChange={(v) => setMatch({ callerTeams: v })}
@@ -273,7 +273,7 @@ function Editor({
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
-          hint="none = any. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app never matches. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
           options={[
             ...dir.roles.map((r) => ({ value: r.id, label: r.name })),
             // a role the list does not have (archived or gone) stays visible so the owner can remove it; never by its id
@@ -339,9 +339,15 @@ function Editor({
         </Field>
       </section>
 
+      {s.outcome.decision === "allow" && (m.callerProducts?.length ?? 0) > 0 && (!m.products?.length || m.products.includes("connect")) ? (
+        <Notice tone="needs-you" role="status">
+          This rule does not let an app send through Connect. Connect runs an app’s outward tool only after you approve that call. To let it run with your approval, use a hold rule.
+        </Notice>
+      ) : null}
       {s.outcome.decision === "allow" ? (
         <section className="rules-group" aria-label="Narrow what the agent may read">
           <h3>Narrow what the agent may read</h3>
+          <p className="tb-hint">Only Knowledge applies these lists. Observer refuses a call that carries them. Answers from other apps have no tags, so nothing is cut from them.</p>
           <div className="rules-form">
             <Field label="Only memories tagged (any of)">
               <TextInput value={joinList(tags.anyOf)} onChange={(e) => setTags({ anyOf: list(e.target.value) })} />
@@ -813,6 +819,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         </>
       )}
       {data?.system ? <SystemLines lines={data.system} /> : null}
+      <RulesLimits />
       {editing ? (
         <Editor
           initial={editing === "new" ? null : editing}

@@ -178,6 +178,8 @@ export interface CallFacts {
   callerWorkflow?: string | null;
   /** The bridge cap `app_workflow_grants` is visible to Rules (slice `bridge.caps`); absent or false = not visible (the strict path). */
   workflowCapVisible?: boolean;
+  /** An app's call is a workflow step or acts for an agent (`forWorkOf`, src/hooks.ts). Read only by the mode's exemptions, which it can only remove. */
+  forWork?: boolean;
   /**
    * The raw trust values of everyone who holds the claimed requester's key (contact id, canonical handle or agent id), as a
    * set. `[]` = no claim or facts unavailable. A requester the directory does not know is `["unreviewed"]`.

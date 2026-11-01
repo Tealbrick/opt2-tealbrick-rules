@@ -2,6 +2,16 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.9 (2026-11-01)
+
+C383, DEV only. Final work on the audit holes.
+
+- D13: every page of the app shows a warning that cannot be dismissed while Rules' hook is switched off in Portal. New person op `hook_state`. Rules finds this out from its own read of Governance (`src/hook-watch.ts`); with no Governance it says it cannot tell, and when it last checked a call. Nothing else about the switch or the start mode changed.
+- Audit hole 7: two more exemptions of the default mode, by verified product and exact op: `apps-read-setup`, `evolution-scans-task-board`. A step of a workflow run or a call for an agent stays under the mode. `test/c383-mode-flood.test.ts` lists every app-to-app call of the released apps by who starts it.
+- Audit holes 3, 8, 9 and D12, as limits on the Rules page: what Rules does not cover. The editor says that team and role rules do not match an app, that narrowing works in Knowledge only, and that an allow rule does not let an app send through Connect.
+- Audit holes 5 and 6: miniapp-sdk 0.1.46, manifest 0.1.35. An approval of an app caller's hold serves only that call's key, and an app caller can read the status of a hold on Rules.
+- `upgradeFrom` stays `<0.7.0`. `requires.bridge` stays 0.2.13.
+
 ## 0.7.0-dev.8 (2026-11-01)
 
 C382 batch 4, DEV only. No function or CLI change; ui 0.7.1.

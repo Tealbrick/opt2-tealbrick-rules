@@ -142,6 +142,27 @@ export function ModeCard({ state, onChanged }: { state: ModeState; onChanged: ()
   );
 }
 
+/** C383 (audit holes 3, 8, 9; D12): what Rules does not do, said where the owner writes rules. Each line is tested against the code it describes. */
+export const RULES_LIMITS: readonly string[] = [
+  "Rules checks calls from agents and from apps to an app’s operations. It does not check your own actions in an app, platform checks, public links, or calls that an app makes to a model provider.",
+  "Team, role and trust rules match agents only. A call from an app or a workflow step does not match them: for an app, name the app or the workflow.",
+  "Narrowing what a caller reads works in Knowledge only. Observer refuses a call that carries it. Answers from other apps have no tags, so nothing is cut from them.",
+  "An allow rule does not let an app send through Connect. Connect runs an app’s outward tool only after you approve that call, so use a hold rule (template “Hold an app’s outward actions”).",
+];
+
+export function RulesLimits() {
+  return (
+    <Card as="section" className="rules-limits" aria-label="What Rules does not cover">
+      <h3>What Rules does not cover</h3>
+      <ul className="tb-list">
+        {RULES_LIMITS.map((l) => (
+          <li key={l}>{l}</li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 /** The built-in exemptions of the mode, as read-only "system" lines of the rule list. */
 export function SystemLines({ lines }: { lines: readonly SystemLine[] }) {
   if (lines.length === 0) return null;

@@ -7,6 +7,7 @@ import { AccessPage } from "./access.tsx";
 import { errorText, run } from "./api.ts";
 import { DecisionsPage } from "./decisions.tsx";
 import { DraftsPage } from "./drafts.tsx";
+import { HookStateNotice, hookStateText, useHookState } from "./hook-state.tsx";
 import { RulesPage } from "./rules.tsx";
 import { AgentsPage, HoldsPage, portalHref, standardRoutes, useHoldList, useNav } from "./standard.tsx";
 import { TeamsPage } from "./teams.tsx";
@@ -44,6 +45,7 @@ export function App() {
       .catch((e) => setPendingError(errorText(e)));
   }, []);
   const signedIn = status === "signed_in" && principal;
+  const hookState = useHookState(status === "signed_in");
   useEffect(() => {
     if (status === "signed_in") refreshPending();
   }, [status, refreshPending]);
@@ -77,8 +79,9 @@ export function App() {
         )
       }
       banner={
-        status === "signed_out" || notice || pendingError ? (
+        status === "signed_out" || notice || pendingError || hookStateText(hookState) ? (
           <div className="tb-stack">
+            <HookStateNotice state={hookState} />
             {status === "signed_out" ? (
               <Notice tone="needs-you" role="alert">
                 Open this app from Portal to sign in.

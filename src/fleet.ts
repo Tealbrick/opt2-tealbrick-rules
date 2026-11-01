@@ -17,6 +17,7 @@ import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import feedSchema from "./contracts/fleet.directory_feed.1.lifecycle.schema.json" with { type: "json" };
 import type { Trust } from "./engine.ts";
 import { type FloorEntry, isLifecycleStop, otherOriginUnchanged } from "./floor.ts";
+import { hookRunsNow, judgeHooks } from "./hook-watch.ts";
 import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, markFleetStale, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
 
 export const FLEET_PRODUCT = "fleet";
@@ -439,6 +440,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     const ask = (withHandles: boolean) => callApp(FLEET_PRODUCT, FLEET_OP, { ...(withHandles ? { accept: [AGENT_HANDLES, LIFECYCLE, ROLES] } : {}), ...(since !== null ? { sinceRevision: since } : {}) });
     let withHandles = accept;
     let res: Awaited<ReturnType<CallApp>>;
+    const hooksBefore = hookRunsNow(db);
     try {
       res = await ask(accept);
       if (accept) acceptRefusedAt.delete(db);
@@ -453,6 +455,8 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
       res = await ask(false);
     }
     if (res.status !== "ok") throw Object.assign(new Error("Governance held the directory read"), { code: "held" });
+    // C383 (D13): this read went through the bridge's hooks, and the bridge forwarded it: a hook of Rules that did not run is switched off
+    judgeHooks(db, hooksBefore, now());
     const d = await parseFeedChunked(res.output);
     // "unchanged" is only valid for the revision we asked about; anything else is a broken answer, not a no-op.
     if (d.unchanged && d.revision !== since) throw feedInvalid(`unchanged answered for revision ${d.revision}, asked ${since ?? "none"}`);

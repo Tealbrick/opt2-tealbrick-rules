@@ -7,6 +7,7 @@ import type { Db, HookContext, HookHandler, HookRequest, Json } from "@opt2-teal
 import { isDynamicOp } from "./catalog.ts";
 import { type ActingFact, type CallFacts, type Claim, claimKey, evaluate, type FloorSubjects, floorHit, floorVerdict, mergeNarrowing, type Narrowing, type RecipientFact, recorded, redactionsFor, strictestNarrowing, type Verdict, validProduct, WORKFLOW_CAP, WORKFLOW_ID, wellFormedTool } from "./engine.ts";
 import { FLOOR_REASON, floorIndex, noteGate } from "./floor.ts";
+import { noteHookRun } from "./hook-watch.ts";
 import { modeDetail } from "./mode.ts";
 import { currentMode } from "./mode-store.ts";
 import { type FleetFacts, fleetFacts, liveRules, recordDecision } from "./store.ts";
@@ -306,6 +307,15 @@ export function floorSubjectsOf(req: HookRequest): FloorSubjects | null {
   return { callerAgent: caller.type === "agent" ? caller.id : null, acting: actingIdsOf(ctx), claim: claimOf(ctx).claim, recipients: floorRecipients(target, req.call.input) };
 }
 
+/**
+ * This app call is a step of a workflow run or acts for an agent: `tb.acting` (the bridge's), or Evolving Workflows' own `evolution.*` call context, a key only the verified
+ * product `evolution` can send (the bridge checks a caller key against the grant's product). It takes a call out of the mode's read exemptions; it never allows anything.
+ */
+function forWorkOf(caller: HookRequest["call"]["caller"], ctx: Record<string, unknown>): boolean {
+  if (caller.type !== "app") return false;
+  return ctx["tb.acting"] !== undefined || ctx["evolution.workflow"] !== undefined || ctx["evolution.run"] !== undefined || workflowOf(caller) !== null;
+}
+
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
@@ -330,6 +340,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     recipients: recipientFacts(fx, recipientsOf(req.call.target)),
     callerWorkflow: workflowOf(req.call.caller),
     workflowCapVisible: workflowCapVisible(db),
+    forWork: forWorkOf(req.call.caller, ctx),
     fleetAvailable: fx.available,
     callerProduct: callerProductOf(req.call.caller),
   };
@@ -397,6 +408,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
     const t0 = clock();
     try {
       noteGate(ctx.db, Date.now());
+      noteHookRun(ctx.db, "gate");
       const facts = factsOf(req, ctx.db);
       // C380 S1-1: the company floor, before every rule, in all modes. It reads its own table, never `fleetFacts().available`.
       const index = floorIndex(ctx.db);
@@ -425,6 +437,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
 
   async function rules_context(req: HookRequest, ctx: HookContext): Promise<{ add: Record<string, Json> }> {
     const t0 = clock();
+    noteHookRun(ctx.db, "context");
     const facts = factsOf(req, ctx.db);
     // No default mode here (C373c): a call reaches this phase only when the gate allowed it or the owner approved its hold,
     // and it must carry the same narrowing it would carry in Permissive mode (skipped allow rules' narrowing included).
@@ -456,6 +469,7 @@ export function makeHooks(product: string, opts: { budgetMs?: number; holdSuppor
   async function rules_filter(req: HookRequest, ctx: HookContext): Promise<{ redactions?: string[] }> {
     if (req.phase !== "after") return {};
     const t0 = clock();
+    noteHookRun(ctx.db, "filter");
     const facts = factsOf(req, ctx.db);
     const rules = liveRules(ctx.db);
     const v = evaluate(rules, facts);
