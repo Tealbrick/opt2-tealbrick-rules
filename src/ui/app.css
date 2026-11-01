@@ -19,6 +19,8 @@
 .rules-mode h3 { font-size: var(--tb-text-title); }
 .rules-floor { display: grid; gap: var(--tb-s4); align-content: start; }
 .rules-floor > h3 { font-size: var(--tb-text-title); }
+.rules-limits { display: grid; gap: var(--tb-s4); align-content: start; }
+.rules-limits > h3 { font-size: var(--tb-text-title); }
 .floor-details { grid-column: 2; overflow-wrap: anywhere; }
 .rules-trace { display: grid; gap: var(--tb-s1); margin: 0; color: var(--tb-ink-soft); font-size: var(--tb-text-label); }
 .rules-show { width: 200px; }

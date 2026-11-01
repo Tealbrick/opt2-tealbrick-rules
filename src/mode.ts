@@ -26,7 +26,7 @@ export const MODE_LABEL: Record<DefaultMode, string> = { permissive: "Permissive
 export const VERIFICATION_REASON = "no rule covers this call (Verification mode)";
 export const CLOSED_REASON = "no rule allows this call (Closed mode)";
 
-export type ExemptionId = "rules-governance-feed" | "knowledge-governance-feed" | "governance-reads-connect" | "governance-reads-access" | "inbox-owner-alerts" | "owner-decision-relay" | "apps-ask-owner" | "rules-self-service" | "platform-standard-ops";
+export type ExemptionId = "rules-governance-feed" | "knowledge-governance-feed" | "governance-reads-connect" | "governance-reads-access" | "inbox-owner-alerts" | "owner-decision-relay" | "apps-ask-owner" | "apps-read-setup" | "evolution-scans-task-board" | "rules-self-service" | "platform-standard-ops";
 
 export interface Exemption {
   id: ExemptionId;
@@ -72,6 +72,16 @@ export const EXEMPTIONS: readonly Exemption[] = [
     text: "Calls from an app with a verified product to Operator Inbox inbox_ask, inbox_status, inbox_reply and inbox_withdraw are never held or refused by the mode. They reach only you, an app sees only its own items, and a workflow approval step needs them.",
   },
   {
+    id: "apps-read-setup",
+    title: "Apps read what you shared",
+    text: "Calls from Observer (verified product observer) to Connect data_accounts_list and data_catalog and to Knowledge areas_list, and from Evolving Workflows (verified product evolution) to Connect tool_shares_mine, are never held or refused by the mode. They read the names, shapes and counts of what you shared, so that the app's own pages can show them. Reading messages, documents or rows stays under the mode, and so does a workflow step.",
+  },
+  {
+    id: "evolution-scans-task-board",
+    title: "Evolving Workflows looks for repeated work",
+    text: "One read by Evolving Workflows (verified product evolution) is never held or refused by the mode: Task Board issues_list with status done and limit 200, every 15 minutes, to suggest workflows. It reads the issue text of finished issues in the projects Evolving Workflows can read, which includes shared projects such as the Team board. A workflow's poll trigger with this same read is covered too, at the interval of that trigger, and its answer enters that run. A step of a workflow run stays under the mode, and so does any other read of issues. Write a rule to refuse it.",
+  },
+  {
     id: "rules-self-service",
     title: "Agents ask Rules",
     text: "Calls to Rules’ own rules_explain, rule_draft_submit and draft_status are never held or refused by the mode, so an agent can see why it was stopped and draft a rule for you to approve.",
@@ -95,6 +105,12 @@ const GOVERNANCE_DIRECTORY: ReadonlySet<string> = new Set(["identities_list", "c
 /** Operator Inbox's own-item ops an app uses to ask the owner (Evolution `approval` steps, Observer). */
 const INBOX_ASK: ReadonlySet<string> = new Set(["inbox_ask", "inbox_status", "inbox_reply", "inbox_withdraw"]);
 
+/** What an app reads only to show the owner what is shared: `<caller product>` → `<target product>.<op>`. Names, shapes and counts, never rows (`data_pull` is not here). A workflow step or a call for an agent stays under the mode. */
+const SETUP_READS: Readonly<Record<string, ReadonlySet<string>>> = {
+  observer: new Set(["connect.data_accounts_list", "connect.data_catalog", "knowledge.areas_list"]),
+  evolution: new Set(["connect.tool_shares_mine"]),
+};
+
 /** The apps Governance reads with access_list (tb.access/1). `access_revoke` is NOT exempt on any of them: a change stays under the mode. */
 const ACCESS_TARGETS: ReadonlySet<string> = new Set(["connect", "knowledge", "kanban", "evolution"]);
 
@@ -115,6 +131,11 @@ const ACCESS_TARGETS: ReadonlySet<string> = new Set(["connect", "knowledge", "ka
  *     Inbox accepts `item_decide_dm` only from Connect and checks the person; this exemption adds no authority.
  * (a6) An app asking the owner: reaches only the owner, and Inbox serves an app only its own items. In Verification a poll of `inbox_status` would make one
  *     hold per tick. Agents are NOT exempt: they are not internal traffic, and the owner's rules or mode decide.
+ * (a7) An app reading the names of what the owner shared (C383, audit hole 7): its own page asks each time it opens, and in Verification each ask would be one more hold. Exact ops
+ *     (`SETUP_READS`), verified product, not for a workflow step or an agent.
+ * (a8) The Evolving Workflows detector (opt2-tealbrick-evolution `src/scan.ts`, C383): the only timer left that asked once per tick in Verification (one new hold every 15 min, VERDICTS
+ *     C378). This is issue text, not names, so the exemption is the detector's exact input (`detectorScan`, src/hooks.ts), and a workflow step carries `evolution.workflow` and stays under
+ *     the mode. A poll trigger sends no context, so a poll with this same input is covered: the same finished issues, on a workflow the owner activated. Any other poll stays under the mode.
  * NOT exempt, on purpose: the work apps do for you (Observer and Evolving Workflows moving data, running steps). The owner allows those with a rule or
  * by the Access page. Every exemption names a VERIFIED product and exact ops; a caller without a verified product never gets one, except (b) and (c).
  * (b) Rules' own self-service ops (target product `rules`): an agent must be able to ask why and to propose a draft. Drafts are capped and only the owner applies one.
@@ -130,6 +151,8 @@ export function exemptionOf(facts: CallFacts): ExemptionId | null {
   if (facts.caller.type === "app" && facts.callerProduct === "fleet" && ((ACCESS_TARGETS.has(t.product) && t.op === "access_list") || (t.product === "rules" && t.op === "floor_status"))) return "governance-reads-access";
   if (facts.caller.type === "app" && facts.callerProduct === "connect" && t.product === "inbox" && t.op === "item_decide_dm") return "owner-decision-relay";
   if (facts.caller.type === "app" && facts.callerProduct !== null && t.product === "inbox" && INBOX_ASK.has(t.op)) return "apps-ask-owner";
+  if (facts.caller.type === "app" && facts.callerProduct !== null && !facts.forWork && SETUP_READS[facts.callerProduct]?.has(`${t.product}.${t.op}`)) return "apps-read-setup";
+  if (facts.caller.type === "app" && facts.callerProduct === "evolution" && !facts.forWork && facts.detectorScan === true && t.product === "kanban" && t.op === "issues_list") return "evolution-scans-task-board";
   if (t.product === "rules" && RULES_SELF_SERVICE.has(t.op)) return "rules-self-service";
   if (t.op.startsWith("tb.")) return "platform-standard-ops";
   return null;
@@ -172,9 +195,13 @@ export function traceDecidedBy(ruleId: string | null, detail: Record<string, unk
 }
 
 /** One line for the dry run: "No rule matches → Verification mode would HOLD this call". Null when a rule decided. */
-export function modeNote(v: Pick<Verdict, "rule" | "byMode" | "decision">): string | null {
+export function modeNote(v: Pick<Verdict, "rule" | "byMode" | "decision">, facts?: Pick<CallFacts, "callerProduct" | "target">): string | null {
   const b = v.byMode;
   if (v.rule || !b) return null;
+  // the dry run has no input, so it cannot see `detectorScan`: it says that the one exact read goes another way than its answer here
+  if (!b.exemption && b.mode !== "permissive" && facts?.callerProduct === "evolution" && facts.target.product === "kanban" && facts.target.op === "issues_list") {
+    return `No rule matches → ${MODE_LABEL[b.mode]} mode would ${v.decision === "hold" ? "HOLD" : "REFUSE"} this call, except the one read with status done and limit 200, which it ALLOWS (system exemption: ${EXEMPTIONS.find((e) => e.id === "evolution-scans-task-board")?.title})`;
+  }
   if (b.exemption) return `No rule matches → ${MODE_LABEL[b.mode]} mode does not apply to this call (system exemption: ${EXEMPTIONS.find((e) => e.id === b.exemption)?.title ?? b.exemption}), so it is ALLOWED`;
   const word = v.decision === "allow" ? "ALLOW" : v.decision === "hold" ? "HOLD" : "REFUSE";
   return `No rule matches → ${MODE_LABEL[b.mode]} mode would ${word} this call`;

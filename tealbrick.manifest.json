@@ -4,7 +4,7 @@
   "id": "rules",
   "name": "Rules & Approvals",
   "summary": "Rules & Approvals is the workspace policy: it allows, refuses or holds other apps’ calls, always with a recorded reason.",
-  "version": "0.7.0-dev.8",
+  "version": "0.7.0-dev.9",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.2.13"
@@ -227,7 +227,7 @@
           },
           "system": {
             "type": "array",
-            "maxItems": 10,
+            "maxItems": 20,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -4707,7 +4707,7 @@
           },
           "system": {
             "type": "array",
-            "maxItems": 10,
+            "maxItems": 20,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -6395,6 +6395,70 @@
           "unlisted": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "audience": "person",
+      "receipt": false,
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "id": "hook_state",
+      "title": "Is Rules switched on",
+      "description": "Whether Rules' own hooks ran during its last read of Governance. off = Rules' hook is switched off in Portal and it checks nothing. unknown = Rules has no way to tell now (no Governance, or no answer for five minutes).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "gate",
+          "context",
+          "filter",
+          "checkedAt",
+          "lastGateAt"
+        ],
+        "properties": {
+          "gate": {
+            "enum": [
+              "on",
+              "off",
+              "unknown"
+            ]
+          },
+          "context": {
+            "enum": [
+              "on",
+              "off",
+              "unknown"
+            ]
+          },
+          "filter": {
+            "enum": [
+              "on",
+              "off",
+              "unknown"
+            ]
+          },
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastGateAt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

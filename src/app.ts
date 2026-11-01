@@ -22,6 +22,8 @@ import {
   type FloorListOutput,
   type FloorStatusInput,
   type FloorStatusOutput,
+  type HookStateInput,
+  type HookStateOutput,
   type ModeGetInput,
   type ModeGetOutput,
   type ModeSetInput,
@@ -57,6 +59,7 @@ import { knownAgents, rememberAgents } from "./directory.ts";
 import { type CallFacts, evaluate, explain, floorHit, floorVerdict, matchesEverything, order, type Rule, type RuleSpec, validProduct, wellFormedTool } from "./engine.ts";
 import { type CallApp, refreshIfStale, startFleetTimer, strictest, syncFleet } from "./fleet.ts";
 import { clearFloor, FLOOR_REASON, type FloorState, floorIndex, floorRows, floorState } from "./floor.ts";
+import { hookState } from "./hook-watch.ts";
 import { callerTrustFacts, claimFleetFacts, floorRecipients, gateAnswer, HOLD_SUPPORTED, MAX_RECIPIENTS, makeHooks, recipientFacts, registerBridgeCaps, workflowCapVisible } from "./hooks.ts";
 import { composeModeNotes, decidedBy, EXEMPTIONS, modeNote, traceDecidedBy } from "./mode.ts";
 import { currentMode, modeHistory, modeState, setMode } from "./mode-store.ts";
@@ -404,7 +407,7 @@ export const handlers = {
         mode,
         decidedBy: decidedBy(v),
         exemption: v.byMode?.exemption ?? null,
-        modeNote: modeNote(v),
+        modeNote: modeNote(v, facts),
         decision: v.decision,
         answered: gateAnswer(v).answered,
         reason: v.reason,
@@ -572,6 +575,14 @@ export const handlers = {
         unlisted: st.unlisted,
         regressed: regressedView(st.regressed),
       };
+    },
+  }),
+  [OP.hookState]: op<HookStateInput, HookStateOutput>({
+    // C383 (D13): the permanent warning on Rules' pages when the owner switched its hook off. Portal shows the same from its own hook list.
+    async run(_input, ctx) {
+      person(ctx);
+      const s = hookState(ctx.db);
+      return { gate: s.gate, context: s.context, filter: s.filter, checkedAt: isoOrNull(s.checkedAt), lastGateAt: isoOrNull(floorState(ctx.db).lastGateAt) };
     },
   }),
   [OP.floorClear]: op<FloorClearInput, FloorClearOutput>({

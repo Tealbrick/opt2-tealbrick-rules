@@ -9,7 +9,7 @@ import { FloorCard } from "./floor.tsx";
 import { HistoryDialog, RestoreDialog, type RestoreTarget, RuleHistory } from "./history.tsx";
 import { type AllowPlan, allowPlan, readAllowQuery, replanAllow } from "./hold-allow.ts";
 import { FILTER_FROM, filterKey } from "./list-filter.ts";
-import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, SystemLines } from "./mode.tsx";
+import { MODE_ORDER, MODE_TITLE, type Mode, ModeCard, noRulesText, RulesLimits, SystemLines } from "./mode.tsx";
 import { ChipChoice, DecisionTag, type Directory, DirectoryErrors, Head, LoadError, Loading, useDirectory, useLoaded } from "./shared.tsx";
 import { TemplatePicker } from "./template-picker.tsx";
 
@@ -265,7 +265,7 @@ function Editor({
         </div>
         <ChipChoice
           label="Caller is a member of team (from Governance)"
-          hint="none = any. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app matches only when it acts for an agent, and then only a refuse or hold rule. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={m.callerTeams}
           onChange={(v) => setMatch({ callerTeams: v })}
@@ -273,7 +273,7 @@ function Editor({
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
-          hint="none = any. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app matches only when it acts for an agent, and then only a refuse or hold rule. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
           options={[
             ...dir.roles.map((r) => ({ value: r.id, label: r.name })),
             // a role the list does not have (archived or gone) stays visible so the owner can remove it; never by its id
@@ -285,7 +285,7 @@ function Editor({
         />
         <ChipChoice
           label="Calling agent’s trust (from Governance)"
-          hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed, and an app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed. An app matches only when it acts for an agent, and then only a refuse or hold rule. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={TRUSTS.map((t) => ({ value: t, label: t }))}
           value={m.callerTrust}
           onChange={(v) => setMatch({ callerTrust: v })}
@@ -339,9 +339,15 @@ function Editor({
         </Field>
       </section>
 
+      {s.outcome.decision === "allow" && (m.callerProducts?.length ?? 0) > 0 && (!m.products?.length || m.products.includes("connect")) ? (
+        <Notice tone="needs-you" role="status">
+          This rule does not let an app send through Connect. Connect runs an app’s outward tool only after you approve that call. To let it run with your approval, use a hold rule.
+        </Notice>
+      ) : null}
       {s.outcome.decision === "allow" ? (
         <section className="rules-group" aria-label="Narrow what the agent may read">
           <h3>Narrow what the agent may read</h3>
+          <p className="tb-hint">Memory tags are made for Knowledge: another app can refuse the call or return it uncut. Datasets work in no app yet: Knowledge and Observer refuse the call, and other apps can return it uncut.</p>
           <div className="rules-form">
             <Field label="Only memories tagged (any of)">
               <TextInput value={joinList(tags.anyOf)} onChange={(e) => setTags({ anyOf: list(e.target.value) })} />
@@ -349,7 +355,7 @@ function Editor({
             <Field label="Never memories tagged">
               <TextInput value={joinList(tags.noneOf)} onChange={(e) => setTags({ noneOf: list(e.target.value) })} />
             </Field>
-            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated. Deep knowledge reads nothing outside them.">
+            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated.">
               <TextInput value={joinList(sets.anyOf)} onChange={(e) => setSets({ anyOf: list(e.target.value) })} />
             </Field>
             <Field label="Never datasets" hint="Exact ids, case-sensitive.">
@@ -813,6 +819,7 @@ export function RulesPage({ onDraftSaved, onOpenDrafts }: { onDraftSaved?: () =>
         </>
       )}
       {data?.system ? <SystemLines lines={data.system} /> : null}
+      <RulesLimits />
       {editing ? (
         <Editor
           initial={editing === "new" ? null : editing}
