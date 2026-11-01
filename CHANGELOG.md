@@ -2,6 +2,10 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.0-dev.10 (2026-11-01)
+
+C383, DEV only. Seen in the live check of dev.9: a hold made after the app opened showed only after a reload. The Holds page and its badge read the list again when the page opens and once a minute.
+
 ## 0.7.0-dev.9 (2026-11-01)
 
 C383, DEV only. Final work on the audit holes.

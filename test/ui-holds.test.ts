@@ -210,6 +210,32 @@ describe("Holds page", () => {
     await m.unmount();
   });
 
+  it("C383: the list is read again when the page changes, not on a repeat of the same page, and not while signed out", async () => {
+    const calls = () => stub.calls.filter((c) => c.op === "tb.holds_list").length;
+    const seen: string[] = [];
+    const reload = async () => void seen.push("read");
+    function Probe({ on, page }: { on: boolean; page: string }) {
+      std.useHoldsFresh(reload, on, page);
+      return null;
+    }
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const before = calls();
+    await act(async () => root.render(h(Probe, { on: true, page: "rules" })));
+    assert.equal(seen.length, 0, "the first load is the list's own");
+    await act(async () => root.render(h(Probe, { on: true, page: "rules" })));
+    assert.equal(seen.length, 0);
+    await act(async () => root.render(h(Probe, { on: true, page: "holds" })));
+    assert.equal(seen.length, 1);
+    await act(async () => root.render(h(Probe, { on: false, page: "rules" })));
+    assert.equal(seen.length, 1);
+    await act(async () => root.unmount());
+    assert.equal(calls(), before, "the probe alone makes no request");
+    assert.equal(std.HOLDS_FRESH_MS, 60_000);
+    host.remove();
+  });
+
   it("RUL-14: a failed load is an error with Try again, not an empty state; Try again loads", async () => {
     reset([A]);
     stub.fail["tb.holds_list"] = { status: 500, code: "internal_error" };
