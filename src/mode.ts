@@ -74,12 +74,12 @@ export const EXEMPTIONS: readonly Exemption[] = [
   {
     id: "apps-read-setup",
     title: "Apps read what you shared",
-    text: "Calls from Observer (verified product observer) to Connect data_accounts_list and data_catalog, Knowledge areas_list and Task Board projects_list, and from Evolving Workflows (verified product evolution) to Connect tool_shares_mine, are never held or refused by the mode. They read the names of what you shared, so that the app's own pages can show them. Reading messages or documents stays under the mode, and so does a workflow step.",
+    text: "Calls from Observer (verified product observer) to Connect data_accounts_list and data_catalog and to Knowledge areas_list, and from Evolving Workflows (verified product evolution) to Connect tool_shares_mine, are never held or refused by the mode. They read the names, shapes and counts of what you shared, so that the app's own pages can show them. Reading messages, documents or rows stays under the mode, and so does a workflow step.",
   },
   {
     id: "evolution-scans-task-board",
     title: "Evolving Workflows looks for repeated work",
-    text: "Calls from Evolving Workflows (verified product evolution) to Task Board issues_list are never held or refused by the mode, except a step of a workflow run. They read finished issues of the projects you shared with it, every 15 minutes, to suggest workflows. A workflow's poll trigger on this read is covered too.",
+    text: "One read by Evolving Workflows (verified product evolution) is never held or refused by the mode: Task Board issues_list with status done and limit 200, every 15 minutes, to suggest workflows. It reads the issue text of finished issues in the projects Evolving Workflows can read, which includes shared projects such as the Team board. A step of a workflow run stays under the mode, and so does any other read of issues. Write a rule to refuse it.",
   },
   {
     id: "rules-self-service",
@@ -105,9 +105,9 @@ const GOVERNANCE_DIRECTORY: ReadonlySet<string> = new Set(["identities_list", "c
 /** Operator Inbox's own-item ops an app uses to ask the owner (Evolution `approval` steps, Observer). */
 const INBOX_ASK: ReadonlySet<string> = new Set(["inbox_ask", "inbox_status", "inbox_reply", "inbox_withdraw"]);
 
-/** What an app reads only to show the owner what is shared: `<caller product>` → `<target product>.<op>`. Names and counts, never content (`data_pull` is not here). A workflow step or a call for an agent stays under the mode. */
+/** What an app reads only to show the owner what is shared: `<caller product>` → `<target product>.<op>`. Names, shapes and counts, never rows (`data_pull` is not here). A workflow step or a call for an agent stays under the mode. */
 const SETUP_READS: Readonly<Record<string, ReadonlySet<string>>> = {
-  observer: new Set(["connect.data_accounts_list", "connect.data_catalog", "knowledge.areas_list", "kanban.projects_list"]),
+  observer: new Set(["connect.data_accounts_list", "connect.data_catalog", "knowledge.areas_list"]),
   evolution: new Set(["connect.tool_shares_mine"]),
 };
 
@@ -133,9 +133,9 @@ const ACCESS_TARGETS: ReadonlySet<string> = new Set(["connect", "knowledge", "ka
  *     hold per tick. Agents are NOT exempt: they are not internal traffic, and the owner's rules or mode decide.
  * (a7) An app reading the names of what the owner shared (C383, audit hole 7): its own page asks each time it opens, and in Verification each ask would be one more hold. Exact ops
  *     (`SETUP_READS`), verified product, not for a workflow step or an agent.
- * (a8) The Evolving Workflows detector (`src/scan.ts`, C383): the only timer left that asked once per tick in Verification (one new hold every 15 min, VERDICTS C378). The target
- *     shows it only the projects the owner shared. A workflow step carries `evolution.workflow` and stays under the mode; a poll trigger calls with no context, so it is covered too,
- *     and that is a read too (a held poll would otherwise fail its run for good).
+ * (a8) The Evolving Workflows detector (opt2-tealbrick-evolution `src/scan.ts`, C383): the only timer left that asked once per tick in Verification (one new hold every 15 min, VERDICTS
+ *     C378). This is issue text, not names, so the exemption is the detector's exact input (`detectorScan`, src/hooks.ts), and a workflow step carries `evolution.workflow` and stays under
+ *     the mode. A poll trigger sends no context, so a poll with this same input is covered: the same finished issues, on a workflow the owner activated. Any other poll stays under the mode.
  * NOT exempt, on purpose: the work apps do for you (Observer and Evolving Workflows moving data, running steps). The owner allows those with a rule or
  * by the Access page. Every exemption names a VERIFIED product and exact ops; a caller without a verified product never gets one, except (b) and (c).
  * (b) Rules' own self-service ops (target product `rules`): an agent must be able to ask why and to propose a draft. Drafts are capped and only the owner applies one.
@@ -152,7 +152,7 @@ export function exemptionOf(facts: CallFacts): ExemptionId | null {
   if (facts.caller.type === "app" && facts.callerProduct === "connect" && t.product === "inbox" && t.op === "item_decide_dm") return "owner-decision-relay";
   if (facts.caller.type === "app" && facts.callerProduct !== null && t.product === "inbox" && INBOX_ASK.has(t.op)) return "apps-ask-owner";
   if (facts.caller.type === "app" && facts.callerProduct !== null && !facts.forWork && SETUP_READS[facts.callerProduct]?.has(`${t.product}.${t.op}`)) return "apps-read-setup";
-  if (facts.caller.type === "app" && facts.callerProduct === "evolution" && !facts.forWork && t.product === "kanban" && t.op === "issues_list") return "evolution-scans-task-board";
+  if (facts.caller.type === "app" && facts.callerProduct === "evolution" && !facts.forWork && facts.detectorScan === true && t.product === "kanban" && t.op === "issues_list") return "evolution-scans-task-board";
   if (t.product === "rules" && RULES_SELF_SERVICE.has(t.op)) return "rules-self-service";
   if (t.op.startsWith("tb.")) return "platform-standard-ops";
   return null;

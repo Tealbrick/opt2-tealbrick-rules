@@ -316,6 +316,13 @@ function forWorkOf(caller: HookRequest["call"]["caller"], ctx: Record<string, un
   return ctx["tb.acting"] !== undefined || ctx["evolution.workflow"] !== undefined || ctx["evolution.run"] !== undefined || workflowOf(caller) !== null;
 }
 
+/** The Evolving Workflows detector's read of Task Board (opt2-tealbrick-evolution `src/detector.ts` KANBAN_QUERY): exactly this, or it is not the detector. If that query changes, the exemption stops applying and the mode decides, which is the safe side. */
+function isDetectorScan(input: unknown): boolean {
+  if (!isObj(input)) return false;
+  const keys = Object.keys(input);
+  return keys.length === 2 && input.status === "done" && input.limit === 200;
+}
+
 /** Facts for one hook call: caller (and its teams, trust and verified product), target, claim, and the claim's teams and trust (see `claimFleetFacts`). */
 export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
   const ctx = (req.context ?? {}) as Record<string, unknown>;
@@ -341,6 +348,7 @@ export function factsOf(req: HookRequest, db: Db, now = Date.now()): CallFacts {
     callerWorkflow: workflowOf(req.call.caller),
     workflowCapVisible: workflowCapVisible(db),
     forWork: forWorkOf(req.call.caller, ctx),
+    detectorScan: isDetectorScan(req.call.input),
     fleetAvailable: fx.available,
     callerProduct: callerProductOf(req.call.caller),
   };

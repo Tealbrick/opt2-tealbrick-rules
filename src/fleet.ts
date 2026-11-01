@@ -17,7 +17,7 @@ import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import feedSchema from "./contracts/fleet.directory_feed.1.lifecycle.schema.json" with { type: "json" };
 import type { Trust } from "./engine.ts";
 import { type FloorEntry, isLifecycleStop, otherOriginUnchanged } from "./floor.ts";
-import { hookRunsNow, judgeHooks } from "./hook-watch.ts";
+import { hookRunsNow, judgeHooks, noHookAnswer } from "./hook-watch.ts";
 import { dropFleetCopy, emptyFleet, FLEET_MAX_STALE_MS, type FleetModel, type FleetTeam, fleetState, markFleetStale, setFleetStale, staleMarksOf, type TrustEntry, writeFleetChunked } from "./store.ts";
 
 export const FLEET_PRODUCT = "fleet";
@@ -471,6 +471,7 @@ async function syncOnce(db: Db, callApp: CallApp, now: () => number): Promise<vo
     await writeFleetChunked(db, d.unchanged ? null : d.model, { revision: d.revision, error: null, agentHandles: withHandles, rolesKnown: withHandles && d.rolesKnown, ...floor }, now());
     if (!d.unchanged) copyWithHandles.set(db, withHandles);
   } catch (e) {
+    noHookAnswer(db);
     const code = isObj(e) && typeof e.code === "string" ? e.code : "error";
     const reason = e instanceof Error ? e.message : "fleet read failed";
     const msg = (code === FEED_INVALID ? `Governance feed refused: ${reason}` : `Governance not reachable: ${code}: ${reason}`).slice(0, 280);

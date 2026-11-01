@@ -265,7 +265,7 @@ function Editor({
         </div>
         <ChipChoice
           label="Caller is a member of team (from Governance)"
-          hint="none = any. An app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app matches only when it acts for an agent, and then only a refuse or hold rule. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={dir.teams.map((t) => ({ value: t.id, label: t.name }))}
           value={m.callerTeams}
           onChange={(v) => setMatch({ callerTeams: v })}
@@ -273,7 +273,7 @@ function Editor({
         />
         <ChipChoice
           label="Caller has the role (from Governance)"
-          hint="none = any. An app never matches. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. An app matches only when it acts for an agent, and then only a refuse or hold rule. A role is a record Governance keeps: it changes nothing until a rule names it, like this one. An archived role, or a role nobody has, matches no one. If Governance can’t be read, or does not send roles, a refuse or hold rule with this applies and an allow rule with this does not."
           options={[
             ...dir.roles.map((r) => ({ value: r.id, label: r.name })),
             // a role the list does not have (archived or gone) stays visible so the owner can remove it; never by its id
@@ -347,7 +347,7 @@ function Editor({
       {s.outcome.decision === "allow" ? (
         <section className="rules-group" aria-label="Narrow what the agent may read">
           <h3>Narrow what the agent may read</h3>
-          <p className="tb-hint">Only Knowledge applies these lists. Observer refuses a call that carries them. Answers from other apps have no tags, so nothing is cut from them.</p>
+          <p className="tb-hint">Memory tags are made for Knowledge: another app can refuse the call or return it uncut. Datasets work in no app yet: Knowledge refuses the call, and other apps return it uncut.</p>
           <div className="rules-form">
             <Field label="Only memories tagged (any of)">
               <TextInput value={joinList(tags.anyOf)} onChange={(e) => setTags({ anyOf: list(e.target.value) })} />
@@ -355,7 +355,7 @@ function Editor({
             <Field label="Never memories tagged">
               <TextInput value={joinList(tags.noneOf)} onChange={(e) => setTags({ noneOf: list(e.target.value) })} />
             </Field>
-            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated. Deep knowledge reads nothing outside them.">
+            <Field label="Only datasets (any of)" hint="Dataset ids exactly as the data app lists them, such as public.orders (case-sensitive), comma separated.">
               <TextInput value={joinList(sets.anyOf)} onChange={(e) => setSets({ anyOf: list(e.target.value) })} />
             </Field>
             <Field label="Never datasets" hint="Exact ids, case-sensitive.">

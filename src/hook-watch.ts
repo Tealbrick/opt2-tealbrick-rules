@@ -19,7 +19,7 @@ export const HOOK_STATE_MAX_AGE_MS = 5 * 60_000;
 
 type Runs = Record<WatchedHook, number>;
 const runs = new WeakMap<Db, Runs>();
-const last = new WeakMap<Db, { off: readonly WatchedHook[]; at: number }>();
+const last = new WeakMap<Db, { off: readonly WatchedHook[]; at: number; answered: boolean }>();
 
 /** One run of a hook. Never throws: a hook's answer must not depend on this. */
 export function noteHookRun(db: Db, hook: WatchedHook): void {
@@ -36,12 +36,18 @@ export function hookRunsNow(db: Db): Readonly<Runs> {
 /** After the bridge forwarded a feed read and the answer came back: every hook that matches it ran before that, so one that did not run is switched off. */
 export function judgeHooks(db: Db, before: Readonly<Runs>, now: number): void {
   const after = hookRunsNow(db);
-  last.set(db, { off: WATCHED_HOOKS.filter((h) => after[h] === before[h]), at: now });
+  last.set(db, { off: WATCHED_HOOKS.filter((h) => after[h] === before[h]), at: now, answered: true });
+}
+
+/** The last feed read had no answer: nothing can say "on" now, because the owner may have switched a hook off since. An "off" stays until it ages out: nothing has switched it on. */
+export function noHookAnswer(db: Db): void {
+  const l = last.get(db);
+  if (l) last.set(db, { ...l, answered: false });
 }
 
 export function hookState(db: Db, now = Date.now()): HookState {
   const l = last.get(db);
   if (!l || now - l.at > HOOK_STATE_MAX_AGE_MS) return { gate: "unknown", context: "unknown", filter: "unknown", checkedAt: l?.at ?? null };
-  const seen = (h: WatchedHook): HookSeen => (l.off.includes(h) ? "off" : "on");
+  const seen = (h: WatchedHook): HookSeen => (l.off.includes(h) ? "off" : l.answered ? "on" : "unknown");
   return { gate: seen("gate"), context: seen("context"), filter: seen("filter"), checkedAt: l.at };
 }

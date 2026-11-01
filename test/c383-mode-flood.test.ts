@@ -4,10 +4,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CallFacts } from "../src/engine.ts";
 import { evaluate } from "../src/engine.ts";
+import { factsOf } from "../src/hooks.ts";
 import { EXEMPTIONS, exemptionOf } from "../src/mode.ts";
-import { APP_INSTANCE, spec } from "./helpers.ts";
+import { APP_INSTANCE, hookReq, migratedDb, spec } from "./helpers.ts";
 
-const facts = (callerProduct: string | null, product: string, op: string, forWork = false, effect = "read"): CallFacts => ({
+const facts = (callerProduct: string | null, product: string, op: string, forWork = false, effect = "read", detectorScan = true): CallFacts => ({
   caller: { type: "app", id: APP_INSTANCE, mode: null },
   target: { product, op, effect },
   claim: null,
@@ -21,6 +22,7 @@ const facts = (callerProduct: string | null, product: string, op: string, forWor
   fleetAvailable: true,
   callerProduct,
   forWork,
+  detectorScan,
 });
 
 /** Timers and pages of the released apps. `file` names the caller's code that makes the call. */
@@ -47,7 +49,6 @@ const PLUMBING: readonly [caller: string, product: string, op: string, why: stri
   ["observer", "connect", "data_accounts_list", "src/connect.ts page and job"],
   ["observer", "connect", "data_catalog", "src/connect.ts page and job"],
   ["observer", "knowledge", "areas_list", "src/deliver.ts"],
-  ["observer", "kanban", "projects_list", "owner page"],
   ["evolution", "kanban", "issues_list", "src/scan.ts 15 min timer"],
   ["evolution", "connect", "tool_shares_mine", "src/engine/ops.ts page"],
   ["evolution", "inbox", "inbox_status", "src/engine/activities.ts wait"],
@@ -81,6 +82,7 @@ test("work stays under the mode: moving content, writing, ending access, and any
     ["connect", "fleet", "directory_feed", "read"],
     ["kanban", "kanban", "issues_list", "read"],
     ["observer", "kanban", "issues_list", "read"],
+    ["observer", "kanban", "projects_list", "read"],
   ];
   for (const [caller, product, op, effect] of work) {
     assert.equal(exemptionOf(facts(caller, product, op, false, effect)), null, `${caller} -> ${product}.${op}`);
@@ -100,6 +102,23 @@ test("the new read exemptions drop for a workflow step or a call for an agent, a
     assert.equal(exemptionOf(facts(null, product, op)), null, `${op} unverified`);
     assert.equal(exemptionOf({ ...facts(caller, product, op), caller: { type: "agent", id: "agt_01J0000000000000000000000A", mode: "free" } }), null, `${op} from an agent`);
   }
+});
+
+test("the Task Board read is exempt only with the detector's exact input: another status or limit stays under the mode", () => {
+  assert.equal(exemptionOf(facts("evolution", "kanban", "issues_list")), "evolution-scans-task-board");
+  assert.equal(exemptionOf(facts("evolution", "kanban", "issues_list", false, "read", false)), null);
+  assert.equal(evaluate([], facts("evolution", "kanban", "issues_list", false, "read", false), "closed").decision, "deny");
+  const gate = (input: unknown) => factsOf(hookReq("before", { app: { product: "evolution" }, product: "kanban", op: "issues_list", effect: "read", input: input as never }), migratedDb().db);
+  assert.equal(gate({ status: "done", limit: 200 }).detectorScan, true);
+  for (const other of [{ status: "in_progress", limit: 200 }, { status: "done", limit: 201 }, { status: "done" }, { status: "done", limit: 200, projectId: "p" }, {}, null, []]) assert.equal(gate(other).detectorScan, false, JSON.stringify(other));
+});
+
+test("a workflow step is work: its `evolution.*` context or `tb.acting` takes it out of the read exemptions", () => {
+  const f = (context: Record<string, never>) => factsOf(hookReq("before", { app: { product: "evolution" }, product: "connect", op: "tool_shares_mine", effect: "read", context }), migratedDb().db);
+  assert.equal(f({}).forWork, false);
+  assert.equal(f({ "evolution.workflow": "wf" as never }).forWork, true);
+  assert.equal(f({ "evolution.run": "r" as never }).forWork, true);
+  assert.equal(f({ "tb.acting": { v: 1, agents: [{ id: "agt_01J0000000000000000000000A" }] } as never }).forWork, true);
 });
 
 test("an owner rule still decides an exempt call, and a line on the page exists for every exemption", () => {

@@ -82,8 +82,8 @@ They act ONLY on the no-match path: an owner rule that matches such a call still
 6. **`governance-reads-connect` (C378):** verified `fleet` → `connect.identities_list`, `contacts_list`. Read-only names and handles; recipient rules need them, else they fail closed for ever (QA VERDICTS: Closed denied it).
 7. **`owner-decision-relay` (C378):** verified `connect` → `inbox.item_decide_dm`. It carries the owner's own Approve or Deny; Inbox accepts it from Connect only and checks the person. A hold on it would need another answer (a loop). No new authority.
 8. **`apps-ask-owner` (C378):** any app with a verified product → `inbox.inbox_ask`, `inbox_status`, `inbox_reply`, `inbox_withdraw`. They reach only the owner and an app sees only its own items; a workflow `approval` step needs them, and a poll of `inbox_status` would make a hold per tick. Agents are not covered.
-9. **`apps-read-setup` (C383, audit hole 7):** caller type `app`, VERIFIED product `observer` to Connect `data_accounts_list`, `data_catalog`, Knowledge `areas_list`, Task Board `projects_list`; VERIFIED product `evolution` to Connect `tool_shares_mine`. Why: names of what the owner shared, asked each time the app's own page opens; in Verification each ask is one more hold. Never for a call with `tb.acting` or `evolution.*` context (`forWork`). `data_pull` stays under the mode.
-10. **`evolution-scans-task-board` (C383, audit hole 7):** caller type `app`, VERIFIED product `evolution`, target `kanban.issues_list`, not `forWork`. Why: the detector's 15 min timer was the last timer that made one new hold per tick in Verification (VERDICTS C378). Task Board shows it only the projects the owner shared. A workflow step carries `evolution.workflow` and stays under the mode; a poll trigger carries no context and is covered.
+9. **`apps-read-setup` (C383, audit hole 7):** caller type `app`, VERIFIED product `observer` to Connect `data_accounts_list`, `data_catalog`, Knowledge `areas_list`; VERIFIED product `evolution` to Connect `tool_shares_mine`. Why: names, shapes and counts of what the owner shared, asked each time the app's own page opens; in Verification each ask is one more hold. Never for a call with `tb.acting` or `evolution.*` context (`forWork`). `data_pull` stays under the mode.
+10. **`evolution-scans-task-board` (C383, audit hole 7):** caller type `app`, VERIFIED product `evolution`, target `kanban.issues_list`, not `forWork`, input exactly `{status: "done", limit: 200}` (`detectorScan`). Why: the detector's 15 min timer was the last timer that made one new hold per tick in Verification (VERDICTS C378). This reads issue text of finished issues in the projects Evolution can read, shared projects included; the system line says so, and a rule can refuse it. A workflow step carries `evolution.workflow` and stays under the mode. A poll trigger carries no context, so only a poll with this same input is covered.
 
 Rule for a new exemption: internal traffic only, a verified product (or no effect beyond the owner's own review), exact ops, no new authority, and a test that fires on every near miss. Calls that are NOT exempt on purpose, because they are the work apps do for the owner: Observer and Evolving Workflows reading and writing other apps (Connect, Knowledge, Task Board), Live artifacts' refresh. They need an owner allow rule or an Access page row in Verification or Closed.
 
@@ -136,7 +136,8 @@ All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1
 
 - Narrowing rules that omit write ops still let writes through unnarrowed (open follow-up to F90; not re-checked on 2026-10-17: UNVERIFIED).
 - Rules does not yet match on a dynamic tool name (backlog).
-- Scheduled ops do not re-run bridge before-hooks at fire time (needs a bridge and SDK design).
+- Since bridge 0.2.13 and SDK 0.1.45, scheduled ops and Connect's scheduled posts re-run the bridge's before hooks at fire time (`ctx.sendTimeCheck`, `fireScheduledOp`).
+- Dataset narrowing (`deepDatasets`) is carried, but no app applies it: Knowledge refuses a v2 narrowing, and other apps do not read it. The page says so.
 
 ## Is the hook on? (C383, D13)
 

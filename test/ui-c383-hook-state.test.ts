@@ -86,8 +86,8 @@ describe("Rules hook warning", () => {
     const host = await render(h(modes.RulesLimits));
     const t = host.textContent ?? "";
     assert.match(t, /model provider/);
-    assert.match(t, /Team, role and trust rules match agents only/);
-    assert.match(t, /works in Knowledge only/);
+    assert.match(t, /Team, role and trust rules match agents\./);
+    assert.match(t, /Narrowing by dataset works in no app yet/);
     assert.match(t, /allow rule does not let an app send through Connect/);
   });
 });

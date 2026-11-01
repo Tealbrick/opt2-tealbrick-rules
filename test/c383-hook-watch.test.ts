@@ -69,6 +69,20 @@ test("a read the bridge refused says nothing: no off from a refusal, a hold, or 
   }
 });
 
+test("a failed read after an answer: an old on becomes unknown (the owner may have switched it off since), an old off stays off", async () => {
+  const refused = async () => {
+    throw Object.assign(new Error("no grant"), { code: "no_grant" });
+  };
+  const on = migratedDb().db;
+  await syncFleet(on, bridge(on, ALL_ON));
+  await syncFleet(on, bridge(on, {}, refused));
+  assert.equal(hookState(on).gate, "unknown");
+  const off = migratedDb().db;
+  await syncFleet(off, bridge(off, { context: true, filter: true }));
+  await syncFleet(off, bridge(off, {}, refused));
+  assert.deepEqual([hookState(off).gate, hookState(off).context], ["off", "unknown"]);
+});
+
 test("an old answer says nothing: five minutes without one is unknown, also for an off", async () => {
   const { db } = migratedDb();
   await syncFleet(db, bridge(db, {}));
