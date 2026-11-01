@@ -285,7 +285,7 @@ function Editor({
         />
         <ChipChoice
           label="Calling agent’s trust (from Governance)"
-          hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed, and an app never matches. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
+          hint="none = any. The trust of the agent that calls; an agent Governance doesn’t list counts as unreviewed. An app matches only when it acts for an agent, and then only a refuse or hold rule. If Governance can’t be read, a refuse or hold rule with this applies and an allow rule with this does not."
           options={TRUSTS.map((t) => ({ value: t, label: t }))}
           value={m.callerTrust}
           onChange={(v) => setMatch({ callerTrust: v })}
@@ -347,7 +347,7 @@ function Editor({
       {s.outcome.decision === "allow" ? (
         <section className="rules-group" aria-label="Narrow what the agent may read">
           <h3>Narrow what the agent may read</h3>
-          <p className="tb-hint">Memory tags are made for Knowledge: another app can refuse the call or return it uncut. Datasets work in no app yet: Knowledge refuses the call, and other apps return it uncut.</p>
+          <p className="tb-hint">Memory tags are made for Knowledge: another app can refuse the call or return it uncut. Datasets work in no app yet: Knowledge and Observer refuse the call, and other apps can return it uncut.</p>
           <div className="rules-form">
             <Field label="Only memories tagged (any of)">
               <TextInput value={joinList(tags.anyOf)} onChange={(e) => setTags({ anyOf: list(e.target.value) })} />

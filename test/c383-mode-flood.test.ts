@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { CallFacts } from "../src/engine.ts";
 import { evaluate } from "../src/engine.ts";
 import { factsOf } from "../src/hooks.ts";
-import { EXEMPTIONS, exemptionOf } from "../src/mode.ts";
+import { EXEMPTIONS, exemptionOf, modeNote } from "../src/mode.ts";
 import { APP_INSTANCE, hookReq, migratedDb, spec } from "./helpers.ts";
 
 const facts = (callerProduct: string | null, product: string, op: string, forWork = false, effect = "read", detectorScan = true): CallFacts => ({
@@ -111,6 +111,15 @@ test("the Task Board read is exempt only with the detector's exact input: anothe
   const gate = (input: unknown) => factsOf(hookReq("before", { app: { product: "evolution" }, product: "kanban", op: "issues_list", effect: "read", input: input as never }), migratedDb().db);
   assert.equal(gate({ status: "done", limit: 200 }).detectorScan, true);
   for (const other of [{ status: "in_progress", limit: 200 }, { status: "done", limit: 201 }, { status: "done" }, { status: "done", limit: 200, projectId: "p" }, {}, null, []]) assert.equal(gate(other).detectorScan, false, JSON.stringify(other));
+});
+
+test("the dry run has no input, so it says that the one exact read is exempt; other calls keep the plain line", () => {
+  const f = facts("evolution", "kanban", "issues_list", false, "read", false);
+  assert.match(modeNote(evaluate([], f, "closed"), f) ?? "", /Closed mode would REFUSE this call, except the one read with status done and limit 200, which it ALLOWS/);
+  assert.match(modeNote(evaluate([], f, "verification"), f) ?? "", /Verification mode would HOLD this call, except/);
+  const other = facts("evolution", "kanban", "issue_create", false, "write", false);
+  assert.equal(modeNote(evaluate([], other, "closed"), other), "No rule matches → Closed mode would REFUSE this call");
+  assert.equal(modeNote(evaluate([], f, "permissive"), f), "No rule matches → Permissive mode would ALLOW this call");
 });
 
 test("a workflow step is work: its `evolution.*` context or `tb.acting` takes it out of the read exemptions", () => {

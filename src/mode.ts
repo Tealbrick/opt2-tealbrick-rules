@@ -79,7 +79,7 @@ export const EXEMPTIONS: readonly Exemption[] = [
   {
     id: "evolution-scans-task-board",
     title: "Evolving Workflows looks for repeated work",
-    text: "One read by Evolving Workflows (verified product evolution) is never held or refused by the mode: Task Board issues_list with status done and limit 200, every 15 minutes, to suggest workflows. It reads the issue text of finished issues in the projects Evolving Workflows can read, which includes shared projects such as the Team board. A step of a workflow run stays under the mode, and so does any other read of issues. Write a rule to refuse it.",
+    text: "One read by Evolving Workflows (verified product evolution) is never held or refused by the mode: Task Board issues_list with status done and limit 200, every 15 minutes, to suggest workflows. It reads the issue text of finished issues in the projects Evolving Workflows can read, which includes shared projects such as the Team board. A workflow's poll trigger with this same read is covered too, at the interval of that trigger, and its answer enters that run. A step of a workflow run stays under the mode, and so does any other read of issues. Write a rule to refuse it.",
   },
   {
     id: "rules-self-service",
@@ -195,9 +195,13 @@ export function traceDecidedBy(ruleId: string | null, detail: Record<string, unk
 }
 
 /** One line for the dry run: "No rule matches → Verification mode would HOLD this call". Null when a rule decided. */
-export function modeNote(v: Pick<Verdict, "rule" | "byMode" | "decision">): string | null {
+export function modeNote(v: Pick<Verdict, "rule" | "byMode" | "decision">, facts?: Pick<CallFacts, "callerProduct" | "target">): string | null {
   const b = v.byMode;
   if (v.rule || !b) return null;
+  // the dry run has no input, so it cannot see `detectorScan`: it says that the one exact read goes another way than its answer here
+  if (!b.exemption && b.mode !== "permissive" && facts?.callerProduct === "evolution" && facts.target.product === "kanban" && facts.target.op === "issues_list") {
+    return `No rule matches → ${MODE_LABEL[b.mode]} mode would ${v.decision === "hold" ? "HOLD" : "REFUSE"} this call, except the one read with status done and limit 200, which it ALLOWS (system exemption: ${EXEMPTIONS.find((e) => e.id === "evolution-scans-task-board")?.title})`;
+  }
   if (b.exemption) return `No rule matches → ${MODE_LABEL[b.mode]} mode does not apply to this call (system exemption: ${EXEMPTIONS.find((e) => e.id === b.exemption)?.title ?? b.exemption}), so it is ALLOWED`;
   const word = v.decision === "allow" ? "ALLOW" : v.decision === "hold" ? "HOLD" : "REFUSE";
   return `No rule matches → ${MODE_LABEL[b.mode]} mode would ${word} this call`;

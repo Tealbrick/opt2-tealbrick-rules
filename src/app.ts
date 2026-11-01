@@ -407,7 +407,7 @@ export const handlers = {
         mode,
         decidedBy: decidedBy(v),
         exemption: v.byMode?.exemption ?? null,
-        modeNote: modeNote(v),
+        modeNote: modeNote(v, facts),
         decision: v.decision,
         answered: gateAnswer(v).answered,
         reason: v.reason,
