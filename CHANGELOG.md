@@ -2,6 +2,10 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `rules`).
 
+## 0.7.1 (2026-11-06)
+
+Stability fix (C396), same class as Knowledge INC-20261106-02. The model drafter of the English rule box sent `temperature: 0` to every OpenAI-compatible model. OpenAI reasoning models (`gpt-5*`, `gpt-6*`, `o1*`, `o3*`, `o4*`, for example gpt-6-luna) answer 400 to it, so drafting fell back to the parser alone with a note. Such a model now gets no `temperature` (and never `top_p`); other models keep `temperature: 0`. No other change. `upgradeFrom` is `<0.7.1`.
+
 ## 0.7.0 (2026-11-01)
 
 The final version of the 0.7.0-dev series. See the dev entries below for what is in it. The same code as dev.10.
