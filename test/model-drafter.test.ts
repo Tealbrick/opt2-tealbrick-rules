@@ -9,7 +9,7 @@ import { OP } from "#kit";
 import { definition, handlers, MODEL_DRAFT_NOTE, MODEL_FAILED_NOTE, MODEL_FEWER_NOTE, manifest } from "../src/app.ts";
 import { namesProblem } from "../src/compose.ts";
 import { syncFleet } from "../src/fleet.ts";
-import { draftBinding, type FetchFn, modelDrafter, parseAnswer } from "../src/model-drafter.ts";
+import { draftBinding, type FetchFn, isOpenAIReasoningModel, modelDrafter, parseAnswer } from "../src/model-drafter.ts";
 import { AGENT_A, AGENT_B, feed, migratedDb, OWNER, opCtx } from "./helpers.ts";
 
 type Run = (input: unknown, ctx: OpContext) => Promise<any>;
@@ -65,6 +65,31 @@ test("modelDrafter talks to an OpenAI-compatible or the Anthropic API and parses
   await assert.rejects(modelDrafter(OPENAI, { fetch: async () => ({ ok: false, status: 429, text: async () => "" }) }).draft("t", env), /HTTP 429/);
   assert.throws(() => parseAnswer("no json here"));
   assert.throws(() => parseAnswer('{"notes": []}'), /no rules list/);
+});
+
+test("OpenAI reasoning models (gpt-5, gpt-6, o1, o3, o4) get no temperature and no top_p; other models keep temperature 0; Anthropic gets none", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fetchFn: FetchFn = async (url, init) => {
+    bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+    const text = url.endsWith("/v1/messages") ? JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ rules: [], notes: [], unmatched: [] }) }] }) : answer({ rules: [], notes: [], unmatched: [] });
+    return { ok: true, status: 200, text: async () => text };
+  };
+  const env = { agents: [], teams: [], apps: [], problem: () => "" };
+  const reasoning = ["gpt-6-luna", "gpt-5", "gpt-5.1-mini", "o1", "o3-mini", "o4-mini", "openai/gpt-6-sol", "GPT-6-Luna"];
+  for (const model of reasoning) await modelDrafter({ ...OPENAI, model }, { fetch: fetchFn }).draft("t", env);
+  for (const [i, model] of reasoning.entries()) {
+    assert.equal("temperature" in (bodies[i] ?? {}), false, `${model}: no temperature`);
+    assert.equal("top_p" in (bodies[i] ?? {}), false, `${model}: no top_p`);
+  }
+  bodies.length = 0;
+  const plain = ["gpt-4.1", "gpt-4o-mini", "llama-3.3-70b", "omni-1"];
+  for (const model of plain) await modelDrafter({ ...OPENAI, model }, { fetch: fetchFn }).draft("t", env);
+  for (const [i, model] of plain.entries()) assert.equal(bodies[i]?.temperature, 0, `${model}: temperature 0`);
+  bodies.length = 0;
+  await modelDrafter({ ...OPENAI, provider: "anthropic", model: "claude-sonnet-5-5", baseUrl: "https://claude.test/" }, { fetch: fetchFn }).draft("t", env);
+  assert.equal("temperature" in (bodies[0] ?? {}), false, "current Claude models refuse a non-default temperature");
+  assert.equal(isOpenAIReasoningModel("gpt-6-luna"), true);
+  assert.equal(isOpenAIReasoningModel("gpt-4.1"), false);
 });
 
 test("namesProblem: a rule about an agent, team or app the owner's directory does not list is refused", () => {

@@ -16,6 +16,18 @@ export const DRAFT_ROLES = ["utility", "reasoning"] as const;
 export const MODEL_TIMEOUT_MS = 20_000;
 const MAX_ANSWER = 200_000;
 
+/**
+ * OpenAI reasoning models (gpt-5*, gpt-6*, o1*, o3*, o4*) answer 400 to `temperature` other than the default and to `top_p`
+ * (OpenAI "Using GPT-6": remove them when reasoning effort is not `none`; gpt-6-luna defaults to `medium`). Matched by exact
+ * prefix on the model id, after an optional router prefix such as `openai/`. Such a model gets no temperature.
+ */
+export const OPENAI_REASONING_PREFIXES = ["gpt-5", "gpt-6", "o1", "o3", "o4"] as const;
+export function isOpenAIReasoningModel(model: string): boolean {
+  const id = model.trim().toLowerCase();
+  const bare = id.slice(id.lastIndexOf("/") + 1);
+  return OPENAI_REASONING_PREFIXES.some((p) => bare.startsWith(p));
+}
+
 export type FetchFn = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
 /** Where Rules reads a binding: the op context of SDK 0.1.40 (`modelRole`, `bridgeCaps`). */
@@ -109,7 +121,7 @@ async function ask(binding: ResolvedModelRole, system: string, user: string, fet
     res = await fetchFn(`${base}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(binding.key ? { authorization: `Bearer ${binding.key}` } : {}) },
-      body: JSON.stringify({ model: binding.model, temperature: 0, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
+      body: JSON.stringify({ model: binding.model, ...(isOpenAIReasoningModel(binding.model) ? {} : { temperature: 0 }), messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
       signal,
     });
     read = (j) => (j as { choices?: { message?: { content?: string } }[] }).choices?.[0]?.message?.content ?? "";
